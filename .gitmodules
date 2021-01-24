@@ -1,0 +1,3 @@
+[submodule "polymer"]
+	path = polymer
+	url = git@github.com:kumasento/polymer
