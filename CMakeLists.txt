@@ -64,5 +64,5 @@ include_directories("${PROJECT_BINARY_DIR}/include")
 
 # add_subdirectory(include/polymer)
 # add_subdirectory(lib)
-# add_subdirectory(tools)
+add_subdirectory(tools)
 add_subdirectory(test)

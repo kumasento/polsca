@@ -7,6 +7,7 @@ configure_lit_site_cfg(
 
 set(PHISM_TEST_DEPENDS
   FileCheck count not
+  phism-opt
   )
 
 add_lit_testsuite(check-phism "Running the Phism regression tests"

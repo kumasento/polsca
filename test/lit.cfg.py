@@ -46,7 +46,7 @@ llvm_config.use_default_substitutions()
 
 tool_dirs = [config.phism_tools_dir, config.llvm_tools_dir]
 tools = [
-    # 'phism-opt',
+    'phism-opt',
     # 'phism-translate'
 ]
 llvm_config.add_tool_substitutions(tools, tool_dirs)

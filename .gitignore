@@ -33,3 +33,6 @@
 
 # CMake
 build/
+
+# Editor
+.vscode/
