@@ -60,7 +60,7 @@ cmake ../llvm \
   -DCMAKE_C_COMPILER=clang \
   -DCMAKE_CXX_COMPILER=clang++ \
   -G Ninja
-cmake --build . --target install -- -j$(nproc)
+cmake --build . -- -j$(nproc)
 cmake --build . --target check-mlir
 ```
 
@@ -68,3 +68,22 @@ cmake --build . --target check-mlir
 
 TBA
 
+### This project
+
+```shell
+# At the top-level directory 
+mkdir build
+cd build
+cmake .. \
+  -DCMAKE_BUILD_TYPE=DEBUG \
+  -DMLIR_DIR=$PWD/../llvm/build/lib/cmake/mlir \
+  -DLLVM_DIR=$PWD/../llvm/build/lib/cmake/llvm \
+  -DLLVM_ENABLE_ASSERTIONS=ON \
+  -DCMAKE_C_COMPILER=clang \
+  -DCMAKE_CXX_COMPILER=clang++ \
+  -DLLVM_EXTERNAL_LIT=${PWD}/../llvm/build/bin/llvm-lit \
+cmake --build . 
+
+# Unit tests
+cmake --build . --target check-phism
+```
