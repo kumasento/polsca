@@ -1,5 +1,7 @@
 # Phism: Polyhedral High-Level Synthesis in MLIR
 
+![Build and Test](https://github.com/kumasento/phism/workflows/Build%20and%20Test/badge.svg)
+
 ## Setup
 
 Install prerequisites for [MLIR/LLVM](https://mlir.llvm.org/getting_started/) and [Pluto](https://github.com/kumasento/pluto/blob/master/README.md).
