@@ -1,6 +1,10 @@
+get_property(dialect_libs GLOBAL PROPERTY MLIR_DIALECT_LIBS)
+get_property(conversion_libs GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
 set(LLVM_LINK_COMPONENTS
+  Core
   Support
-)
+  AsmParser
+  )
 
 add_llvm_tool(phism-opt
   phism-opt.cc
@@ -8,7 +12,8 @@ add_llvm_tool(phism-opt
 llvm_update_compile_flags(phism-opt)
 target_link_libraries(phism-opt
   PRIVATE
-  MLIRStandard
+  ${dialect_libs}
+  ${conversion_libs}
   MLIRLoopAnalysis
   MLIRAnalysis
   MLIRDialect
@@ -20,4 +25,6 @@ target_link_libraries(phism-opt
   MLIRTransformUtils
   MLIRSupport
   MLIRIR
+
+  PhismTransforms
   )

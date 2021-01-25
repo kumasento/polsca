@@ -5,7 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "phism/Transforms/Mem2PtrCall.h"
+
+#include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/Transforms/Passes.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/Pass/Pass.h"
@@ -22,33 +27,34 @@
 using namespace llvm;
 using namespace mlir;
 
-static cl::opt<std::string> inputFilename(cl::Positional,
-                                          cl::desc("<input file>"),
-                                          cl::init("-"));
+static cl::opt<std::string>
+    inputFilename(cl::Positional, cl::desc("<input file>"), cl::init("-"));
 
 static cl::opt<std::string> outputFilename("o", cl::desc("Output filename"),
                                            cl::value_desc("filename"),
                                            cl::init("-"));
 
-static cl::opt<bool> splitInputFile(
-    "split-input-file",
-    cl::desc("Split the input file into pieces and process each "
-             "chunk independently"),
-    cl::init(false));
+static cl::opt<bool>
+    splitInputFile("split-input-file",
+                   cl::desc("Split the input file into pieces and process each "
+                            "chunk independently"),
+                   cl::init(false));
 
-static cl::opt<bool> verifyDiagnostics(
-    "verify-diagnostics",
-    cl::desc("Check that emitted diagnostics match "
-             "expected-* lines on the corresponding line"),
-    cl::init(false));
+static cl::opt<bool>
+    verifyDiagnostics("verify-diagnostics",
+                      cl::desc("Check that emitted diagnostics match "
+                               "expected-* lines on the corresponding line"),
+                      cl::init(false));
 
-static cl::opt<bool> verifyPasses(
-    "verify-each", cl::desc("Run the verifier after each transformation pass"),
-    cl::init(true));
+static cl::opt<bool>
+    verifyPasses("verify-each",
+                 cl::desc("Run the verifier after each transformation pass"),
+                 cl::init(true));
 
-static cl::opt<bool> showDialects(
-    "show-dialects", cl::desc("Print the list of registered dialects"),
-    cl::init(false));
+static cl::opt<bool>
+    showDialects("show-dialects",
+                 cl::desc("Print the list of registered dialects"),
+                 cl::init(false));
 
 static cl::opt<bool> allowUnregisteredDialects(
     "allow-unregistered-dialect",
@@ -61,6 +67,7 @@ int main(int argc, char *argv[]) {
 
   // Register MLIR stuff
   registry.insert<StandardOpsDialect>();
+  registry.insert<LLVM::LLVMDialect>();
   registry.insert<mlir::AffineDialect>();
 
 // Register the standard passes we want.
@@ -68,7 +75,12 @@ int main(int argc, char *argv[]) {
   registerCanonicalizerPass();
   registerCSEPass();
   registerInlinerPass();
+
+  registerConvertStandardToLLVMPass();
+  LLVM::registerLLVMPasses();
+
   // Register phism specific passes.
+  phism::registerMem2PtrCallPass();
 
   // Register any pass manager command line options.
   registerMLIRContextCLOptions();
