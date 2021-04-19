@@ -1,14 +1,14 @@
 // RUN: phism-opt %s -convert-std-to-llvm -mem2ptr-call | FileCheck %s
 
 // CHECK-LABEL: func @multi_memrefs_and_results
-func @multi_memrefs_and_results(%A: memref<?xf32>, %B: memref<?xf32>) -> (f32, f32) {
+func @multi_memrefs_and_results(%A: memref<1xf32>, %B: memref<1xf32>) -> f32 {
   %c0 = constant 0 : index
 
-  %0 = load %A[%c0] : memref<?xf32>
+  %0 = load %A[%c0] : memref<1xf32>
   %1 = addf %0, %0 : f32
-  store %1, %B[%c0] : memref<?xf32>
+  store %1, %B[%c0] : memref<1xf32>
 
-  return %1, %0 : f32, f32
+  return %1 : f32
 
   // CHECK: %[[PTR0:.*]] = llvm.extractvalue 
   // CHECK-NEXT: %[[PTR1:.*]] = llvm.extractvalue 
