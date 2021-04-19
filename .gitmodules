@@ -1,9 +1,9 @@
 [submodule "polymer"]
 	path = polymer
-	url = git@github.com:kumasento/polymer
+	url = https://github.com/kumasento/polymer
 [submodule "llvm"]
 	path = llvm
-	url = https://github.com/llvm/llvm-project.git
+	url = https://github.com/wsmoses/MLIR-GPU
 [submodule "vitis-hls"]
 	path = vitis-hls
 	url = https://github.com/Xilinx/HLS
