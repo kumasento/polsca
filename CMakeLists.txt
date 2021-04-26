@@ -47,6 +47,7 @@ set(PHISM_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include" ) # --includedir
 set(PHISM_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 set(PHISM_BINARY_DIR "${CMAKE_BINARY_DIR}/bin")
 set(PHISM_TOOLS_DIR  "${CMAKE_BINARY_DIR}/bin")
+set(PHISM_LIBS_DIR   "${CMAKE_BINARY_DIR}/lib")
 
 list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
@@ -62,7 +63,5 @@ include_directories("${MLIR_INCLUDE_DIRS}")
 include_directories("${PROJECT_SOURCE_DIR}/include")
 include_directories("${PROJECT_BINARY_DIR}/include")
 
-# add_subdirectory(include/polymer)
-# add_subdirectory(lib)
-add_subdirectory(tools)
+add_subdirectory(lib)
 add_subdirectory(test)
