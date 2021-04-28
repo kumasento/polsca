@@ -48,7 +48,14 @@ cmake ../llvm \
   -DCMAKE_C_COMPILER=gcc \
   -DCMAKE_CXX_COMPILER=g++ \
   -DLLVM_ENABLE_PROJECTS="mlir;llvm;clang;clang-extra-tools" \
-  -DCMAKE_BUILD_TYPE=DEBUG
+  -DCMAKE_BUILD_TYPE=RELEASE \
+  -DLLVM_BUILD_EXAMPLES=OFF \
+  -DLLVM_TARGETS_TO_BUILD="host" \
+  -DLLVM_OPTIMIZED_TABLEGEN=ON \
+  -DLLVM_ENABLE_OCAMLDOC=OFF \
+  -DLLVM_ENABLE_BINDINGS=OFF \
+  -DLLVM_INSTALL_UTILS=ON \
+  -DLLVM_ENABLE_ASSERTIONS=ON
  
 # Run building
 cmake --build . --target all -- -j "$(nproc)"
