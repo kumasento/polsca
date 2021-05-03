@@ -10,6 +10,7 @@ target_link_libraries(phism-opt
   PRIVATE
   MLIRStandard
   MLIRLLVMIR
+  MLIRMath
   MLIRLoopAnalysis
   MLIRAnalysis
   MLIRDialect

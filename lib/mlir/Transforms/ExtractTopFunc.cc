@@ -85,6 +85,8 @@ struct ExtractTopFuncPass
     m.walk([&](FuncOp g) {
       if (!keep.contains(g))
         g.erase();
+      else // Enforce every extracted function to be public
+        g.setVisibility(SymbolTable::Visibility::Public);
     });
   }
 };

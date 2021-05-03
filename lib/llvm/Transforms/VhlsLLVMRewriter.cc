@@ -464,7 +464,7 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
     SmallVector<Instruction *, 4> GEPList;
     for (BasicBlock &BB : *NewFunc)
       for (Instruction &I : BB)
-        if (isa<GetElementPtrInst>(&I))
+        if (isa<GetElementPtrInst>(&I) && isa<Argument>(I.getOperand(0)))
           GEPList.push_back(&I);
 
     // Create new GEPs that use the ranked arrays and remove the old ones.
@@ -574,6 +574,28 @@ struct AnnotateXilinxAttributes : public ModulePass {
 
 } // namespace
 
+namespace {
+
+struct StripInvalidAttributes : public ModulePass {
+  static char ID; // Pass identification, replacement for typeid
+  StripInvalidAttributes() : ModulePass(ID) {}
+
+  bool runOnModule(Module &M) override {
+    // Here is the list of all supported attributes.
+    // https://github.com/llvm/llvm-project/blob/release%2F3.9.x/llvm/include/llvm/IR/Attributes.td
+    for (auto &F : M) {
+      F.removeFnAttr(Attribute::AttrKind::NoFree);
+      F.removeFnAttr(Attribute::AttrKind::NoSync);
+      F.removeFnAttr(Attribute::AttrKind::Speculatable);
+      F.removeFnAttr(Attribute::AttrKind::WillReturn);
+    }
+
+    return false;
+  }
+};
+
+} // namespace
+
 char ConvertMemRefToArray::ID = 0;
 static RegisterPass<ConvertMemRefToArray>
     X1("mem2ptr",
@@ -591,3 +613,8 @@ static RegisterPass<RenameBasicBlocksAndValues>
 char AnnotateXilinxAttributes::ID = 3;
 static RegisterPass<AnnotateXilinxAttributes>
     X4("xlnanno", "Annotate attributes for Xilinx HLS.");
+
+char StripInvalidAttributes::ID = 4;
+static RegisterPass<StripInvalidAttributes>
+    X5("strip-attr",
+       "Strip invalid function attributes not compatible with Clang 3.9.");

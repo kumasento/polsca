@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+
+# Polybench evaluation flow.
+#
+# Usage:
+#   ./pb-flow <polybench directory>
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+# ---------------------- GLOBALS --------------------------------
+TIMESTAMP="$(date "+%Y%m%d-%H%M%S")"
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd)"
+LLVM_DIR="${DIR}/../llvm"
+LLVM_BINDIR="${LLVM_DIR}/build/bin"
+LLVM_LIBDIR="${LLVM_DIR}/build/lib"
+PHISM_DIR="${DIR}/../"
+PHISM_BINDIR="${PHISM_DIR}/build/bin"
+PHISM_LIBDIR="${PHISM_DIR}/build/lib"
+
+export PATH="${LLVM_BINDIR}:${PATH}"
+export PATH="${PHISM_BINDIR}:${PATH}"
+
+POLYBENCH_DIR="${1}"
+if [ ! -d "${POLYBENCH_DIR}" ]; then
+  echo "Please pass in a valid polybench directory as #1 arg."
+  exit 1
+fi
+
+# ---------------------- FUNCTIONS ------------------------------
+
+# Get the top-level function name based on the src_file name.
+# The rule is simply <name>.c -> "kernel_<name>"
+function get_top_func() {
+  local src_file="${1}"
+  local src_name
+  src_name="$(basename "$(dirname "${src_file}")")"
+
+  echo "kernel_${src_name}" | tr '-' '_' # handles floyd-warshall, jacobi-1d, etc.
+}
+
+# Compile the source c file to MLIR using Polygeist.
+function compile_c_to_mlir() {
+  local src_file="${1}"
+  local dst_file="${src_file%.c}.mlir"
+
+  mlir-clang "${src_file}" \
+    -memref-fullrank \
+    -I="${LLVM_LIBDIR}/clang/13.0.0/include" \
+    -I="${POLYBENCH_DIR}/utilities" > "${dst_file}"
+
+  echo "${dst_file}"
+}
+
+# Extract the top function and all the stuff it calls.
+function extract_top_func_from_mlir() {
+  local src_file="${1}"
+  local dst_file="${src_file%.mlir}.kern.mlir"
+  local top_func
+  top_func="$(get_top_func "${src_file}")"
+
+  phism-opt "${src_file}" \
+    -extract-top-func="name=${top_func}" > "${dst_file}"
+
+  echo "${dst_file}"
+}
+
+function lower_mlir_to_llvm() {
+  local src_file="${1}"
+  local dst_file="${src_file%.mlir}.ll"
+
+  mlir-opt "${src_file}" \
+    -lower-affine \
+    -convert-scf-to-std \
+    -canonicalize \
+    -convert-std-to-llvm='use-bare-ptr-memref-call-conv=1' |\
+    mlir-translate -mlir-to-llvmir > "${dst_file}"
+
+  echo "${dst_file}"
+}
+
+# Call Phism LLVM passes.
+function opt_llvm_for_vitis() {
+  local src_file="${1}"
+  local dst_file="${src_file%.ll}.vitis.ll"
+  local top_func
+  top_func="$(get_top_func "${src_file}")"
+
+  "${LLVM_BINDIR}/opt" "${src_file}" \
+    -S \
+    -enable-new-pm=0 \
+    -load "${PHISM_LIBDIR}/VhlsLLVMRewriter.so" \
+    -strip-debug \
+    -strip-attr \
+    -mem2arr \
+    -instcombine \
+    -xlnname \
+    -xlnanno -xlntop="${top_func}" \
+    > "${dst_file}"
+  
+  echo "${dst_file}"
+}
+
+# Generate dummy C source.
+function gen_dummy_c() {
+  local src_file="${1}"
+  local src_base
+  local top_func
+  local dst_file
+
+  src_base="$(basename "$(dirname "${src_file}")")"
+  dst_file="$(dirname "${src_file}")/${src_base}.dummy.c"
+  top_func="$(get_top_func "${src_file}")"
+
+cat <<EOF > "${dst_file}"
+void ${top_func}() {}
+EOF
+
+  echo "${dst_file}"
+}
+
+# Generate the run_hls.tcl file
+function gen_vitis_tcl() {
+  local src_file="${1}"
+  local src_base
+  local dst_file
+  local top_func
+  local dummy_c_src
+
+  src_base="$(basename "$(dirname "${src_file}")")"
+  dst_file="$(dirname "${src_file}")/run_hls.tcl"
+  top_func="$(get_top_func "${src_file}")"
+  dummy_c_src="$(gen_dummy_c "${src_file}")"
+
+cat <<EOF > "${dst_file}"
+open_project -reset proj
+add_files ${dummy_c_src}
+set_top ${top_func}
+
+open_solution -reset solution1
+set_part "zynq"
+create_clock -period "75MHz"
+
+set ::LLVM_CUSTOM_CMD {\$LLVM_CUSTOM_OPT -mem2reg ${src_file} -o \$LLVM_CUSTOM_OUTPUT}
+
+csynth_design
+exit
+EOF
+
+  echo "${dst_file}"
+}
+
+# Run Vitis.
+function run_vitis() {
+  local src_file="${1}"
+  local src_dir
+  
+  src_dir="$(dirname "${src_file}")"
+
+  cd "${src_dir}"
+  vitis_hls "${src_file}" &>/dev/null
+
+  local status=$?
+
+  cd - >/dev/null
+
+  echo "${status}"
+}
+
+# Evaluate a single C source file. This is the Phism pipeline btw.
+function eval_file() {
+  local src_file="${1}"
+
+  printf ">> Evaluating source file: %s ..." "${src_file}"
+
+  local mlir_src_file
+  local kern_src_file
+
+  mlir_src_file="$(compile_c_to_mlir "${src_file}")"
+  kern_src_file="$(extract_top_func_from_mlir "${mlir_src_file}")"
+  llvm_src_file="$(lower_mlir_to_llvm "${kern_src_file}")"
+  vitis_src_file="$(opt_llvm_for_vitis "${llvm_src_file}")"
+  vitis_tcl_file="$(gen_vitis_tcl "${vitis_src_file}")"
+
+  local status
+  status="$(run_vitis "${vitis_tcl_file}")"
+
+  if [[ "${status}" = "0" ]]; then
+    echo " SUCCESS"
+  else
+    echo " FAILED"
+  fi
+}
+
+# Evaluate through every C source file in the provided directory.
+function eval_dir() {
+  local src_dir="${1}"
+
+  find "${src_dir}" -name "*.c" -print0 |
+    while IFS= read -r -d '' line; do 
+      if [[ "${line}" == *"utilities"* ]]; then
+        # Files under the utilities directory are ignored.
+        continue
+      fi
+
+      if [[ "${line}" == *"Nussinov.orig.c" ]]; then
+        # A special case: Nussinov.orig.c won't be included.
+        continue
+      fi
+
+      eval_file "${line}"
+    done
+}
+
+# Copy source files from the SOURCE_DIR ($1) to a temporary place in the OUTPUT_DIR ($2).
+function copy_source_files() {
+  local src_dir="$1"
+  local dst_dir="$2"
+
+  mkdir -p "${dst_dir}"
+
+  echo ""
+  echo ">> Copying source files from ${src_dir} to ${dst_dir} ..."
+
+  cp -r "${src_dir}"/* "${dst_dir}"
+
+  echo ""
+}
+
+# Main entry.
+function main() {
+  local polybench_dir="${1}"
+  local tmp_dir="/tmp/phism/pb-flow.${TIMESTAMP}"
+
+  # Welcome messages.
+  echo ""
+  echo "    Polybench Evaluation Flow    "
+  echo ""
+  echo "Setup:"
+  echo "  TIMESTAMP:     ${TIMESTAMP}"
+  echo "  POLYBENCH_DIR: ${polybench_dir}"
+  echo "  WORKING_DIR:   ${tmp_dir}"
+  echo ""
+
+  copy_source_files "${polybench_dir}" "${tmp_dir}"
+  eval_dir "${tmp_dir}"
+}
+
+# ----------------------- MAIN -------------------------
+
+main "${POLYBENCH_DIR}"

@@ -1,0 +1,6 @@
+*.swp
+*.so
+*.o
+*.log
+*/*.log
+*/proj/
