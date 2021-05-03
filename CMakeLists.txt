@@ -41,7 +41,7 @@ set(LLVM_LIT_ARGS "${LIT_ARGS_DEFAULT}" CACHE STRING "Default options for lit")
 # ------------------------------------------------- Dependencies
 
 # ------------------------------------------------- This project
-set(PHISM_MAIN_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include" ) # --src-root
+set(PHISM_MAIN_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include" ) # --src-root
 set(PHISM_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include" ) # --includedir
 
 set(PHISM_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -65,3 +65,4 @@ include_directories("${PROJECT_BINARY_DIR}/include")
 
 add_subdirectory(lib)
 add_subdirectory(test)
+add_subdirectory(tools)

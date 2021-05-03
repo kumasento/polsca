@@ -50,7 +50,6 @@ tools = [
     'opt',
     'mlir-opt',
     'mlir-translate',
-    # 'phism-opt',
-    # 'phism-translate'
+    'phism-opt',
 ]
 llvm_config.add_tool_substitutions(tools, tool_dirs)

@@ -7,3 +7,6 @@
 [submodule "vitis-hls"]
 	path = vitis-hls
 	url = https://github.com/Xilinx/HLS
+[submodule "example/polybench"]
+	path = example/polybench
+	url = git@github.com:MatthiasJReisinger/PolyBenchC-4.2.1.git
