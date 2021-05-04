@@ -581,13 +581,67 @@ struct StripInvalidAttributes : public ModulePass {
   StripInvalidAttributes() : ModulePass(ID) {}
 
   bool runOnModule(Module &M) override {
-    // Here is the list of all supported attributes.
+    // Here is the list of all supported attributes. Note that not all the
+    // differences are covered.
     // https://github.com/llvm/llvm-project/blob/release%2F3.9.x/llvm/include/llvm/IR/Attributes.td
     for (auto &F : M) {
       F.removeFnAttr(Attribute::AttrKind::NoFree);
       F.removeFnAttr(Attribute::AttrKind::NoSync);
       F.removeFnAttr(Attribute::AttrKind::Speculatable);
       F.removeFnAttr(Attribute::AttrKind::WillReturn);
+    }
+
+    return false;
+  }
+};
+
+} // namespace
+
+/// Rewrite fneg to fsub, e.g., %1 = fneg double %0 will be rewritten to
+/// %1 = fsub double -0.000000e+00, %0
+static Instruction *rewriteFNegToFSub(Instruction &I) {
+  assert(I.getOpcode() == Instruction::FNeg && "OpCode should be FNeg.");
+
+  Value *Operand = I.getOperand(0);
+  Type *OperandTy = Operand->getType();
+  assert(OperandTy->isFloatingPointTy() &&
+         "The operand to fneg should be floating point.");
+
+  // NOTE: The zero created here is negative.
+  Value *NegZero = ConstantFP::get(
+      I.getContext(),
+      APFloat::getZero(OperandTy->getFltSemantics(), /*Negative=*/true));
+
+  std::string NIName = I.getName().str() + ".sub";
+  Instruction *NI = BinaryOperator::Create(Instruction::BinaryOps::FSub,
+                                           NegZero, Operand, "", &I);
+  I.replaceAllUsesWith(NI);
+
+  return NI;
+}
+
+namespace {
+
+/// Rewrite some math instructions to work together with Vitis.
+struct XilinxRewriteMathInstPass : public ModulePass {
+  static char ID;
+  XilinxRewriteMathInstPass() : ModulePass(ID) {}
+
+  bool runOnModule(Module &M) override {
+    SmallVector<Instruction *, 4> ToErase;
+
+    for (auto &F : M)
+      for (auto &BB : F)
+        for (auto &I : BB) {
+          if (isa<UnaryInstruction>(I) && I.getOpcode() == Instruction::FNeg) {
+            rewriteFNegToFSub(I);
+            ToErase.push_back(&I);
+          }
+        }
+
+    for (Instruction *I : ToErase) {
+      assert(I->use_empty() && "Inst to be erased should have empty use.");
+      I->eraseFromParent();
     }
 
     return false;
@@ -618,3 +672,7 @@ char StripInvalidAttributes::ID = 4;
 static RegisterPass<StripInvalidAttributes>
     X5("strip-attr",
        "Strip invalid function attributes not compatible with Clang 3.9.");
+
+char XilinxRewriteMathInstPass::ID = 5;
+static RegisterPass<XilinxRewriteMathInstPass>
+    X6("xlnmath", "Rewrite math instructions for Xilinx Vitis.");

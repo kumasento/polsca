@@ -92,11 +92,12 @@ function opt_llvm_for_vitis() {
     -enable-new-pm=0 \
     -load "${PHISM_LIBDIR}/VhlsLLVMRewriter.so" \
     -strip-debug \
-    -strip-attr \
     -mem2arr \
     -instcombine \
+    -xlnmath \
     -xlnname \
     -xlnanno -xlntop="${top_func}" \
+    -strip-attr \
     > "${dst_file}"
   
   echo "${dst_file}"
