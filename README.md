@@ -10,7 +10,7 @@
 
 The operating system we target is Linux, specifically, we test Phism on Ubuntu 20.04 and CentOS 7.6.
 
-#### Vitis
+#### Xilinx Vitis 2020.2
 
 > Please ensure you follow these steps carefully. They are necessary for working seamlessly with the toolchain encapsulated within Vitis. You may hit unexpected linking issue if the environment is not properly set.
 
