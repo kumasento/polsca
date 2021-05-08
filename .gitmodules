@@ -1,12 +1,6 @@
-[submodule "polymer"]
-	path = polymer
-	url = https://github.com/kumasento/polymer
 [submodule "llvm"]
 	path = llvm
-	url = https://github.com/wsmoses/MLIR-GPU
-[submodule "vitis-hls"]
-	path = vitis-hls
-	url = https://github.com/Xilinx/HLS
+	url = https://github.com/wsmoses/Polygeist
 [submodule "example/polybench"]
 	path = example/polybench
 	url = git@github.com:MatthiasJReisinger/PolyBenchC-4.2.1.git
