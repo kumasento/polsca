@@ -15,6 +15,12 @@ test-docker:
 shell:
 	docker run -it -v $(shell pwd):/workspace -v $(vhls):/tools phism20:latest /bin/bash
 
+test-polybench:
+	./scripts/pb-flow ./example/polybench
+
+test-polybench-polymer:
+	./scripts/pb-flow ./example/polybench 1
+
 build_:
 	set -e # Abort if one of the commands fail
 	mkdir -p $(phism)/llvm/build
