@@ -55,7 +55,9 @@ cmake ../llvm \
   -DLLVM_ENABLE_OCAMLDOC=OFF \
   -DLLVM_ENABLE_BINDINGS=OFF \
   -DLLVM_INSTALL_UTILS=ON \
-  -DLLVM_ENABLE_ASSERTIONS=ON
+  -DLLVM_ENABLE_ASSERTIONS=ON \
+  -DBUILD_POLYMER=ON \
+  -DPLUTO_LIBCLANG_PREFIX="$(llvm-config --prefix)"
  
 # Run building
 cmake --build . --target all -- -j "$(nproc)"

@@ -51,6 +51,20 @@ gcc --version
 
 You should also install your own [CMake](https://cmake.org/download/). Version 3.13.4 is the minimum required to work with the latest LLVM.
 
+#### LLVM toolchain
+
+It might sound weird since we will build LLVM by our own hands later, but Pluto, a polyhedral optimization package that we depends on, specifically needs an LLVM version lower than 10, which is much lower than the version we're going to build (at the time of writing this doc, the LLVM we will build is 13).
+
+It is not that hard to have an older LLVM: just go to your package manager and install the LLVM it provides by default. Typically, you need this one-liner on Ubuntu: 
+
+```sh
+sudo apt-get install -y libclang-dev
+```
+
+> You may notice the exact package we install is not "llvm", but "libclang-dev". It is because Pluto needs the LibClang (the clang library) and the FileCheck tool from LLVM, and we can simply install this `libclang-dev` package to install both of them.
+
+After that (you may need to relaunch your terminal), do check if you have `FileCheck` and `llvm-config` command available (just type `FileCheck` and `llvm-config` in your terminal and see if any error appears). Also, verify what `llvm-config --version` shows is a version below 10.
+
 ### Install LLVM
 
 Just run the following script. It should take care of everything you need to install the [llvm](llvm) shipped with Phism.
