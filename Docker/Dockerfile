@@ -10,7 +10,7 @@ RUN DEBIAN_FRONTEND="noninteractive" apt-get -y install tzdata --assume-yes
 
 # Install Essential Packages
 RUN apt-get update
-RUN apt-get install build-essential libtool autoconf pkg-config flex bison libgmp-dev clang-9 libclang-9-dev texinfo cmake vim ninja-build git --assume-yes
+RUN apt-get install build-essential libtool autoconf pkg-config flex bison libgmp-dev clang-9 libclang-9-dev texinfo cmake vim ninja-build git libncurses5 --assume-yes
 
 RUN update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-9 100
 RUN update-alternatives --install /usr/bin/FileCheck FileCheck /usr/bin/FileCheck-9 100
