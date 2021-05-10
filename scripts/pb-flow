@@ -15,12 +15,14 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd)"
 LLVM_DIR="${DIR}/../llvm"
 LLVM_BINDIR="${LLVM_DIR}/build/bin"
 LLVM_LIBDIR="${LLVM_DIR}/build/lib"
+PLUTO_LIBDIR="${LLVM_DIR}/build/tools/mlir/tools/polymer/pluto/lib"
 PHISM_DIR="${DIR}/../"
 PHISM_BINDIR="${PHISM_DIR}/build/bin"
 PHISM_LIBDIR="${PHISM_DIR}/build/lib"
 
 export PATH="${LLVM_BINDIR}:${PATH}"
 export PATH="${PHISM_BINDIR}:${PATH}"
+export LD_LIBRARY_PATH="${LLVM_LIBDIR}:${PLUTO_LIBDIR}:${PHISM_LIBDIR}:${LD_LIBRARY_PATH}"
 
 # ------------------------- CLI ---------------------------------
 # TODO: use getopts
