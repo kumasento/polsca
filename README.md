@@ -47,3 +47,5 @@ It should run the Phism regression test in the end. And if all the tests passed,
 [pb-flow](scripts/pb-flow) provides a CLI utility to test Phism with Polybench examples. You can grab a rough idea about the whole Phism pipeline over there.
 
 More usage info will be added later.
+
+This [doc](docs/DOCKER.md) gives an introduction on how to run Phism with docker.
