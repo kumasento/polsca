@@ -22,11 +22,15 @@ PHISM_LIBDIR="${PHISM_DIR}/build/lib"
 export PATH="${LLVM_BINDIR}:${PATH}"
 export PATH="${PHISM_BINDIR}:${PATH}"
 
+# ------------------------- CLI ---------------------------------
+# TODO: use getopts
 POLYBENCH_DIR="${1}"
 if [ ! -d "${POLYBENCH_DIR}" ]; then
   echo "Please pass in a valid polybench directory as #1 arg."
   exit 1
 fi
+
+ENABLE_POLYMER="${2:-0}"
 
 # ---------------------- FUNCTIONS ------------------------------
 
@@ -66,12 +70,32 @@ function extract_top_func_from_mlir() {
   echo "${dst_file}"
 }
 
+# Optimize MLIR code by Polymer.
+function polymer_opt() {
+  local src_file="${1}"
+  local dst_file="${src_file%.mlir}.plm.mlir"
+
+  if [[ ${ENABLE_POLYMER} -eq 1 ]]; then
+    polymer-opt "${src_file}" \
+      -reg2mem \
+      -insert-redundant-load \
+      -extract-scop-stmt \
+      -pluto-opt \
+      -inline 2>/dev/null > "${dst_file}"
+  else
+    cp "${src_file}" "${dst_file}"
+  fi
+
+  echo "${dst_file}"
+}
+
 function lower_mlir_to_llvm() {
   local src_file="${1}"
   local dst_file="${src_file%.mlir}.ll"
 
   mlir-opt "${src_file}" \
     -lower-affine \
+    -inline \
     -convert-scf-to-std \
     -canonicalize \
     -convert-std-to-llvm='use-bare-ptr-memref-call-conv=1' |\
@@ -86,6 +110,11 @@ function opt_llvm_for_vitis() {
   local dst_file="${src_file%.ll}.vitis.ll"
   local top_func
   top_func="$(get_top_func "${src_file}")"
+
+  # Polymer optimized functions have an _opt suffix.
+  if [[ ${ENABLE_POLYMER} -eq 1 ]]; then
+    top_func="${top_func}_opt"
+  fi
 
   "${LLVM_BINDIR}/opt" "${src_file}" \
     -S \
@@ -114,6 +143,11 @@ function gen_dummy_c() {
   dst_file="$(dirname "${src_file}")/${src_base}.dummy.c"
   top_func="$(get_top_func "${src_file}")"
 
+  # Polymer optimized functions have an _opt suffix.
+  if [[ ${ENABLE_POLYMER} -eq 1 ]]; then
+    top_func="${top_func}_opt"
+  fi
+
 cat <<EOF > "${dst_file}"
 void ${top_func}() {}
 EOF
@@ -133,6 +167,11 @@ function gen_vitis_tcl() {
   dst_file="$(dirname "${src_file}")/run_hls.tcl"
   top_func="$(get_top_func "${src_file}")"
   dummy_c_src="$(gen_dummy_c "${src_file}")"
+
+  # Polymer optimized functions have an _opt suffix.
+  if [[ ${ENABLE_POLYMER} -eq 1 ]]; then
+    top_func="${top_func}_opt"
+  fi
 
 cat <<EOF > "${dst_file}"
 open_project -reset proj
@@ -180,7 +219,8 @@ function eval_file() {
 
   mlir_src_file="$(compile_c_to_mlir "${src_file}")"
   kern_src_file="$(extract_top_func_from_mlir "${mlir_src_file}")"
-  llvm_src_file="$(lower_mlir_to_llvm "${kern_src_file}")"
+  poly_src_file="$(polymer_opt "${kern_src_file}")"
+  llvm_src_file="$(lower_mlir_to_llvm "${poly_src_file}")"
   vitis_src_file="$(opt_llvm_for_vitis "${llvm_src_file}")"
   vitis_tcl_file="$(gen_vitis_tcl "${vitis_src_file}")"
 
