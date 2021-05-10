@@ -41,7 +41,7 @@ CC=gcc CXX=g++ cmake ../llvm \
   -DLLVM_INSTALL_UTILS=ON \
   -DLLVM_ENABLE_ASSERTIONS=ON \
   -DBUILD_POLYMER=ON \
-  -DPLUTO_LIBCLANG_PREFIX="$(/usr/bin/llvm-config --prefix)"
+  -DPLUTO_LIBCLANG_PREFIX="$(llvm-config --prefix)"
  
 # Run building
 cmake --build . --target all -- -j "$(nproc)"
