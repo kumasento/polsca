@@ -119,18 +119,5 @@ jobs:
       # --------
       - name: Build and Test Phism (Assert)
         run: |
-          mkdir build
-          cd build
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DLLVM_ENABLE_ASSERTIONS=ON \
-            -DMLIR_DIR=${PWD}/../llvm/build/lib/cmake/mlir/ \
-            -DLLVM_DIR=${PWD}/../llvm/build/lib/cmake/llvm/ \
-            -DCMAKE_C_COMPILER=clang-9 \
-            -DCMAKE_CXX_COMPILER=clang++-9 \
-            -DLLVM_EXTERNAL_LIT=${PWD}/../llvm/build/bin/llvm-lit \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-          cmake --build . --target check-phism
-
-
+          ./scripts/build-phism.sh ci
 
