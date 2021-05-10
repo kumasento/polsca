@@ -28,5 +28,4 @@ RUN echo "dev-user     ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 USER dev-user
 
 RUN echo 'PATH=$PATH:/workspace/llvm/build/bin:/workspace/build/bin:/tools/Vitis_HLS/2020.2/bin' >> /home/dev-user/.bashrc
-RUN echo 'LD_LIBRARY_PATH=/workspace/build/pluto/lib:$LD_LIBRARY_PATH' >> /home/dev-user/.bashrc
 WORKDIR workspace
