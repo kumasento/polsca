@@ -15,26 +15,12 @@ TARGET="${1:-"local"}"
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
 if [ "${TARGET}" == "local" ]; then
-
-  # Check whether XILINX_HLS is there.
-  if [ -z "${XILINX_HLS}" ]; then
-    echo "XILINX_HLS is empty. Have you forgotten 'source VITIS_HLS/settings64.sh'?"
-    exit 1
-  fi
-
-  # First, we check if the toolchain is right.
-  GCC_PATH="$(which gcc)"
-  if [ "${GCC_PATH}" != "${XILINX_HLS}/tps/lnx64/gcc-6.2.0/bin/gcc" ]; then
-    echo "You should point gcc to the version inside Vitis."
-    echo "Have you forgotten to 'source scripts/setup-vitis-hls-llvm.sh'?"
-    exit 1
-  fi
-
+  "${DIR}/check-vitis.sh" || { echo "Xilinx Vitis check failed."; exit 1; }
 fi
 
 # Make sure llvm submodule is up-to-date.
 git submodule sync
-git submodule update --init
+git submodule update --init --recursive
 
 # Go to the llvm directory and carry out installation.
 LLVM_DIR="${DIR}/../llvm"
@@ -44,9 +30,7 @@ mkdir -p build
 cd build
 
 # Configure CMake
-cmake ../llvm \
-  -DCMAKE_C_COMPILER=gcc \
-  -DCMAKE_CXX_COMPILER=g++ \
+CC=gcc CXX=g++ cmake ../llvm \
   -DLLVM_ENABLE_PROJECTS="mlir;llvm;clang;clang-extra-tools" \
   -DCMAKE_BUILD_TYPE=RELEASE \
   -DLLVM_BUILD_EXAMPLES=OFF \
