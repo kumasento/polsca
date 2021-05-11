@@ -173,18 +173,58 @@ function gen_vitis_tcl() {
     top_func="${top_func}_opt"
   fi
 
-cat <<EOF > "${dst_file}"
+  # Synthesis script
+  cat <<EOF > "${dst_file}"
 open_project -reset proj
 add_files ${dummy_c_src}
 set_top ${top_func}
 
 open_solution -reset solution1
 set_part "zynq"
-create_clock -period "75MHz"
+create_clock -period "100MHz"
 
 set ::LLVM_CUSTOM_CMD {\$LLVM_CUSTOM_OPT -mem2reg ${src_file} -o \$LLVM_CUSTOM_OUTPUT}
 
+config_bind -effort high
 csynth_design
+
+exit
+EOF
+
+  echo "${dst_file}"
+
+  # Testbench generation script / C baseline
+  # TODO: add another file name
+  cat <<EOF > "${dst_file}"
+open_project -reset tb
+# TODO: change to  C files
+# add_files ../dct_src/dct.cpp
+# add_files -tb ../dct_src/out.golden.dat -cflags "-Wno-unknown-pragmas" -csimflags "-Wno-unknown-pragmas"
+set_top ${top_func}
+
+open_solution -reset solution1
+set_part "zynq"
+create_clock -period "100MHz"
+config_bind -effort high
+
+csim_design
+csynth_design
+cosim_design
+
+exit
+EOF
+
+  echo "${dst_file}"
+
+  # Co-simulation script
+  # TODO: add another file name
+  cat <<EOF > "${dst_file}"
+open_project tb
+
+open_solution -reset solution1
+
+cosim_design
+
 exit
 EOF
 
@@ -200,6 +240,24 @@ function run_vitis() {
 
   cd "${src_dir}"
   vitis_hls "${src_file}" &>/dev/null
+
+  # Generate test bench
+  # TODO: Make sure files are correct...
+  vitis_hls "${src_file}" &>/dev/null
+  cp proj/solution1/sim/verilog/*.v* tb/solution1/sim/verilog/
+  
+  # Run co-simulation
+  vitis_hls "${src_file}" &>/dev/null
+  # if "*** C/RTL co-simulation finished: FAIL ***" in vitis_hls.log then
+  # report error
+  # else if "*** C/RTL co-simulation finished: PASS ***" in vitis_hls.log then
+  # success
+  # else
+  # something went wrong...
+
+  # Read time from vitis_hls.log
+  # e.g. $finish called at time : 13920290 ps
+  # JC: there is a formula to convert this to cycles, but I do not remember now - it should be OK for now
 
   local status=$?
 
