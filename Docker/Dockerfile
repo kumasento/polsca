@@ -10,7 +10,7 @@ RUN DEBIAN_FRONTEND="noninteractive" apt-get -y install tzdata --assume-yes
 
 # Install Essential Packages
 RUN apt-get update
-RUN apt-get install build-essential libtool autoconf pkg-config flex bison libgmp-dev clang-9 libclang-9-dev texinfo cmake vim ninja-build git libncurses5 --assume-yes
+RUN apt-get install build-essential libtool autoconf pkg-config flex bison libgmp-dev clang-9 libclang-9-dev texinfo cmake vim ninja-build git libncurses5 gcc-multilib --assume-yes
 
 RUN update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-9 100
 RUN update-alternatives --install /usr/bin/FileCheck FileCheck /usr/bin/FileCheck-9 100
@@ -28,4 +28,5 @@ RUN echo "dev-user     ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 USER dev-user
 
 RUN echo 'PATH=$PATH:/workspace/llvm/build/bin:/workspace/build/bin:/tools/Vitis_HLS/2020.2/bin' >> /home/dev-user/.bashrc
+RUN echo 'export LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LIBRARY_PATH' >> /home/dev-user/.bashrc
 WORKDIR workspace

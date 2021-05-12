@@ -12,7 +12,7 @@ build-docker: test-docker
 # Clone submodule and build docker container
 test-docker:
 	git submodule update --init --recursive
-	(cd Docker; docker build --build-arg UID=$(user) --build-arg GID=$(group) . --tag phism20)
+	(cd Docker; docker build --no-cache --build-arg UID=$(user) --build-arg GID=$(group) . --tag phism20)
 
 # Enter docker container
 shell:
