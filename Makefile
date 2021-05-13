@@ -20,11 +20,11 @@ shell:
 
 # Evaluate polybench (baseline) - need to be used in environment
 test-polybench:
-	./scripts/pb-flow ./example/polybench 2>&1 | tee phism-test.log
+	./scripts/pb-flow ./example/polybench -c COSIM 2>&1 | tee phism-test.log
 
 # Evaluate polybench (polymer) - need to be used in environment
 test-polybench-polymer:
-	./scripts/pb-flow ./example/polybench 1 2>&1 | tee phism-test.log
+	./scripts/pb-flow ./example/polybench -p USE POLYMER -c COSIM  2>&1 | tee phism-test.log
 
 # Build LLVM and Phism
 build_:
