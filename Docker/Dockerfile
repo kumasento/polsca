@@ -29,4 +29,5 @@ USER dev-user
 
 RUN echo 'PATH=$PATH:/workspace/llvm/build/bin:/workspace/build/bin:/tools/Vitis_HLS/2020.2/bin' >> /home/dev-user/.bashrc
 RUN echo 'export LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LIBRARY_PATH' >> /home/dev-user/.bashrc
+RUN echo 'export LD_LIBRARY_PATH=""' >> /home/dev-user/.bashrc
 WORKDIR workspace
