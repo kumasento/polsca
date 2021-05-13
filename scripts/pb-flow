@@ -5,7 +5,6 @@
 # Usage:
 #   ./pb-flow <polybench directory>
 
-set -x
 set -o errexit
 set -o pipefail
 set -o nounset
@@ -245,24 +244,32 @@ function run_vitis() {
   src_dir="$(dirname "${src_file}")"
 
   cd "${src_dir}"
+
+  set -x
+
   # Synthesize for Phism
   vitis_hls "${dst_file}" &> "${src_dir}"/vhls.syn.log
 
   # Generate test bench
   vitis_hls "${dst_tb_file}" &> "${src_dir}"/vhls.tbgen.log
-  
+  if grep -q "*** C/RTL co-simulation finished: FAIL ***" "${src_dir}"/vhls.tbgen.log; then
+    echo "*** C/RTL co-simulation finished: C BASELINE - FAIL ***"
+  elif ! grep -q "*** C/RTL co-simulation finished: PASS ***" "${src_dir}"/vhls.tbgen.log; then
+    echo "*** C/RTL co-simulation failed: C BASELINE - UNKNOWN ERROR ***"
+  fi
+
   # Copy the kernel from Phism to the test bench
   cp "${src_dir}"/proj/solution1/syn/verilog/*.v* "${src_dir}"/tb/solution1/sim/verilog/
   
   # Run co-simulation
   vitis_hls "${dst_cosim_file}" &> "${src_dir}"/vhls.cosim.log
-  if grep -q "*** C/RTL co-simulation finished: FAIL ***" "${src_dir}"/vhls.cosim.log; then
+  if grep -q "*** C/RTL co-simulation finished: PHISM - FAIL ***" "${src_dir}"/vhls.cosim.log; then
     echo "*** C/RTL co-simulation finished: FAIL ***"
-    exit 1
-  elif ! grep -q "*** C/RTL co-simulation finished: FAIL ***" "${src_dir}"/vhls.cosim.log; then
-    echo "*** C/RTL co-simulation failed: UNKNOWN ERROR ***"
-    exit 1
+  elif ! grep -q "*** C/RTL co-simulation finished: PASS ***" "${src_dir}"/vhls.cosim.log; then
+    echo "*** C/RTL co-simulation failed: PHISM - UNKNOWN ERROR ***"
   fi
+
+  set +x
 
   # Read time from vitis_hls.log
   # e.g. $finish called at time : 13920290 ps
