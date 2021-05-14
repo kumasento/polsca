@@ -64,7 +64,6 @@ jobs:
     needs: build-llvm
     runs-on: self-hosted
     steps:
-
       # Clone the Phism repo and its submodules. Do shallow clone to save clone
       # time.
       - name: Get Phism

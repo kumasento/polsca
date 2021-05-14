@@ -2,7 +2,6 @@
 
 [![Build and Test](https://github.com/kumasento/phism/actions/workflows/buildAndTest.yml/badge.svg)](https://github.com/kumasento/phism/actions/workflows/buildAndTest.yml)
 
-<<<<<<< HEAD
 ## What is Phism?
 
 Phism is an HLS tool: it transforms C programs to hardware designs.
@@ -19,16 +18,6 @@ Please find how to setup the prerequisites [here](docs/PREREQUISITES.md).
 
 ### Build LLVM
 
-=======
-## How to build?
-
-### Prerequisites 
-
-Please find how to setup the prerequisites [here](docs/PREREQUISITES.md).
-
-### Build LLVM
-
->>>>>>> 3483377... Updated docs and scripts
 After that, the first thing you need to do is building the [Polygeist](wsmoses/Polygeist) submodule (with name `llvm`). Make sure you have it cloned:
 
 ```sh
