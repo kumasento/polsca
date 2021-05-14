@@ -36,3 +36,6 @@ build/
 
 # Editor
 .vscode/
+
+# Temporary output
+/tmp*

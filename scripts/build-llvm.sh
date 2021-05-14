@@ -31,7 +31,7 @@ cd build
 
 # Configure CMake
 CC=gcc CXX=g++ cmake ../llvm \
-  -DLLVM_ENABLE_PROJECTS="mlir;llvm;clang;clang-extra-tools" \
+  -DLLVM_ENABLE_PROJECTS="mlir;llvm;clang" \
   -DCMAKE_BUILD_TYPE=RELEASE \
   -DLLVM_BUILD_EXAMPLES=OFF \
   -DLLVM_TARGETS_TO_BUILD="host" \

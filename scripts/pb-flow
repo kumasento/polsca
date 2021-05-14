@@ -11,9 +11,9 @@ set -o nounset
 
 # ---------------------- GLOBALS --------------------------------
 TIMESTAMP="$(date "+%Y%m%d-%H%M%S")"
-WORKDIR="/tmp/phism/pb-flow.${TIMESTAMP}"
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd)"
+WORKDIR="${DIR}/../tmp/phism/pb-flow.${TIMESTAMP}"
 LLVM_DIR="${DIR}/../llvm"
 LLVM_BINDIR="${LLVM_DIR}/build/bin"
 LLVM_LIBDIR="${LLVM_DIR}/build/lib"
