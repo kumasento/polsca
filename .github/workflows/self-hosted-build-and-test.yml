@@ -117,11 +117,11 @@ jobs:
     steps:
       - name: Run Synth (without Polymer)
         run: |
-          ./scripts/pb-flow ./examples/polybench -d
+          ./scripts/pb-flow ./example/polybench -d
 
       - name: Run Synth (with Polymer)
         run: |
-          ./scripts/pb-flow ./examples/polybench -pd
+          ./scripts/pb-flow ./example/polybench -pd
 
   run-pb-cosim:
     name: CoSim Polybench examples 
@@ -131,8 +131,8 @@ jobs:
     steps:
       - name: Run CoSim (without Polymer)
         run: |
-          ./scripts/pb-flow ./examples/polybench -dc
+          ./scripts/pb-flow ./example/polybench -dc
 
       - name: Run CoSim (with Polymer)
         run: |
-          ./scripts/pb-flow ./examples/polybench -pdc
+          ./scripts/pb-flow ./example/polybench -pdc
