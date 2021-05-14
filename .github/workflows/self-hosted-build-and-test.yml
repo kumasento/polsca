@@ -1,6 +1,6 @@
 # This is a basic workflow to help you get started with Actions
 
-name: Build and Test
+name: Self-hosted Build and Test
 
 # Controls when the action will run. Triggers the workflow on push or pull request
 # events but only for the master branch
@@ -64,18 +64,7 @@ jobs:
     needs: build-llvm
     runs-on: self-hosted
     steps:
-      # - name: Configure Environment
-      #   run: echo "${GITHUB_WORKSPACE}/llvm/install/bin" >> $GITHUB_PATH
-      # - name: Get dependences
-      #   run: |
-      #     sudo apt-get update -y
-      #     sudo apt-get install -y build-essential libtool autoconf pkg-config flex bison libgmp-dev clang-9 libclang-9-dev texinfo
-      # - name: Update the LLVM/Clang version to 9
-      #   run: |
-      #     sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-9 100
-      #     sudo update-alternatives --install /usr/bin/FileCheck FileCheck /usr/bin/FileCheck-9 100
-          
-     
+
       # Clone the Phism repo and its submodules. Do shallow clone to save clone
       # time.
       - name: Get Phism
