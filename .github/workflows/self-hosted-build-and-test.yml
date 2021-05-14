@@ -60,7 +60,7 @@ jobs:
 
   # Build Phism and run its tests.
   build-phism:
-    name: Build and Test Phism
+    name: Build Phism
     needs: build-llvm
     runs-on: self-hosted
     steps:
@@ -103,9 +103,36 @@ jobs:
           ./scripts/build-llvm.sh ci
 
       # --------
-      # Build and test Phism in both debug and release mode.
+      # Build Phism in debug mode.
       # --------
-      - name: Build and Test Phism (Assert)
+      - name: Build Phism
         run: |
           ./scripts/build-phism.sh ci
 
+  run-pb-synth:
+    name: Synthesize Polybench examples 
+    needs: build-phism
+    runs-on: self-hosted
+
+    steps:
+      - name: Run Synth (without Polymer)
+        run: |
+          ./scripts/pb-flow ./examples/polybench -d
+
+      - name: Run Synth (with Polymer)
+        run: |
+          ./scripts/pb-flow ./examples/polybench -pd
+
+  run-pb-cosim:
+    name: CoSim Polybench examples 
+    needs: build-phism
+    runs-on: self-hosted
+
+    steps:
+      - name: Run CoSim (without Polymer)
+        run: |
+          ./scripts/pb-flow ./examples/polybench -dc
+
+      - name: Run CoSim (with Polymer)
+        run: |
+          ./scripts/pb-flow ./examples/polybench -pdc
