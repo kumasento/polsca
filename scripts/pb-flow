@@ -83,6 +83,18 @@ function compile_c_to_mlir() {
   echo "${dst_file}"
 }
 
+# Do some preprocessing before extracting top function.
+function preprocess_mlir() {
+  local src_file="${1}"
+  local dst_file="${src_file%.mlir}.pre.mlir"
+
+  mlir-opt "${src_file}" \
+    -sccp \
+    -canonicalize > "${dst_file}"
+  
+  echo "${dst_file}"
+}
+
 # Extract the top function and all the stuff it calls.
 function extract_top_func_from_mlir() {
   local src_file="${1}"
@@ -370,7 +382,8 @@ function eval_file() {
   local kern_src_file
 
   mlir_src_file="$(compile_c_to_mlir "${src_file}")"
-  kern_src_file="$(extract_top_func_from_mlir "${mlir_src_file}")"
+  prep_src_file="$(preprocess_mlir "${mlir_src_file}")"
+  kern_src_file="$(extract_top_func_from_mlir "${prep_src_file}")"
   poly_src_file="$(polymer_opt "${kern_src_file}")"
   llvm_src_file="$(lower_mlir_to_llvm "${poly_src_file}")"
   vitis_src_file="$(opt_llvm_for_vitis "${llvm_src_file}")"
