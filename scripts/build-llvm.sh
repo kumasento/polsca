@@ -11,6 +11,12 @@ echo ""
 
 TARGET="${1:-"local"}"
 
+# If ninja is available, use it.
+CMAKE_GENERATOR="Unix Makefiles"
+if which ninja &>/dev/null; then
+  CMAKE_GENERATOR="Ninja"
+fi
+
 # The absolute path to the directory of this script.
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
@@ -30,7 +36,9 @@ mkdir -p build
 cd build
 
 # Configure CMake
-CC=gcc CXX=g++ cmake ../llvm \
+export CC=gcc
+export CXX=g++ 
+cmake ../llvm \
   -DLLVM_ENABLE_PROJECTS="mlir;llvm;clang" \
   -DCMAKE_BUILD_TYPE=RELEASE \
   -DLLVM_BUILD_EXAMPLES=OFF \
@@ -41,7 +49,8 @@ CC=gcc CXX=g++ cmake ../llvm \
   -DLLVM_INSTALL_UTILS=ON \
   -DLLVM_ENABLE_ASSERTIONS=ON \
   -DBUILD_POLYMER=ON \
-  -DPLUTO_LIBCLANG_PREFIX="$(llvm-config --prefix)"
+  -DPLUTO_LIBCLANG_PREFIX="$(llvm-config --prefix)" \
+  -G "${CMAKE_GENERATOR}"
  
 # Run building
 cmake --build . --target all -- -j "$(nproc)"
