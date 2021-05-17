@@ -119,7 +119,7 @@ function polymer_opt() {
       -insert-redundant-load \
       -extract-scop-stmt \
       -pluto-opt \
-      -inline 2>/dev/null > "${dst_file}"
+      2>"${dst_file%.mlir}.log" > "${dst_file}"
   else
     cp "${src_file}" "${dst_file}"
   fi
@@ -149,11 +149,6 @@ function opt_llvm_for_vitis() {
   local top_func
   top_func="$(get_top_func "${src_file}")"
 
-  # Polymer optimized functions have an _opt suffix.
-  if [[ ${ENABLE_POLYMER} -eq 1 ]]; then
-    top_func="${top_func}_opt"
-  fi
-
   "${LLVM_BINDIR}/opt" "${src_file}" \
     -S \
     -enable-new-pm=0 \
@@ -180,11 +175,6 @@ function gen_dummy_c() {
   src_base="$(basename "$(dirname "${src_file}")")"
   dst_file="$(dirname "${src_file}")/${src_base}.dummy.c"
   top_func="$(get_top_func "${src_file}")"
-
-  # Polymer optimized functions have an _opt suffix.
-  if [[ ${ENABLE_POLYMER} -eq 1 ]]; then
-    top_func="${top_func}_opt"
-  fi
 
 cat <<EOF > "${dst_file}"
 void ${top_func}() {}
@@ -214,11 +204,6 @@ function gen_vitis_phism_tcl() {
   dst_file="$(dirname "${src_file}")/run_hls.tcl"
   top_func="$(get_top_func "${src_file}")"
   dummy_c_src="$(gen_dummy_c "${src_file}")"
-
-  # Polymer optimized functions have an _opt suffix.
-  if [[ ${ENABLE_POLYMER} -eq 1 ]]; then
-    top_func="${top_func}_opt"
-  fi
 
   # Synthesis script
   cat <<EOF > "${dst_file}"
