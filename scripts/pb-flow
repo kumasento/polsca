@@ -3,7 +3,7 @@
 # Polybench evaluation flow.
 #
 # Usage:
-#   ./pb-flow <polybench directory>
+#   ./pb-flow <polybench directory> [-p] [-d] [-c]
 
 set -o errexit
 set -o pipefail
