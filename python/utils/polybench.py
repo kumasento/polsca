@@ -13,6 +13,7 @@ from multiprocessing import Pool
 from collections import namedtuple
 from timeit import default_timer as timer
 
+POLYBENCH_DATASETS = ('MINI', 'SMALL', 'LARGE', 'EXTRALARGE')
 POLYBENCH_EXAMPLES = ('2mm', '3mm', 'adi', 'atax', 'bicg', 'cholesky', 'correlation', 'covariance', 'deriche', 'doitgen', 'durbin', 'fdtd-2d', 'gemm', 'gemver',
                       'gesummv', 'gramschmidt', 'head-3d', 'jacobi-1D', 'jacobi-2D', 'lu', 'ludcmp', 'mvt', 'nussinov', 'seidel', 'symm', 'syr2k', 'syrk', 'trisolv', 'trmm')
 RESOURCE_FIELDS = ('DSP', 'FF', 'LUT', 'BRAM_18K', 'URAM')
@@ -214,8 +215,8 @@ exit
 
 TBGEN_VITIS_TCL = '''
 open_project -reset tb
-add_files {{{src_dir}/{src_base}.c}} -cflags "-I {src_dir} -I {work_dir}/utilities -D MINI_DATASET" -csimflags "-I {src_dir} -I {work_dir}/utilities -DMINI_DATASET"
-add_files -tb {{{src_dir}/{src_base}.c {work_dir}/utilities/polybench.c}} -cflags "-I {src_dir} -I {work_dir}/utilities -DMINI_DATASET" -csimflags "-I {src_dir} -I {work_dir}/utilities -DMINI_DATASET"
+add_files {{{src_dir}/{src_base}.c}} -cflags "-I {src_dir} -I {work_dir}/utilities -D {pb_dataset}_DATASET" -csimflags "-I {src_dir} -I {work_dir}/utilities -D{pb_dataset}_DATASET"
+add_files -tb {{{src_dir}/{src_base}.c {work_dir}/utilities/polybench.c}} -cflags "-I {src_dir} -I {work_dir}/utilities -D{pb_dataset}_DATASET" -csimflags "-I {src_dir} -I {work_dir}/utilities -D{pb_dataset}_DATASET"
 set_top {top_func}
 
 open_solution -reset solution1
@@ -279,7 +280,7 @@ class PbFlow:
             'mlir-clang',
             src_file,
             '-memref-fullrank',
-            '-D', 'MINI_DATASET',
+            '-D', '{}_DATASET'.format(self.options.dataset),
             '-I={}'.format(os.path.join(
                 self.root_dir, 'llvm', 'build', 'lib', 'clang', '13.0.0', 'include')),
             '-I={}'.format(os.path.join(self.work_dir, 'utilities'))],
@@ -415,7 +416,8 @@ class PbFlow:
                     src_base=os.path.basename(src_file).split('.')[0],
                     top_func=top_func,
                     work_dir=self.work_dir,
-                    config=run_config))
+                    config=run_config,
+                    pb_dataset=self.options.dataset))
             with open(cosim_vitis_tcl, 'w') as f:
                 f.write(COSIM_VITIS_TCL)
 
@@ -469,6 +471,8 @@ def pb_flow_runner(options):
     tmp_dir = os.path.join(get_project_root(), 'tmp', 'phism',
                            'pb-flow.{}'.format(get_timestamp()))
     shutil.copytree(options.pb_dir, tmp_dir)
+
+    print('>>> Starting {} jobs ...'.format(options.job))
 
     start = timer()
     with Pool(options.job) as p:

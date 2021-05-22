@@ -18,8 +18,10 @@ def main():
                         help='Use Polymer to perform polyhedral transformation')
     parser.add_argument('-c', '--cosim', action='store_true',
                         help='Enable co-simulation')
-    parser.add_argument('-j', '--job', type=int,
-                        help='Number of parallel jobs')
+    parser.add_argument('-j', '--job', type=int, default=1,
+                        help='Number of parallel jobs (default: 1)')
+    parser.add_argument('--dataset', choices=pb_utils.POLYBENCH_DATASETS,
+                        default='MINI', help='Polybench dataset size. ')
     args = parser.parse_args()
 
     pb_utils.pb_flow_runner(args)
