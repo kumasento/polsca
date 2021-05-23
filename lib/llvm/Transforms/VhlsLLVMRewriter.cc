@@ -22,6 +22,9 @@ using namespace llvm;
 static cl::opt<std::string>
     XlnTop("xlntop", cl::desc("Specify the top function for Xilinx HLS."),
            cl::value_desc("topname"));
+static cl::opt<std::string>
+    XlnNames("xlnnames", cl::desc("Specify the top function param names."),
+             cl::value_desc("paramname"));
 
 namespace {
 
@@ -513,13 +516,21 @@ struct ConvertMemRefToRankedArray : public ModulePass {
 
 /// Rename the name of basic blocks, function arguments, and values defined by
 /// instructions with string prefixes.
-static void renameBasicBlocksAndValues(Module &M) {
+static void
+renameBasicBlocksAndValues(Module &M,
+                           llvm::ArrayRef<llvm::StringRef> ParamNames) {
   // Rename BB and I
   size_t BBCnt = 0, ValCnt = 1, ArgCnt = 0;
   for (Function &F : M) {
     // Rename arguments
-    for (Argument &arg : F.args())
-      arg.setName("arg_" + Twine(ArgCnt++));
+    if (F.getName() == XlnTop && ParamNames.size() == F.arg_size()) {
+      for (size_t i = 0; i < F.arg_size(); i++)
+        F.getArg(i)->setName(ParamNames[i]);
+    } else {
+      for (Argument &arg : F.args()) {
+        arg.setName("arg_" + Twine(ArgCnt++));
+      }
+    }
 
     for (BasicBlock &BB : F) {
       // Rename basic blocks
@@ -542,7 +553,10 @@ struct RenameBasicBlocksAndValues : public ModulePass {
   RenameBasicBlocksAndValues() : ModulePass(ID) {}
 
   bool runOnModule(Module &M) override {
-    renameBasicBlocksAndValues(M);
+    llvm::SmallVector<llvm::StringRef, 4> ParamNames;
+    llvm::SplitString(XlnNames, ParamNames, ",");
+
+    renameBasicBlocksAndValues(M, ParamNames);
     return false;
   }
 };
