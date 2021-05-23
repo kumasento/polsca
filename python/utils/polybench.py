@@ -8,6 +8,7 @@ import pandas as pd
 import subprocess
 import functools
 import itertools
+import json
 import xml.etree.ElementTree as ET
 from multiprocessing import Pool
 from collections import namedtuple
@@ -196,6 +197,41 @@ def get_top_func(src_file):
     return 'kernel_{}'.format(os.path.basename(os.path.dirname(src_file))).replace('-', '_')
 
 
+def get_top_func_param_names(src_file, pb_dir, llvm_dir=None):
+    """ From the given C file, we try to extract the top function's parameter list.
+        This will be useful for Vitis LLVM rewrite. """
+
+    def is_func_decl(item, name):
+        return item['kind'] == 'FunctionDecl' and item['name'] == name
+
+    top_func = get_top_func(src_file)
+    clang_path = 'clang'
+    if llvm_dir:
+        clang_path = os.path.join(llvm_dir, 'build', 'bin', 'clang')
+
+    # Get the corresponding AST in JSON.
+    proc = subprocess.Popen([clang_path,
+                             src_file,
+                             '-Xclang',
+                             '-ast-dump=json',
+                             '-fsyntax-only',
+                             '-I{}'.format(os.path.join(pb_dir, 'utilities'))],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE)
+    data = json.loads(proc.stdout.read())
+
+    # First find the top function declaration entry.
+    top_func_decls = list(filter(functools.partial(is_func_decl, name=top_func),
+                                 data['inner']))
+    assert len(top_func_decls) == 1, 'Should be a single declaration for top.'
+    top_func_decl = top_func_decls[0]
+
+    # Then get all ParmVarDecl.
+    parm_var_decls = filter(lambda x: x['kind'] == 'ParmVarDecl',
+                            top_func_decl['inner'])
+    return [decl['name'] for decl in parm_var_decls]
+
+
 PHISM_VITIS_TCL = '''
 open_project -reset proj
 add_files {dummy_src}
@@ -206,7 +242,7 @@ set_part "zynq"
 create_clock -period "100MHz"
 {config}
 
-set ::LLVM_CUSTOM_CMD {{\$LLVM_CUSTOM_OPT -no-warn {src_file} -o \$LLVM_CUSTOM_OUTPUT}}
+set ::LLVM_CUSTOM_CMD {{$LLVM_CUSTOM_OPT -no-warn {src_file} -o $LLVM_CUSTOM_OUTPUT}}
 
 csynth_design
 
@@ -242,6 +278,18 @@ exit
 '''
 
 
+""" An interface for the CLI options. """
+PbFlowOptions = namedtuple('PbFlowOptions', [
+    'pb_dir',
+    'job',
+    'polymer',
+    'cosim',
+    'debug',
+    'dataset',
+    'cleanup',
+])
+
+
 class PbFlow:
     """ Holds all the pb-flow functions.
         TODO: inherits this from PhismFlow.
@@ -253,21 +301,30 @@ class PbFlow:
         self.root_dir = get_project_root()
         self.work_dir = work_dir
         self.cur_file = None
+        self.c_source = None
         self.options = options
+
+        self.status = 0
+        self.errmsg = 'No Error'
 
     def run(self, src_file):
         """ Run the whole pb-flow on the src_file (*.c). """
         self.cur_file = src_file
+        self.c_source = src_file  # Will be useful in some later stages
 
         # The whole flow
-        (self
-         .compile_c()
-         .preprocess()
-         .extract_top_func()
-         .polymer_opt()
-         .lower_llvm()
-         .vitis_opt()
-         .run_vitis())
+        try:
+            (self
+             .compile_c()
+             .preprocess()
+             .extract_top_func()
+             .polymer_opt()
+             .lower_llvm()
+             .vitis_opt()
+             .run_vitis())
+        except Exception as e:
+            self.status = 1
+            self.errmsg = e
 
     def compile_c(self):
         """ Compile C code to MLIR using mlir-clang. """
@@ -354,6 +411,10 @@ class PbFlow:
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(
             '.llvm', '.vitis.llvm')
 
+        xln_names = get_top_func_param_names(
+            self.c_source, self.work_dir,
+            llvm_dir=os.path.join(self.root_dir, 'llvm'))
+
         args = [os.path.join(self.root_dir, 'llvm', 'build', 'bin', 'opt'),
                 src_file,
                 '-S',
@@ -367,6 +428,7 @@ class PbFlow:
                 '-xlnname',
                 '-xlnanno',
                 '-xlntop="{}"'.format(get_top_func(src_file)),
+                '-xlnnames="{}"'.format(','.join(xln_names)),
                 '-strip-attr']
 
         subprocess.run(' '.join(args),
@@ -433,9 +495,16 @@ class PbFlow:
             tbgen_proc.wait()
 
             # TODO: add some sanity checks
-            for f in glob.glob(os.path.join(base_dir, 'proj', 'solution1', 'syn', 'verilog', '*.v*')):
-                shutil.copyfile(f, os.path.join(
-                    base_dir, 'tb', 'solution1', 'sim', 'verilog'))
+            phsim_syn_verilog_dir = os.path.join(
+                base_dir, 'proj', 'solution1', 'syn', 'verilog')
+            tbgen_syn_verilog_dir = os.path.join(
+                base_dir, 'tb', 'solution1', 'syn', 'verilog')
+
+            shutil.copytree(os.path.join(base_dir, 'tb'),
+                            os.path.join(base_dir, 'tb.backup'))
+
+            for f in glob.glob(os.path.join(phsim_syn_verilog_dir, '*.v*')):
+                shutil.copy(f, tbgen_syn_verilog_dir)
 
             # Run cosim for Phism in the end
             subprocess.run(
@@ -455,12 +524,14 @@ def pb_flow_process(d, work_dir, options):
     flow = PbFlow(work_dir, options)
     src_file = os.path.join(d, get_single_file_with_ext(d, 'c'))
 
+    print('>>> Running on {} ...'.format(d))
+
     start = timer()
     flow.run(src_file)
     end = timer()
 
-    print('>>> Finished {:15s} elapsed: {:.6f} secs'.format(
-        os.path.basename(d), end - start))
+    print('>>> Finished {:15s} elapsed: {:.6f} secs   Status: {}  Error: "{}"'.format(
+        os.path.basename(d), end - start), flow.status, flow.errmsg)
 
 
 def pb_flow_runner(options):
