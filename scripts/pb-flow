@@ -3,7 +3,7 @@
 # Polybench evaluation flow.
 #
 # Usage:
-#   ./pb-flow <polybench directory>
+#   ./pb-flow <polybench directory> [-p] [-d] [-c]
 
 set -o errexit
 set -o pipefail
@@ -39,8 +39,9 @@ shift # Remove POLYBENCH_DIR from the argument list.
 ENABLE_POLYMER="0"
 ENABLE_COSIM="0"
 DEBUG="0"
+SKIPPED_EXAMPLES=()
 
-while getopts ":dpc" opt; do 
+while getopts ":dpcs:" opt; do 
   case ${opt} in
     d)
       DEBUG="1"
@@ -50,6 +51,9 @@ while getopts ":dpc" opt; do
       ;;
     c)
       ENABLE_COSIM="1"
+      ;;
+    s)
+      IFS=',' read -r -a SKIPPED_EXAMPLES <<< "$OPTARG"
       ;;
     \?)
       echo "Usage: pb-flow [-p USE POLYMER] [-c COSIM] [-d DEBUG]"
@@ -362,6 +366,12 @@ function eval_file() {
   local src_file="${1}"
 
   printf ">> Evaluating source file: %s ..." "${src_file}"
+
+  for skipped_example in "${SKIPPED_EXAMPLES[@]}"; do
+    if [[ "${src_file}" == *"${skipped_example}"* ]]; then
+      return
+    fi
+  done
 
   local mlir_src_file
   local kern_src_file
