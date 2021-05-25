@@ -26,7 +26,7 @@ echo $XILINX_HLS
 # Should print /opt/Vitis_HLS/2020.2
 ```
 
-After that, run the script [setup-vitis-hls-llvm.sh](scripts/setup-vitis-hls-llvm.sh) under the `scripts` directory:
+After that, run the script [setup-vitis-hls-llvm.sh](../scripts/setup-vitis-hls-llvm.sh) under the `scripts` directory:
 
 ```sh
 source scripts/setup-vitis-hls-llvm.sh
