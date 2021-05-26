@@ -44,19 +44,13 @@ It should run the Phism regression test in the end. And if all the tests passed,
 
 ## Usage
 
-### The `pb-flow` script
-
-[pb-flow](scripts/pb-flow) provides a CLI utility to test Phism with Polybench examples. You can grab a rough idea about the whole Phism pipeline over there. You can use `pb-flow` in the following ways:
-
-```sh
-./scripts/pb-flow example/polybench       # Run all polybench synth-only, w/o Polyhedral optimization.
-./scripts/pb-flow example/polybench -p    # Run all polybench synth-only, w/ Polyhedral optimization.
-./scripts/pb-flow example/polybench -c    # Run all polybench w/ cosim, w/ Polyhedral optimization.
-./scripts/pb-flow example/polybench -pc   # Run all polybench w/ cosim, w/o Polyhedral optimization.
-```
-
-If you attach `-d`, the build effort won't be set to `high`. This can save some time.
 
 ### Using Docker
 
 This [doc](docs/DOCKER.md) gives an introduction on how to run Phism with docker.
+
+## Evaluation and benchmarking
+
+### Polybench
+
+Polybench is the major benchmark we look at. It contains 30 different examples covering programs that can be potentially optimised by polyhedral transformation. The benchmark suite is located at [example/polybench](example/polybench), and you can find our report [here](docs/POLYBENCH.md).
