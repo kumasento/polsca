@@ -15,13 +15,17 @@ from collections import namedtuple
 from timeit import default_timer as timer
 
 POLYBENCH_DATASETS = ('MINI', 'SMALL', 'LARGE', 'EXTRALARGE')
-POLYBENCH_EXAMPLES = ('2mm', '3mm', 'adi', 'atax', 'bicg', 'cholesky', 'correlation', 'covariance', 'deriche', 'doitgen', 'durbin', 'fdtd-2d', 'gemm', 'gemver',
-                      'gesummv', 'gramschmidt', 'head-3d', 'jacobi-1D', 'jacobi-2D', 'lu', 'ludcmp', 'mvt', 'nussinov', 'seidel', 'symm', 'syr2k', 'syrk', 'trisolv', 'trmm')
+POLYBENCH_EXAMPLES = ('2mm', '3mm', 'adi', 'atax', 'bicg', 'cholesky', 'correlation', 'covariance', 'deriche', 'doitgen', 'durbin', 'fdtd-2d', 'floyd-warshall', 'gemm', 'gemver',
+                      'gesummv', 'gramschmidt', 'heat-3d', 'jacobi-1d', 'jacobi-2d', 'lu', 'ludcmp', 'mvt', 'nussinov', 'seidel-2d', 'symm', 'syr2k', 'syrk', 'trisolv', 'trmm')
 RESOURCE_FIELDS = ('DSP', 'FF', 'LUT', 'BRAM_18K', 'URAM')
-RECORD_FIELDS = ('name', 'latency', 'res_usage', 'res_avail')
+RECORD_FIELDS = ('name', 'run_status', 'latency', 'res_usage', 'res_avail')
+RUN_STATUS_FIELDS = ('phism_synth', 'tbgen_cosim', 'phism_cosim')
+
+PHISM_VITIS_STEPS = ('phism', 'tbgen', 'cosim')
 
 Record = namedtuple('Record', RECORD_FIELDS)
 Resource = namedtuple('Resource', RESOURCE_FIELDS)
+RunStatus = namedtuple('RunStatus', RUN_STATUS_FIELDS)
 
 # ----------------------- Utility functions ------------------------------------
 
@@ -56,6 +60,14 @@ def get_single_file_with_ext(d, ext, includes=None):
         return f
 
     return None
+
+
+def get_vitis_log(d, step, stream):
+    """ Return the file path to a specific Vitis log. """
+    assert step in PHISM_VITIS_STEPS
+    assert stream in ('stdout', 'stderr')
+
+    return os.path.join(d, '{step}.vitis_hls.{stream}.log'.format(step=step, stream=stream))
 
 # ----------------------- Data record fetching functions -----------------------
 
@@ -113,15 +125,45 @@ def fetch_latency(d):
     return int(latency)
 
 
+def fetch_run_status(d):
+    """ Gather the resulting status of each stage. """
+    def parse_synth_log(fp):
+        if not os.path.isfile(fp):
+            return 'NO_LOG'
+        else:
+            with open(fp, 'r') as f:
+                has_error = any(('Synthesizability check failed.' in line)
+                                for line in f.readlines())
+                if has_error:
+                    return 'CANNOT_SYNTH'
+        return 'SUCCESS'
+
+    def parse_cosim_log(fp):
+        if not os.path.isfile(fp):
+            return 'NO_LOG'
+        else:
+            with open(fp, 'r') as f:
+                has_error = any(('co-simulation finished: FAIL' in line)
+                                for line in f.readlines())
+                if has_error:
+                    return 'COSIM_FAILED'
+        return 'SUCCESS'
+
+    return RunStatus(parse_synth_log(get_vitis_log(d, 'phism', 'stdout')),
+                     parse_cosim_log(get_vitis_log(d, 'tbgen', 'stdout')),
+                     parse_cosim_log(get_vitis_log(d, 'cosim', 'stdout')))
+
+
 def process_directory(d):
     """ Process the result data within the given directory. Return a dictionary of all available data entries. """
     example_name = os.path.basename(d)
-    return Record(example_name, fetch_latency(d), fetch_resource_usage(d), fetch_resource_usage(d, avail=True))
+    return Record(example_name, fetch_run_status(d), fetch_latency(d), fetch_resource_usage(d), fetch_resource_usage(d, avail=True))
 
 
 def process_pb_flow_result_dir(d):
     """ Process the result directory from pb-flow runs. """
     records = []
+    assert os.path.isdir(d)
 
     # Each example should have their original .c/.h files. We will look for that.
     pattern = '{}/**/*.h'.format(d)
@@ -133,8 +175,14 @@ def process_pb_flow_result_dir(d):
 
     return records
 
+def filter_success(df):
+    """ Filter success rows. """
+    return df[(df['phism_synth'] == 'SUCCESS') &
+              (df['tbgen_cosim'] == 'SUCCESS') &
+              (df['phism_cosim'] == 'SUCCESS')]
 
 # ----------------------- Data processing ---------------------------
+
 
 def expand_resource_field(field):
     """ Will turn things like "res_avail" to a list ['DSP_avail', 'FF_avail', ...] """
@@ -144,14 +192,28 @@ def expand_resource_field(field):
     return ['{}_{}'.format(res, avail) for res in RESOURCE_FIELDS]
 
 
+def expand_field(field):
+    """ Turn a nested namedtuple into a flattened one. """
+    if 'res_' in field:
+        return expand_resource_field(field)
+    if 'run_status' in field:
+        return RUN_STATUS_FIELDS
+    return [field]
+
+
+def is_list_record(x):
+    return isinstance(x, (Resource, RunStatus))
+
+
 def flatten_record(record):
     """ Flatten a Record object into a list. """
-    return list(itertools.chain(*[list(x) if isinstance(x, Resource) else [x] for x in record]))
+    return list(itertools.chain(*[list(x) if is_list_record(x) else [x]
+                                  for x in record]))
 
 
 def to_pandas(records):
     """ From processed records to pandas DataFrame. """
-    cols = list(itertools.chain(*[expand_resource_field(field)
+    cols = list(itertools.chain(*[expand_field(field)
                                   for field in RECORD_FIELDS]))
     data = list([flatten_record(r) for r in records])
     data.sort(key=lambda x: x[0])
@@ -164,13 +226,8 @@ def to_pandas(records):
 
 def discover_examples(d):
     """ Find examples in the given directory. """
-    for root, _, files in os.walk(d):
-        # There should be two files, one end with .h, the other with .c
-        if len(files) != 2:
-            continue
-        if len(files[0]) <= 2 or len(files[1]) <= 2 or files[0][:-2] != files[1][:-2]:
-            continue
-        yield root
+    return sorted([root for root, _, _ in os.walk(d)
+                   if os.path.basename(root).lower() in POLYBENCH_EXAMPLES])
 
 
 def get_phism_env():
@@ -491,30 +548,41 @@ class PbFlow:
                 stderr=open(os.path.join(base_dir, 'tbgen.vitis_hls.stderr.log'), 'w'))
 
             # Allows phism_proc and tbgen_proc run in parallel.
-            phism_proc.wait()
-            tbgen_proc.wait()
+            phism_ret = phism_proc.wait()
+            tbgen_ret = tbgen_proc.wait()
+
+            assert phism_ret == 0, "Phism syn failed."
+            assert tbgen_ret == 0, "tbgen failed."
 
             # TODO: add some sanity checks
-            phsim_syn_verilog_dir = os.path.join(
+            phism_syn_verilog_dir = os.path.join(
                 base_dir, 'proj', 'solution1', 'syn', 'verilog')
             tbgen_syn_verilog_dir = os.path.join(
                 base_dir, 'tb', 'solution1', 'syn', 'verilog')
 
+            assert os.path.isdir(phism_syn_verilog_dir), "{} doens't exist.".format(
+                phism_syn_verilog_dir)
+            assert os.path.isdir(tbgen_syn_verilog_dir), "{} doens't exist.".format(
+                tbgen_syn_verilog_dir)
+
             shutil.copytree(os.path.join(base_dir, 'tb'),
                             os.path.join(base_dir, 'tb.backup'))
 
-            for f in glob.glob(os.path.join(phsim_syn_verilog_dir, '*.v*')):
+            for f in glob.glob(os.path.join(phism_syn_verilog_dir, '*.v*')):
                 shutil.copy(f, tbgen_syn_verilog_dir)
 
             # Run cosim for Phism in the end
-            subprocess.run(
+            cosim_proc = subprocess.Popen(
                 ['vitis_hls', cosim_vitis_tcl],
                 cwd=base_dir,
                 stdout=open(os.path.join(
                     base_dir, 'cosim.vitis_hls.stdout.log'), 'w'),
                 stderr=open(os.path.join(base_dir, 'cosim.vitis_hls.stderr.log'), 'w'))
+            cosim_ret = cosim_proc.wait()
+            assert cosim_ret == 0, "Cosim failed."
         else:
-            phism_proc.wait()
+            phism_ret = phism_proc.wait()
+            assert phism_ret == 0, "Phism syn failed."
 
         return self
 
@@ -522,16 +590,14 @@ class PbFlow:
 def pb_flow_process(d, work_dir, options):
     """ Process a single example. """
     flow = PbFlow(work_dir, options)
-    src_file = os.path.join(d, get_single_file_with_ext(d, 'c'))
-
-    print('>>> Running on {} ...'.format(d))
+    src_file = os.path.join(d, os.path.basename(d) + '.c')
 
     start = timer()
     flow.run(src_file)
     end = timer()
 
     print('>>> Finished {:15s} elapsed: {:.6f} secs   Status: {}  Error: "{}"'.format(
-        os.path.basename(d), end - start), flow.status, flow.errmsg)
+        os.path.basename(d), (end - start), flow.status, flow.errmsg))
 
 
 def pb_flow_runner(options):
@@ -543,7 +609,8 @@ def pb_flow_runner(options):
                            'pb-flow.{}'.format(get_timestamp()))
     shutil.copytree(options.pb_dir, tmp_dir)
 
-    print('>>> Starting {} jobs ...'.format(options.job))
+    print('>>> Starting {} jobs (work_dir={}) ...'.format(
+        options.job, tmp_dir))
 
     start = timer()
     with Pool(options.job) as p:
