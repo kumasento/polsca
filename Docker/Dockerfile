@@ -37,6 +37,6 @@ RUN echo 'export LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LIBRARY_PATH' >> /home/
 RUN echo 'export LD_LIBRARY_PATH=""' >> /home/dev-user/.bashrc
 ENV vhls $VHLS_PATH
 RUN echo "source ${vhls}/Vitis_HLS/2020.2/settings64.sh" >> /home/dev-user/.bashrc
-RUN echo 'export PATH=$PATH:/workspace/llvm/build/bin:/workspace/build/bin' >> /home/dev-user/.bashrc
+RUN echo 'export PATH=/workspace/llvm/build/bin:/workspace/build/bin:$PATH' >> /home/dev-user/.bashrc
 
 WORKDIR workspace
