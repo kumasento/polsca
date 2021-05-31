@@ -1,33 +1,42 @@
-FROM ubuntu:20.04
-ARG GID
+FROM centos:centos7
+ARG VHLS_PATH
 ARG UID
-RUN echo "Group ID: $GID"
-RUN echo "User ID: $UID"
+ARG GID
 
 USER root
-RUN apt-get update
-RUN DEBIAN_FRONTEND="noninteractive" apt-get -y install tzdata --assume-yes
 
-# Install Essential Packages
-RUN apt-get update
-RUN apt-get install build-essential libtool autoconf pkg-config flex bison libgmp-dev clang-9 libclang-9-dev texinfo cmake vim ninja-build git libncurses5 gcc-multilib --assume-yes
+# Basic packages
+RUN yum install -y sudo gcc-c++ vim git openssh-clients
+RUN yum install -y wget 
 
-RUN update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-9 100
-RUN update-alternatives --install /usr/bin/FileCheck FileCheck /usr/bin/FileCheck-9 100
-RUN update-alternatives --install /usr/bin/clang clang /usr/bin/clang-9 100
-RUN update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-9 100
+# Vitis HLS dependences
+RUN yum install -y libXext libXrender libXtst gettext libtool
+RUN yum install -y boost-devel gperftools gperftools-devel rpm-sign
+RUN yum install -y autoconf automake binutils bison flex 
+RUN yum install -y make patch pkgconfig redhat-rpm-config rpm-build
+
+# Phism dependences
+RUN yum install -y llvm clang llvm-devel
+# cmake 3.12
+RUN (cd /tmp; wget https://cmake.org/files/v3.12/cmake-3.12.3.tar.gz; tar zxvf cmake-3.*; cd cmake-3.*; ./bootstrap --prefix=/usr/local; make -j4; make install)
+
+# RUN update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-9 100
+# RUN update-alternatives --install /usr/bin/FileCheck FileCheck /usr/bin/FileCheck-9 100
+# RUN update-alternatives --install /usr/bin/clang clang /usr/bin/clang-9 100
+# RUN update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-9 100
 
 CMD ["bash"]
 
-RUN apt-get install sudo --assume-yes
-
 # Add dev-user
-RUN groupadd -g $GID dev-user
+RUN getent group $GID || groupadd $GID
 RUN useradd -r -g $GID -u $UID -m -d /home/dev-user -s /sbin/nologin -c "User" dev-user
 RUN echo "dev-user     ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 USER dev-user
 
-RUN echo 'PATH=$PATH:/workspace/llvm/build/bin:/workspace/build/bin:/tools/Vitis_HLS/2020.2/bin' >> /home/dev-user/.bashrc
 RUN echo 'export LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LIBRARY_PATH' >> /home/dev-user/.bashrc
 RUN echo 'export LD_LIBRARY_PATH=""' >> /home/dev-user/.bashrc
+ENV vhls $VHLS_PATH
+RUN echo "source ${vhls}/Vitis_HLS/2020.2/settings64.sh" >> /home/dev-user/.bashrc
+RUN echo 'export PATH=$PATH:/workspace/llvm/build/bin:/workspace/build/bin' >> /home/dev-user/.bashrc
+
 WORKDIR workspace
