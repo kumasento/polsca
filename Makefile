@@ -12,6 +12,7 @@ build-docker: test-docker
 # Clone submodule and build docker container
 test-docker:
 	git submodule update --init --recursive
+#	(cd Docker; docker build --no-cache --build-arg UID=$(user) --build-arg GID=$(group) --build-arg VHLS_PATH=$(vhls) . --tag phism7)
 	(cd Docker; docker build --build-arg UID=$(user) --build-arg GID=$(group) --build-arg VHLS_PATH=$(vhls) . --tag phism7)
 
 # Enter docker container
@@ -28,6 +29,7 @@ test-polybench-polymer:
 
 # Build LLVM and Phism
 build-phism:
+	source scripts/setup-vitis-hls-llvm.sh
 	./scripts/build-llvm.sh
 	./scripts/build-phism.sh
 
