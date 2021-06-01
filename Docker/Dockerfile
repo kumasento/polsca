@@ -62,5 +62,6 @@ RUN echo 'export LD_LIBRARY_PATH=""' >> /home/dev-user/.bashrc
 ENV vhls $VHLS_PATH
 RUN echo "source ${vhls}/Vitis_HLS/2020.2/settings64.sh" >> /home/dev-user/.bashrc
 RUN echo 'export PATH=/workspace/llvm/build/bin:/workspace/build/bin:/tmp/cmake-3.20.3/bin:$PATH' >> /home/dev-user/.bashrc
+RUN echo 'export nproc=$(grep -c ^processor /proc/cpuinfo)' >> /home/dev-user/.bashrc
 
 WORKDIR workspace
