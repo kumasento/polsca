@@ -52,7 +52,7 @@ RUN alternatives --install /usr/bin/python python /usr/bin/python3 60
 CMD ["bash"]
 
 # Add dev-user
-RUN getent group $GID || groupadd $GID
+RUN getent group $GID || groupadd -g $GID dev-user
 RUN useradd -r -g $GID -u $UID -m -d /home/dev-user -s /sbin/nologin -c "User" dev-user
 RUN echo "dev-user     ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 USER dev-user
