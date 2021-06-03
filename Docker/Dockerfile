@@ -13,19 +13,19 @@ RUN yum install -y sudo gcc-c++ vim git openssh-clients \
 # Vitis HLS dependences
 RUN yum install -y libXext libXrender libXtst gettext libtool \
                    boost-devel gperftools gperftools-devel rpm-sign \
-                   autoconf automake binutils bison flex \
-                   make patch pkgconfig redhat-rpm-config rpm-build
+                   autoconf binutils bison flex make \
+                   patch pkgconfig redhat-rpm-config rpm-build
 
 # Phism dependences
 RUN yum install -y llvm clang llvm-devel python3 gmp-devel clang-devel \
-                   perl pcre-devel zlib-devel
+                   perl pcre-devel zlib-devel textinfo
 # openssl - required by cmake
 RUN cd /tmp \
     && wget https://ftp.openssl.org/source/old/1.1.1/openssl-1.1.1.tar.gz \
     && tar xvf openssl-1.1.1.tar.gz \
     && cd openssl-1.1.1/ \
     && ./config --prefix=/usr --openssldir=/etc/ssl --libdir=lib no-shared zlib-dynamic \
-    && make -j4 \
+    && make -j $(grep -c ^processor /proc/cpuinfo) \
     && make install
 # cmake 3.20
 RUN cd /tmp \
@@ -33,17 +33,26 @@ RUN cd /tmp \
     && tar zxvf cmake-3.* \
     && cd cmake-3.* \
     && ./bootstrap --prefix=/usr/local \
-    && make -j4 \
+    && make -j $(grep -c ^processor /proc/cpuinfo) \
     && make install
+# automake 1.14
+RUN cd /tmp \
+    && wget http://ftp.gnu.org/gnu/automake/automake-1.14.tar.gz \
+    && tar xvzf automake-1.14.tar.gz \
+    && cd automake-1.14 \
+    && ./configure \
+    && make -j $(grep -c ^processor /proc/cpuinfo) \
+    && make install
+RUN yum install -y centos-release-scl-rh
+RUN yum install -y llvm-toolset-7-llvm
+RUN scl enable llvm-toolset-7 bash
 
-# # Set Python 3.6 as default - required by LLVM
-# RUN alternatives --install /usr/bin/python python /usr/bin/python2 50
-# RUN alternatives --install /usr/bin/python python /usr/bin/python3 60
-
-# RUN update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-9 100
-# RUN update-alternatives --install /usr/bin/FileCheck FileCheck /usr/bin/FileCheck-9 100
-# RUN update-alternatives --install /usr/bin/clang clang /usr/bin/clang-9 100
-# RUN update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-9 100
+# Centos issue with libtool:
+# https://superuser.com/questions/565988/autoconf-libtool-and-an-undefined-ac-prog-libtool
+RUN for file in argz libtool ltdl ltoptions ltsugar ltversion lt~obsolete \
+    do \
+      ln -s /usr/share/aclocal/$file.m4 /usr/local/share/aclocal/$file.m4 \
+    done
 
 CMD ["bash"]
 
