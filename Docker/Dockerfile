@@ -49,9 +49,9 @@ RUN scl enable llvm-toolset-7 bash
 
 # Centos issue with libtool:
 # https://superuser.com/questions/565988/autoconf-libtool-and-an-undefined-ac-prog-libtool
-RUN for file in argz libtool ltdl ltoptions ltsugar ltversion lt~obsolete \
+RUN for file in argz libtool ltdl ltoptions ltsugar ltversion lt~obsolete; \
     do \
-      ln -s /usr/share/aclocal/$file.m4 /usr/local/share/aclocal/$file.m4 \
+      ln -s /usr/share/aclocal/$file.m4 /usr/local/share/aclocal/$file.m4; \
     done
 
 CMD ["bash"]
@@ -66,7 +66,7 @@ RUN echo 'export LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LIBRARY_PATH' >> /home/
 RUN echo 'export LD_LIBRARY_PATH=""' >> /home/dev-user/.bashrc
 ENV vhls $VHLS_PATH
 RUN echo "source ${vhls}/Vitis_HLS/2020.2/settings64.sh" >> /home/dev-user/.bashrc
-RUN echo 'export PATH=/workspace/llvm/build/bin:/workspace/build/bin:/tmp/cmake-3.20.3/bin:$PATH' >> /home/dev-user/.bashrc
+RUN echo 'export PATH=$PATH:/workspace/llvm/build/bin:/workspace/build/bin:/tmp/cmake-3.20.3/bin' >> /home/dev-user/.bashrc
 RUN echo 'source /workspace/scripts/setup-vitis-hls-llvm.sh' >> /home/dev-user/.bashrc
 RUN echo 'export nproc=$(grep -c ^processor /proc/cpuinfo)' >> /home/dev-user/.bashrc
 
