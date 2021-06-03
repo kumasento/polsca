@@ -11,8 +11,6 @@ build-docker: test-docker
 
 # Clone submodule and build docker container
 test-docker:
-#	git submodule update --init --recursive
-#	(cd Docker; docker build --no-cache --build-arg UID=$(user) --build-arg GID=$(group) --build-arg VHLS_PATH=$(vhls) . --tag phism7)
 	(cd Docker; docker build --build-arg UID=$(user) --build-arg GID=$(group) --build-arg VHLS_PATH=$(vhls) . --tag phism7)
 
 # Enter docker container
