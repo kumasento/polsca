@@ -7,8 +7,9 @@ USER root
 
 # Basic packages
 RUN yum update -y
-RUN yum install -y sudo gcc-c++ vim git openssh-clients \
-                   wget glibc-devel glibc-static
+RUN yum install -y deltarpm sudo gcc-c++ vim git \
+                   openssh-clients wget curl-devel expat-devel \
+                   gettext-devel openssl-devel zlib-devel perl-CPAN perl-devel
 
 # Vitis HLS dependences
 RUN yum install -y libXext libXrender libXtst gettext libtool \
@@ -18,7 +19,7 @@ RUN yum install -y libXext libXrender libXtst gettext libtool \
 
 # Phism dependences
 RUN yum install -y llvm clang llvm-devel python3 gmp-devel clang-devel \
-                   perl pcre-devel zlib-devel textinfo
+                   perl pcre-devel zlib-devel texinfo
 # openssl - required by cmake
 RUN cd /tmp \
     && wget https://ftp.openssl.org/source/old/1.1.1/openssl-1.1.1.tar.gz \
@@ -40,7 +41,7 @@ RUN cd /tmp \
     && wget http://ftp.gnu.org/gnu/automake/automake-1.14.tar.gz \
     && tar xvzf automake-1.14.tar.gz \
     && cd automake-1.14 \
-    && ./configure \
+    && ./configure --prefix=/usr \
     && make -j $(grep -c ^processor /proc/cpuinfo) \
     && make install
 RUN yum install -y centos-release-scl-rh
