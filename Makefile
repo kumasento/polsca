@@ -2,6 +2,7 @@ user=$(if $(shell id -u),$(shell id -u),9001)
 group=$(if $(shell id -g),$(shell id -g),1000)
 phism=/workspace
 vhls=/scratch/jc9016/tools/Xilinx/2020.2
+th=1
 
 # Build Phism
 build-docker: test-docker
@@ -19,7 +20,8 @@ shell:
 
 # Evaluate polybench (baseline) - need to be used in environment
 test-polybench:
-	./scripts/pb-flow ./example/polybench -c COSIM 2>&1 | tee phism-test.log
+	# ./scripts/pb-flow ./example/polybench -c COSIM 2>&1 | tee phism-test.log
+	python3 scripts/pb-flow.py -c -j $(th) example/polybench
 
 # Evaluate polybench (polymer) - need to be used in environment
 test-polybench-polymer:

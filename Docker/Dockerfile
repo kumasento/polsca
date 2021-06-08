@@ -23,6 +23,7 @@ RUN dnf install -y gperftools gperftools-devel
 RUN dnf install -y llvm clang python3 gmp-devel pcre-devel \
                    openssl openssl-devel llvm-devel
 RUN dnf --enablerepo=powertools install texinfo -y
+RUN python3 -m pip install pandas
 # build the following packages from source:
 RUN mkdir -p /dkrPkgs
 # cmake 3.20
@@ -50,6 +51,7 @@ RUN echo "source ${vhls}/Vitis_HLS/2020.2/settings64.sh" >> /home/dev-user/.bash
 RUN echo 'export PATH=$PATH:/workspace/llvm/build/bin:/workspace/build/bin' >> /home/dev-user/.bashrc
 RUN echo 'source /workspace/scripts/setup-vitis-hls-llvm.sh' >> /home/dev-user/.bashrc
 RUN echo 'export nproc=$(grep -c ^processor /proc/cpuinfo)' >> /home/dev-user/.bashrc
+RUN echo 'export PYTHONPATH=/workspace' >> /home/dev-user/.bashrc
 
 WORKDIR workspace
 

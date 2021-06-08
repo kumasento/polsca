@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 # A python version of the old pb-flow. Should be way faster with parallelism!
+#
+# USE: cd $PHSIM \
+#      && PYTHONPATH=$PWD \
+#      && python3 scripts/pb-flow.py -c -j $(nproc) example/polybench
 
 import subprocess
 import os
