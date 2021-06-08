@@ -5,17 +5,17 @@ vhls=/scratch/jc9016/tools/Xilinx/2020.2
 
 # Build Phism
 build-docker: test-docker
-	docker run -it -v $(shell pwd):/workspace -v $(vhls):$(vhls) phism7:latest /bin/bash \
+	docker run -it -v $(shell pwd):/workspace -v $(vhls):$(vhls) phism8:latest /bin/bash \
 	-c "make build-phism"
 	echo "Phism has been installed successfully!"
 
 # Clone submodule and build docker container
 test-docker:
-	(cd Docker; docker build --build-arg UID=$(user) --build-arg GID=$(group) --build-arg VHLS_PATH=$(vhls) . --tag phism7)
+	(cd Docker; docker build --build-arg UID=$(user) --build-arg GID=$(group) --build-arg VHLS_PATH=$(vhls) . --tag phism8)
 
 # Enter docker container
 shell:
-	docker run -it -v $(shell pwd):/workspace -v $(vhls):$(vhls) phism7:latest /bin/bash
+	docker run -it -v $(shell pwd):/workspace -v $(vhls):$(vhls) phism8:latest /bin/bash
 
 # Evaluate polybench (baseline) - need to be used in environment
 test-polybench:
