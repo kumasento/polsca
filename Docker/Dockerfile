@@ -43,14 +43,18 @@ RUN useradd -r -g $GID -u $UID -m -d /home/dev-user -s /sbin/nologin -c "User" d
 RUN echo "dev-user     ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 USER dev-user
 
-# Add PATH
+# Add environment variables
+# Vitis HLS setup
 RUN echo 'export LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LIBRARY_PATH' >> /home/dev-user/.bashrc
 RUN echo 'export LD_LIBRARY_PATH=""' >> /home/dev-user/.bashrc
 ENV vhls $VHLS_PATH
 RUN echo "source ${vhls}/Vitis_HLS/2020.2/settings64.sh" >> /home/dev-user/.bashrc
-RUN echo 'export PATH=$PATH:/workspace/llvm/build/bin:/workspace/build/bin' >> /home/dev-user/.bashrc
 RUN echo 'source /workspace/scripts/setup-vitis-hls-llvm.sh' >> /home/dev-user/.bashrc
+# PATH
+RUN echo 'export PATH=$PATH:/workspace/llvm/build/bin:/workspace/build/bin' >> /home/dev-user/.bashrc
+# Thread setup
 RUN echo 'export nproc=$(grep -c ^processor /proc/cpuinfo)' >> /home/dev-user/.bashrc
+# Evaluation script path:
 RUN echo 'export PYTHONPATH=/workspace' >> /home/dev-user/.bashrc
 
 WORKDIR workspace
