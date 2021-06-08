@@ -3,7 +3,7 @@
 #
 # USE: cd $PHSIM \
 #      && PYTHONPATH=$PWD \
-#      && python3 scripts/pb-flow.py -c -j $(nproc) example/polybench
+#      && python3 scripts/pb-flow.py -c example/polybench
 
 import subprocess
 import os
