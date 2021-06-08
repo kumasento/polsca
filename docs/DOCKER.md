@@ -6,6 +6,7 @@ Author: Jianyi Cheng
 
 To build a Docker container with Phism installed:
 ```sh
+make sync
 make build-docker vhls=${YOUR_VITIS_DIR}
 ```
 PS: To check your `${YOUR_VITIS_DIR}`, you should see the following when run:
