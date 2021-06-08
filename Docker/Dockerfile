@@ -21,7 +21,7 @@ RUN dnf install -y gperftools gperftools-devel
 
 # Phism dependences
 RUN dnf install -y llvm clang python3 gmp-devel pcre-devel \
-                   openssl openssl-devel
+                   openssl openssl-devel llvm-devel
 RUN dnf --enablerepo=powertools install texinfo -y
 # build the following packages from source:
 RUN mkdir -p /dkrPkgs
