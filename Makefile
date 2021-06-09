@@ -37,8 +37,8 @@ sync:
 	git submodule sync
 	git submodule update --init --recursive
 
-clean: clean_phism
+clean: clean-phism
 	rm -rf $(phism)/llvm/build
 
-clean_phism:
+clean-phism:
 	rm -rf $(phism)/build
