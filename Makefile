@@ -1,7 +1,7 @@
 user=$(if $(shell id -u),$(shell id -u),9001)
 group=$(if $(shell id -g),$(shell id -g),1000)
 phism=/workspace
-vhls=/jc9016/tools/Xilinx/2020.2
+vhls=/tools/Xilinx/2020.2
 th=1
 
 # Build Phism
@@ -10,7 +10,7 @@ build-docker: test-docker
 	-c "make build-phism"
 	echo "Phism has been installed successfully!"
 
-# Clone submodule and build docker container
+# Build docker container
 test-docker:
 	(cd Docker; docker build --build-arg UID=$(user) --build-arg GID=$(group) --build-arg VHLS_PATH=$(vhls) . --tag phism8)
 
