@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 # Summarize the results from pb-flow runs.
+#
+# USE: cd $PHISM \
+#      && PYTHONPATH=$PWD \
+#      && python3 scripts/pb-report.py tmp/phism/pb-flow.20210608-235502
 
 import os
 import argparse
