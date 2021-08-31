@@ -5,31 +5,42 @@
 #      && PYTHONPATH=$PWD \
 #      && python3 scripts/pb-flow.py -c example/polybench
 
-import subprocess
-import os
-import sys
 import argparse
+import os
+import subprocess
+import sys
+
 import python.utils.polybench as pb_utils
 
 
 def main():
-    """ Main entry """
-    parser = argparse.ArgumentParser(description='Run Polybench experiments')
-    parser.add_argument('pb_dir', type=str, help='Polybench directory')
-    parser.add_argument('-d', '--debug', action='store_true',
-                        help='Enable debug mode')
-    parser.add_argument('-p', '--polymer', action='store_true',
-                        help='Use Polymer to perform polyhedral transformation')
-    parser.add_argument('-c', '--cosim', action='store_true',
-                        help='Enable co-simulation')
-    parser.add_argument('-j', '--job', type=int, default=1,
-                        help='Number of parallel jobs (default: 1)')
-    parser.add_argument('--dataset', choices=pb_utils.POLYBENCH_DATASETS,
-                        default='MINI', help='Polybench dataset size. ')
+    """Main entry"""
+    parser = argparse.ArgumentParser(description="Run Polybench experiments")
+    parser.add_argument("pb_dir", type=str, help="Polybench directory")
+    parser.add_argument("-d", "--debug", action="store_true", help="Enable debug mode")
+    parser.add_argument(
+        "-p",
+        "--polymer",
+        action="store_true",
+        help="Use Polymer to perform polyhedral transformation",
+    )
+    parser.add_argument(
+        "-c", "--cosim", action="store_true", help="Enable co-simulation"
+    )
+    parser.add_argument(
+        "-j", "--job", type=int, default=1, help="Number of parallel jobs (default: 1)"
+    )
+    parser.add_argument(
+        "--dataset",
+        choices=pb_utils.POLYBENCH_DATASETS,
+        default="MINI",
+        help="Polybench dataset size. ",
+    )
+    parser.add_argument("--cleanup", action="store_true", help="Cleanup after run.")
     args = parser.parse_args()
 
-    pb_utils.pb_flow_runner(args)
+    pb_utils.pb_flow_runner(pb_utils.PbFlowOptions(**vars(args)))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

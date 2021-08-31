@@ -430,7 +430,7 @@ class PbFlowOptions:
     debug: bool
     dataset: str
     cleanup: bool
-    split: bool
+    split: str = "NO_SPLIT"  # other options: "SPLIT", "HEURISTIC"
 
 
 class PbFlow:
@@ -515,11 +515,11 @@ class PbFlow:
 
     def split_statements(self):
         """Use Polymer to split statements."""
-        if not self.options.split:
+        if self.options.split == "NO_SPLIT":
             return self
 
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(
-            ".mlir", ".split.mlir"
+            ".mlir", f".{self.options.split.lower()}.mlir"
         )
         log_file = self.cur_file.replace(".mlir", ".log")
 
@@ -528,7 +528,11 @@ class PbFlow:
                 "polymer-opt",
                 src_file,
                 "-reg2mem",
-                "-annotate-splittable",
+                (
+                    "-annotate-splittable"
+                    if self.options.split == "SPLIT"
+                    else "-annotate-heuristic"
+                ),
                 "-scop-stmt-split",
                 "-canonicalize",
             ],
@@ -565,7 +569,7 @@ class PbFlow:
         log_file = self.cur_file.replace(".mlir", ".log")
 
         passes = []
-        if not self.options.split:  # The split stmt has applied -reg2mem
+        if self.options.split == "NO_SPLIT":  # The split stmt has applied -reg2mem
             passes += [
                 "-reg2mem",
             ]
@@ -723,6 +727,7 @@ class PbFlow:
                 tbgen_syn_verilog_dir
             )
 
+            shutil.rmtree(os.path.join(base_dir, "tb.backup"))
             shutil.copytree(
                 os.path.join(base_dir, "tb"), os.path.join(base_dir, "tb.backup")
             )
