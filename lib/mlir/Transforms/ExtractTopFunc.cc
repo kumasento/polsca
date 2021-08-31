@@ -57,6 +57,33 @@ static void unionCallee(FuncOp f, ModuleOp m,
   }
 }
 
+/// If any function argument is a constant, we will rewrite its uses in the
+/// function body by the constant value. The function interface won't be
+/// changed.
+static void resolveConstantArgs(FuncOp f, ModuleOp m, OpBuilder &b) {
+  OpBuilder::InsertionGuard g(b);
+
+  // Find the caller for f.
+  mlir::CallOp caller;
+  m.walk([&](mlir::CallOp callOp) {
+    if (callOp.getCallee() == f.getName()) {
+      assert(!caller &&
+             "There should be only one caller for the target function.");
+      caller = callOp;
+    }
+  });
+
+  for (auto arg : enumerate(f.getArguments())) {
+    auto val = caller.getOperand(arg.index());
+    if (mlir::ConstantOp constantOp =
+            dyn_cast<mlir::ConstantOp>(val.getDefiningOp())) {
+      b.setInsertionPointToStart(&f.getBlocks().front());
+      Operation *newConstant = b.clone(*val.getDefiningOp());
+      arg.value().replaceAllUsesWith(newConstant->getResult(0));
+    }
+  }
+}
+
 namespace {
 
 /// Extract the specified top function out of its module.
@@ -78,6 +105,8 @@ struct ExtractTopFuncPass
 
     FuncOp f = dyn_cast_or_null<FuncOp>(m.lookupSymbol(topFuncName));
     assert(f && "Given name cannot be found in the module as a FuncOp.");
+
+    // resolveConstantArgs(f, m, b);
 
     SmallPtrSet<Operation *, 4> keep;
     unionCallee(f, m, keep);
