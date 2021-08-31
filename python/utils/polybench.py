@@ -14,6 +14,7 @@ from collections import namedtuple
 from dataclasses import dataclass
 from multiprocessing import Pool
 from timeit import default_timer as timer
+from typing import List, Optional
 
 import pandas as pd
 
@@ -283,13 +284,16 @@ def to_pandas(records):
 # ----------------------- Benchmark runners ---------------------------
 
 
-def discover_examples(d):
+def discover_examples(d: str, examples: Optional[List[str]] = None) -> List[str]:
     """Find examples in the given directory."""
+    if not examples:
+        examples = POLYBENCH_EXAMPLES
+
     return sorted(
         [
             root
             for root, _, _ in os.walk(d)
-            if os.path.basename(root).lower() in POLYBENCH_EXAMPLES
+            if os.path.basename(root).lower() in examples
         ]
     )
 
@@ -430,6 +434,9 @@ class PbFlowOptions:
     debug: bool
     dataset: str
     cleanup: bool
+    work_dir: str = ""
+    dry_run: bool = False
+    examples: List[str] = POLYBENCH_EXAMPLES
     split: str = "NO_SPLIT"  # other options: "SPLIT", "HEURISTIC"
 
 
@@ -471,18 +478,39 @@ class PbFlow:
             self.status = 1
             self.errmsg = e
 
+    def run_command(
+        self, cmd: str = "", cmd_list: Optional[List[str]] = None, **kwargs
+    ):
+        """Single entry for running a command."""
+        if cmd_list:
+            if self.options.dry_run:
+                print(" ".join(cmd_list))
+                return
+            return subprocess.run(cmd_list, **kwargs)
+        else:
+            if self.options.dry_run:
+                print(cmd)
+                return
+            return subprocess.run(cmd, **kwargs)
+
+    def get_program_abspath(self, program: str) -> str:
+        """Get the absolute path of a program."""
+        return str(
+            subprocess.check_output(["which", program], env=self.env), "utf-8"
+        ).strip()
+
     def compile_c(self):
         """Compile C code to MLIR using mlir-clang."""
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(".c", ".mlir")
 
-        subprocess.run('sed -i "s/static//g" "{}"'.format(src_file), shell=True)
-        subprocess.run(
-            [
-                "mlir-clang",
+        self.run_command(cmd=f'sed -i "s/static//g" {src_file}', shell=True)
+        self.run_command(
+            cmd_list=[
+                self.get_program_abspath("mlir-clang"),
                 src_file,
                 "-memref-fullrank",
                 "-D",
-                "{}_DATASET".format(self.options.dataset),
+                f"{self.options.dataset}_DATASET",
                 "-I={}".format(
                     os.path.join(
                         self.root_dir,
@@ -506,8 +534,13 @@ class PbFlow:
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(
             ".mlir", ".pre.mlir"
         )
-        subprocess.run(
-            ["mlir-opt", src_file, "-sccp", "-canonicalize"],
+        self.run_command(
+            cmd_list=[
+                self.get_program_abspath("mlir-opt"),
+                src_file,
+                "-sccp",
+                "-canonicalize",
+            ],
             stdout=open(self.cur_file, "w"),
             env=self.env,
         )
@@ -523,9 +556,9 @@ class PbFlow:
         )
         log_file = self.cur_file.replace(".mlir", ".log")
 
-        subprocess.run(
-            [
-                "polymer-opt",
+        self.run_command(
+            cmd_list=[
+                self.get_program_abspath("polymer-opt"),
                 src_file,
                 "-reg2mem",
                 (
@@ -548,9 +581,9 @@ class PbFlow:
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(
             ".mlir", ".kern.mlir"
         )
-        subprocess.run(
-            'phism-opt {} -extract-top-func="name={}"'.format(
-                src_file, get_top_func(src_file)
+        self.run_command(
+            cmd='{} {} -extract-top-func="name={}"'.format(
+                self.get_program_abspath("phism-opt"), src_file, get_top_func(src_file)
             ),
             shell=True,
             stdout=open(self.cur_file, "w"),
@@ -578,12 +611,14 @@ class PbFlow:
             "-pluto-opt",
         ]
 
-        subprocess.run(
-            [
-                "polymer-opt",
-                src_file,
-            ]
-            + passes,
+        self.run_command(
+            cmd_list=(
+                [
+                    self.get_program_abspath("polymer-opt"),
+                    src_file,
+                ]
+                + passes
+            ),
             stderr=open(log_file, "w"),
             stdout=open(self.cur_file, "w"),
             env=self.env,
@@ -596,18 +631,21 @@ class PbFlow:
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(".mlir", ".llvm")
 
         args = [
-            "mlir-opt",
+            self.get_program_abspath("mlir-opt"),
             src_file,
             "-lower-affine",
             "-inline",
             "-convert-scf-to-std",
             "-canonicalize",
             '-convert-std-to-llvm="use-bare-ptr-memref-call-conv=1"',
-            "| mlir-translate -mlir-to-llvmir",
+            f"| {self.get_program_abspath('mlir-translate')} -mlir-to-llvmir",
         ]
 
-        subprocess.run(
-            " ".join(args), shell=True, stdout=open(self.cur_file, "w"), env=self.env
+        self.run_command(
+            cmd=" ".join(args),
+            shell=True,
+            stdout=open(self.cur_file, "w"),
+            env=self.env,
         )
 
         return self
@@ -641,8 +679,11 @@ class PbFlow:
             "-strip-attr",
         ]
 
-        subprocess.run(
-            " ".join(args), shell=True, stdout=open(self.cur_file, "w"), env=self.env
+        self.run_command(
+            cmd=" ".join(args),
+            shell=True,
+            stdout=open(self.cur_file, "w"),
+            env=self.env,
         )
 
         return self
@@ -674,6 +715,22 @@ class PbFlow:
                     config=run_config,
                 )
             )
+        with open(tbgen_vitis_tcl, "w") as f:
+            f.write(
+                TBGEN_VITIS_TCL.format(
+                    src_dir=base_dir,
+                    src_base=os.path.basename(src_file).split(".")[0],
+                    top_func=top_func,
+                    work_dir=self.work_dir,
+                    config=run_config,
+                    pb_dataset=self.options.dataset,
+                )
+            )
+        with open(cosim_vitis_tcl, "w") as f:
+            f.write(COSIM_VITIS_TCL)
+
+        if self.options.dry_run:
+            return self
 
         phism_proc = subprocess.Popen(
             ["vitis_hls", phism_vitis_tcl],
@@ -684,20 +741,6 @@ class PbFlow:
 
         # Run tbgen Vitis
         if self.options.cosim:
-            with open(tbgen_vitis_tcl, "w") as f:
-                f.write(
-                    TBGEN_VITIS_TCL.format(
-                        src_dir=base_dir,
-                        src_base=os.path.basename(src_file).split(".")[0],
-                        top_func=top_func,
-                        work_dir=self.work_dir,
-                        config=run_config,
-                        pb_dataset=self.options.dataset,
-                    )
-                )
-            with open(cosim_vitis_tcl, "w") as f:
-                f.write(COSIM_VITIS_TCL)
-
             tbgen_proc = subprocess.Popen(
                 ["vitis_hls", tbgen_vitis_tcl],
                 cwd=base_dir,
@@ -727,9 +770,10 @@ class PbFlow:
                 tbgen_syn_verilog_dir
             )
 
-            shutil.rmtree(os.path.join(base_dir, "tb.backup"))
             shutil.copytree(
-                os.path.join(base_dir, "tb"), os.path.join(base_dir, "tb.backup")
+                os.path.join(base_dir, "tb"),
+                os.path.join(base_dir, "tb.backup"),
+                dirs_exist_ok=True,
             )
 
             for f in glob.glob(os.path.join(phism_syn_verilog_dir, "*.v*")):
@@ -772,23 +816,30 @@ def pb_flow_process(d, work_dir, options):
     )
 
 
-def pb_flow_runner(options):
+def pb_flow_runner(options: PbFlowOptions):
     """Run pb-flow with the provided arguments."""
     assert os.path.isdir(options.pb_dir)
 
     # Copy all the files from the source pb_dir to a target temporary directory.
-    tmp_dir = os.path.join(
-        get_project_root(), "tmp", "phism", "pb-flow.{}".format(get_timestamp())
-    )
-    shutil.copytree(options.pb_dir, tmp_dir)
+    if not options.work_dir:
+        options.work_dir = os.path.join(
+            get_project_root(), "tmp", "phism", "pb-flow.{}".format(get_timestamp())
+        )
+    if not os.path.exists(options.work_dir):
+        shutil.copytree(options.pb_dir, options.work_dir)
 
-    print(">>> Starting {} jobs (work_dir={}) ...".format(options.job, tmp_dir))
+    print(
+        ">>> Starting {} jobs (work_dir={}) ...".format(options.job, options.work_dir)
+    )
 
     start = timer()
     with Pool(options.job) as p:
+        # TODO: don't pass work_dir as an argument. Reuse it.
         p.map(
-            functools.partial(pb_flow_process, work_dir=tmp_dir, options=options),
-            discover_examples(tmp_dir),
+            functools.partial(
+                pb_flow_process, work_dir=options.work_dir, options=options
+            ),
+            discover_examples(options.work_dir, examples=options.examples),
         )
     end = timer()
     print("Elapsed time: {:.6f} sec".format(end - start))
