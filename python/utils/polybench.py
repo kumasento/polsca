@@ -63,6 +63,24 @@ Record = namedtuple("Record", RECORD_FIELDS)
 Resource = namedtuple("Resource", RESOURCE_FIELDS)
 RunStatus = namedtuple("RunStatus", RUN_STATUS_FIELDS)
 
+
+@dataclass
+class PbFlowOptions:
+    """An interface for the CLI options."""
+
+    pb_dir: str
+    job: int
+    polymer: bool
+    cosim: bool
+    debug: bool
+    dataset: str
+    cleanup: bool
+    work_dir: str = ""
+    dry_run: bool = False
+    examples: List[str] = POLYBENCH_EXAMPLES
+    split: str = "NO_SPLIT"  # other options: "SPLIT", "HEURISTIC"
+
+
 # ----------------------- Utility functions ------------------------------------
 
 
@@ -214,7 +232,7 @@ def process_directory(d):
     )
 
 
-def process_pb_flow_result_dir(d):
+def process_pb_flow_result_dir(d: str, options: PbFlowOptions):
     """Process the result directory from pb-flow runs."""
     records = []
     assert os.path.isdir(d)
@@ -223,7 +241,7 @@ def process_pb_flow_result_dir(d):
     pattern = "{}/**/*.h".format(d)
     for src_header_file in glob.glob(pattern, recursive=True):
         basename = os.path.basename(src_header_file)[:-2]  # skip '.h'
-        if basename in POLYBENCH_EXAMPLES:
+        if basename in options.examples:
             records.append(
                 process_directory(os.path.abspath(os.path.dirname(src_header_file)))
             )
@@ -420,24 +438,6 @@ cosim_design
 
 exit
 """
-
-
-""" An interface for the CLI options. """
-
-
-@dataclass
-class PbFlowOptions:
-    pb_dir: str
-    job: int
-    polymer: bool
-    cosim: bool
-    debug: bool
-    dataset: str
-    cleanup: bool
-    work_dir: str = ""
-    dry_run: bool = False
-    examples: List[str] = POLYBENCH_EXAMPLES
-    split: str = "NO_SPLIT"  # other options: "SPLIT", "HEURISTIC"
 
 
 class PbFlow:
@@ -795,7 +795,7 @@ class PbFlow:
         return self
 
 
-def pb_flow_process(d, work_dir, options):
+def pb_flow_process(d: str, work_dir: str, options: PbFlowOptions):
     """Process a single example."""
     # Make sure the example directory and the work directory are both absolute paths.
     # TODO: make it clear what is d.
@@ -809,11 +809,22 @@ def pb_flow_process(d, work_dir, options):
     flow.run(src_file)
     end = timer()
 
-    print(
-        '>>> Finished {:15s} elapsed: {:.6f} secs   Status: {}  Error: "{}"'.format(
-            os.path.basename(d), (end - start), flow.status, flow.errmsg
+    if not options.dry_run:
+        print(
+            '>>> Finished {:15s} elapsed: {:.6f} secs   Status: {}  Error: "{}"'.format(
+                os.path.basename(d), (end - start), flow.status, flow.errmsg
+            )
         )
-    )
+
+
+def pb_flow_dump_report(options: PbFlowOptions):
+    """Dump report to the work_dir."""
+    df = to_pandas(process_pb_flow_result_dir(options.work_dir, options))
+    print("\n")
+    print(df)
+    print("\n")
+
+    df.to_csv(os.path.join(options.work_dir, f"pb-flow.report.{get_timestamp()}.csv"))
 
 
 def pb_flow_runner(options: PbFlowOptions):
@@ -843,3 +854,6 @@ def pb_flow_runner(options: PbFlowOptions):
         )
     end = timer()
     print("Elapsed time: {:.6f} sec".format(end - start))
+
+    print(">>> Dumping report ... ")
+    pb_flow_dump_report(options)
