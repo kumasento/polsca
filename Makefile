@@ -1,8 +1,9 @@
 user=$(if $(shell id -u),$(shell id -u),9001)
 group=$(if $(shell id -g),$(shell id -g),1000)
 phism=/workspace
-vhls=/scratch/jc9016/tools/Xilinx/2020.2
+vhls=/tools/Xilinx/2020.2
 th=1
+example=2mm
 
 # Build Phism
 build-docker: test-docker
@@ -17,6 +18,9 @@ test-docker:
 # Enter docker container
 shell:
 	docker run -it -v $(shell pwd):/workspace -v $(vhls):$(vhls) phism8:latest /bin/bash
+
+test-example:
+	python3 scripts/pb-flow.py ./example/polybench -e $(example) --work-dir ./tmp/phism/pb-flow.tmp --cosim
 
 # Evaluate polybench (baseline) - need to be used in environment
 test-polybench:
