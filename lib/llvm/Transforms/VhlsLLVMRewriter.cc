@@ -439,6 +439,8 @@ static Function *replaceFunction(Function *F1, Function *F2) {
 }
 
 static SmallVector<Function *> TopologicalSort(ArrayRef<Function *> funcs) {
+  SmallPtrSet<Function *, 4> Avail{funcs.begin(), funcs.end()};
+
   DenseMap<Function *, SmallPtrSet<Function *, 4>> graph;
   for (Function *F : funcs)
     graph[F] = {};
@@ -446,7 +448,8 @@ static SmallVector<Function *> TopologicalSort(ArrayRef<Function *> funcs) {
   for (Function *F : funcs)
     for (BasicBlock &BB : F->getBasicBlockList())
       for (Instruction &I : BB)
-        if (isa<CallInst>(I))
+        if (isa<CallInst>(I) &&
+            Avail.count(cast<CallInst>(I).getCalledFunction()))
           graph[F].insert(cast<CallInst>(I).getCalledFunction());
 
   SmallVector<Function *> sorted;
@@ -573,8 +576,7 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
           Args.push_back(RankedArrVMap[Arg]);
 
       // New caller.
-      CallInst *NewCaller =
-          CallInst::Create(FuncToNew[Callee], Args, Twine(), Caller);
+      CallInst::Create(FuncToNew[Callee], Args, Twine(), Caller);
       // Erase the original caller.
       Caller->eraseFromParent();
     }
