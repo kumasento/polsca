@@ -79,6 +79,7 @@ class PbFlowOptions:
     dry_run: bool = False
     examples: List[str] = POLYBENCH_EXAMPLES
     split: str = "NO_SPLIT"  # other options: "SPLIT", "HEURISTIC"
+    loop_transforms: bool = True
 
 
 # ----------------------- Utility functions ------------------------------------
@@ -471,6 +472,7 @@ class PbFlow:
                 .split_statements()
                 .extract_top_func()
                 .polymer_opt()
+                .loop_transforms()
                 .lower_llvm()
                 .vitis_opt()
                 .run_vitis()
@@ -627,6 +629,28 @@ class PbFlow:
 
         return self
 
+    def loop_transforms(self):
+        """Run Phism loop transforms."""
+        if not self.options.loop_transforms:
+            return self
+
+        src_file, self.cur_file = self.cur_file, self.cur_file.replace(
+            ".mlir", ".loop_transforms.mlir"
+        )
+        log_file = self.cur_file.replace(".mlir", ".log")
+
+        args = [self.get_program_abspath("phism-opt"), src_file, "-loop-transforms"]
+
+        self.run_command(
+            cmd=" ".join(args),
+            shell=True,
+            stderr=open(log_file, "w"),
+            stdout=open(self.cur_file, "w"),
+            env=self.env,
+        )
+
+        return self
+
     def lower_llvm(self):
         """Lower from MLIR to LLVM."""
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(".mlir", ".llvm")
@@ -634,8 +658,8 @@ class PbFlow:
         args = [
             self.get_program_abspath("mlir-opt"),
             src_file,
+            "-inline",  # inline only those private functions.
             "-lower-affine",
-            "-inline",
             "-convert-scf-to-std",
             "-canonicalize",
             '-convert-std-to-llvm="use-bare-ptr-memref-call-conv=1"',

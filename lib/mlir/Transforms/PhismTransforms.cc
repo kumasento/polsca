@@ -8,6 +8,9 @@
 
 namespace phism {
 
-void registerAllPhismPasses() { registerExtractTopFuncPass(); }
+void registerAllPhismPasses() {
+  registerLoopTransformPasses();
+  registerExtractTopFuncPass();
+}
 
 } // namespace phism

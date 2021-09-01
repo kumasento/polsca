@@ -255,6 +255,10 @@ findInsertExractValueSequences(Function &F,
   }
 }
 
+/// After this pass, a new function cloned from `F` will have ranked array
+/// arguments at the end, which are duplicated from those unranked.
+/// The mapping from unranked arrays to their resp. ranked counterparts will be
+/// stored in `RankedArrVMap`.
 static Function *
 duplicateFunctionsWithRankedArrays(Function *F,
                                    SmallVectorImpl<InsExtSequence> &Seqs,
@@ -275,7 +279,7 @@ duplicateFunctionsWithRankedArrays(Function *F,
   // with .new, and possibly we won't need this feature.
   Function *NewFunc =
       Function::Create(NewFuncType, F->getLinkage(), F->getAddressSpace(),
-                       F->getName() + ".new", F->getParent());
+                       F->getName() + ".dup_ranked", F->getParent());
 
   // For cloning, we should map the original parameters to the new ones in the
   // new function.
@@ -379,6 +383,8 @@ static Instruction *duplicateGEPWithRankedArray(Instruction *I,
   return NewGEP;
 }
 
+/// Clone F2 into a new function without duplicated parameters, and replace F1's
+/// uses with the new function being created.
 static Function *replaceFunction(Function *F1, Function *F2) {
   // Create the new function interface.
   SmallVector<Type *, 4> ParamTypes;
@@ -395,10 +401,23 @@ static Function *replaceFunction(Function *F1, Function *F2) {
   // erase F1. After this step, we have a clean state F1 with the updated
   // argument types.
   std::string Name = F1->getName().str();
-  F1->eraseFromParent();
+  F1->setName(Name + Twine(".origin"));
   Function *NewFunc =
       Function::Create(NewFuncType, F2->getLinkage(), F2->getAddressSpace(),
                        Name, F2->getParent());
+
+  // Create a mapping from the original parameter list to the new one.
+  DenseMap<unsigned, unsigned> ArgMap;
+  unsigned NumArgs = 0;
+  FunctionType *F1Type = F1->getFunctionType();
+  // First gather those unaffected indices.
+  for (unsigned i = 0; i < F1Type->getFunctionNumParams(); ++i)
+    if (!F2->getArg(i)->use_empty())
+      ArgMap[NumArgs++] = i;
+  // Then put every other indices at the end.
+  for (unsigned i = 0; i < F1Type->getFunctionNumParams(); ++i)
+    if (F2->getArg(i)->use_empty())
+      ArgMap[NumArgs++] = i;
 
   // Prepare parameter mapping for cloning. Note that we also skip no-use
   // argument here.
@@ -413,19 +432,56 @@ static Function *replaceFunction(Function *F1, Function *F2) {
 
   // Clone.
   SmallVector<ReturnInst *, 4> Returns;
-  CloneFunctionInto(NewFunc, F2, VMap,
-                    CloneFunctionChangeType::LocalChangesOnly, Returns);
+  llvm::CloneFunctionInto(NewFunc, F2, VMap,
+                          CloneFunctionChangeType::LocalChangesOnly, Returns);
 
   return NewFunc;
 }
 
-/// This helper function convert the MemRef value represented by an aggregated
-/// type to a ranked N-d array. The function interface, as well as the internal
-/// usage of GEP will be updated.
+static SmallVector<Function *> TopologicalSort(ArrayRef<Function *> funcs) {
+  DenseMap<Function *, SmallPtrSet<Function *, 4>> graph;
+  for (Function *F : funcs)
+    graph[F] = {};
+
+  for (Function *F : funcs)
+    for (BasicBlock &BB : F->getBasicBlockList())
+      for (Instruction &I : BB)
+        if (isa<CallInst>(I))
+          graph[F].insert(cast<CallInst>(I).getCalledFunction());
+
+  SmallVector<Function *> sorted;
+  while (true) {
+    SmallPtrSet<Function *, 4> to_remove;
+    for (auto &it : graph)
+      if (it.second.empty())
+        to_remove.insert(it.first);
+
+    for (Function *F : to_remove) {
+      graph.erase(graph.find(F));
+      sorted.push_back(F);
+    }
+
+    for (auto &it : graph)
+      for (Function *F : to_remove)
+        it.second.erase(F);
+
+    if (to_remove.empty())
+      break;
+  }
+
+  assert(sorted.size() == funcs.size() &&
+         "The input list of functions cannot form an acyclic graph.");
+
+  return sorted;
+}
+
+/// This helper function convert the MemRef value represented by an
+/// aggregated type to a ranked N-d array. The function interface, as well
+/// as the internal usage of GEP will be updated.
 ///
 /// The overall workflow is:
-/// 1. Gather insertvalue/extractvalue sequences that identify aggregated MemRef
-/// types.
+/// 1. Gather insertvalue/extractvalue sequences that identify aggregated
+/// MemRef types.
 /// 2. Duplicate the original function with extra ranked array types.
 /// 3. Replace GEPs in the duplicated function.
 /// 4. Clone the content back from the duplicated one. Clean up.
@@ -433,12 +489,12 @@ static Function *replaceFunction(Function *F1, Function *F2) {
 /// If ranked is passed as false, this function stops at step 1.
 ///
 static void convertMemRefToArray(Module &M, bool ranked = false) {
-  DenseMap<Function *, SmallVector<InsExtSequence, 4>> FuncToSeqs;
+  DenseMap<Function *, SmallVector<InsExtSequence>> FuncToSeqs;
 
   /// First, we gather the mapping from Functions to all the InsExtSequences
   /// that they should rewrite on.
   for (auto &F : M) {
-    SmallVector<InsExtSequence, 4> Seqs;
+    SmallVector<InsExtSequence> Seqs;
     findInsertExractValueSequences(F, Seqs);
 
     if (Seqs.empty())
@@ -456,13 +512,25 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
   if (!ranked)
     return;
 
-  // Next, we iterate these Function, Sequence pairs and create new candidate
-  // functions. The new function at this stage looks almost the same as the
-  // original one, just have additional arguments that are ranked arrays.
-  for (auto &it : FuncToSeqs) {
+  // Topological sort the functions.
+  SmallVector<Function *, 4> Funcs;
+  for (auto &it : FuncToSeqs)
+    Funcs.push_back(it.first);
+  Funcs = TopologicalSort(Funcs);
+
+  // Map to the new version.
+  DenseMap<Function *, Function *> FuncToNew;
+
+  // Next, we iterate these Function, Sequence pairs and create new
+  // candidate functions. The new function at this stage looks almost the
+  // same as the original one, just have additional arguments that are
+  // ranked arrays.
+  for (Function *F : Funcs) {
     ValueToValueMapTy RankedArrVMap;
+    SmallVector<InsExtSequence> &Seqs = FuncToSeqs[F];
+
     Function *NewFunc =
-        duplicateFunctionsWithRankedArrays(it.first, it.second, RankedArrVMap);
+        duplicateFunctionsWithRankedArrays(F, Seqs, RankedArrVMap);
 
     SmallVector<Instruction *, 4> GEPList;
     for (BasicBlock &BB : *NewFunc)
@@ -479,10 +547,48 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
       I->eraseFromParent();
     }
 
-    replaceFunction(it.first, NewFunc);
+    // If there is any caller.
+    SmallVector<CallInst *> Callers;
+    for (BasicBlock &BB : *NewFunc)
+      for (Instruction &I : BB)
+        if (CallInst *CI = dyn_cast<CallInst>(&I))
+          if (FuncToNew.count(CI->getCalledFunction()))
+            Callers.push_back(CI);
+
+    for (CallInst *Caller : Callers) {
+      Function *Callee = Caller->getCalledFunction();
+
+      // Initial arguments.
+      SmallVector<Value *> Args;
+      unsigned NumArg = 0;
+      for (Value *Arg : Caller->args())
+        if (Arg->getType() == FuncToNew[Callee]->getArg(NumArg)->getType()) {
+          Args.push_back(Arg);
+          NumArg++;
+        }
+
+      // Duplicated arguments.
+      for (Value *Arg : Caller->args())
+        if (RankedArrVMap.count(Arg))
+          Args.push_back(RankedArrVMap[Arg]);
+
+      // New caller.
+      CallInst *NewCaller =
+          CallInst::Create(FuncToNew[Callee], Args, Twine(), Caller);
+      // Erase the original caller.
+      Caller->eraseFromParent();
+    }
+
+    FuncToNew[F] = replaceFunction(F, NewFunc);
+
     // Finally, delete the duplicate.
     NewFunc->eraseFromParent();
   }
+
+  // Erase the original functions backward.
+  std::reverse(Funcs.begin(), Funcs.end());
+  for (Function *F : Funcs)
+    F->eraseFromParent();
 }
 
 namespace {
@@ -514,8 +620,8 @@ struct ConvertMemRefToRankedArray : public ModulePass {
 
 } // namespace
 
-/// Rename the name of basic blocks, function arguments, and values defined by
-/// instructions with string prefixes.
+/// Rename the name of basic blocks, function arguments, and values defined
+/// by instructions with string prefixes.
 static void
 renameBasicBlocksAndValues(Module &M,
                            llvm::ArrayRef<llvm::StringRef> ParamNames) {
