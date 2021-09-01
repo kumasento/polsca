@@ -23,7 +23,7 @@ RUN dnf install -y gperftools gperftools-devel
 RUN dnf install -y llvm clang python3 gmp-devel pcre-devel \
                    openssl openssl-devel llvm-devel
 RUN dnf --enablerepo=powertools install texinfo -y
-RUN python3 -m pip install pandas
+RUN python3 -m pip install pandas dataclasses
 # build the following packages from source:
 RUN mkdir -p /dkrPkgs
 # cmake 3.20

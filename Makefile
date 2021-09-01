@@ -1,7 +1,7 @@
 user=$(if $(shell id -u),$(shell id -u),9001)
 group=$(if $(shell id -g),$(shell id -g),1000)
 phism=/workspace
-vhls=/tools/Xilinx/2020.2
+vhls=/scratch/jc9016/tools/Xilinx/2020.2
 th=1
 
 # Build Phism
@@ -28,7 +28,6 @@ test-polybench-polymer:
 
 # Build LLVM and Phism
 build-phism:
-	source scripts/setup-vitis-hls-llvm.sh
 	./scripts/build-llvm.sh
 	./scripts/build-phism.sh
 
