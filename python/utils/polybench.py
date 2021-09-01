@@ -80,6 +80,7 @@ class PbFlowOptions:
     examples: List[str] = POLYBENCH_EXAMPLES
     split: str = "NO_SPLIT"  # other options: "SPLIT", "HEURISTIC"
     loop_transforms: bool = True
+    constant_args: bool = True
 
 
 # ----------------------- Utility functions ------------------------------------
@@ -473,6 +474,7 @@ class PbFlow:
                 .extract_top_func()
                 .polymer_opt()
                 .loop_transforms()
+                .constant_args()
                 .lower_llvm()
                 .vitis_opt()
                 .run_vitis()
@@ -640,6 +642,33 @@ class PbFlow:
         log_file = self.cur_file.replace(".mlir", ".log")
 
         args = [self.get_program_abspath("phism-opt"), src_file, "-loop-transforms"]
+
+        self.run_command(
+            cmd=" ".join(args),
+            shell=True,
+            stderr=open(log_file, "w"),
+            stdout=open(self.cur_file, "w"),
+            env=self.env,
+        )
+
+        return self
+
+    def constant_args(self):
+        """Run Phism constant args."""
+        if not self.options.constant_args:
+            return self
+
+        src_file, self.cur_file = self.cur_file, self.cur_file.replace(
+            ".mlir", ".constant_args.mlir"
+        )
+        log_file = self.cur_file.replace(".mlir", ".log")
+
+        args = [
+            self.get_program_abspath("phism-opt"),
+            src_file,
+            "-replace-constant-arguments",
+            "-canonicalize",
+        ]
 
         self.run_command(
             cmd=" ".join(args),

@@ -383,6 +383,10 @@ static Instruction *duplicateGEPWithRankedArray(Instruction *I,
   return NewGEP;
 }
 
+static bool shouldSkipArgument(Value *arg) {
+  return arg->use_empty() && arg->getType()->isPointerTy();
+}
+
 /// Clone F2 into a new function without duplicated parameters, and replace F1's
 /// uses with the new function being created.
 static Function *replaceFunction(Function *F1, Function *F2) {
@@ -391,7 +395,7 @@ static Function *replaceFunction(Function *F1, Function *F2) {
   FunctionType *FuncType = F2->getFunctionType();
   // Skip no-use args, i.e., original pointers.
   for (unsigned i = 0; i < FuncType->getFunctionNumParams(); ++i)
-    if (!F2->getArg(i)->use_empty())
+    if (!shouldSkipArgument(F2->getArg(i)))
       ParamTypes.push_back(FuncType->getFunctionParamType(i));
 
   FunctionType *NewFuncType =
@@ -412,11 +416,11 @@ static Function *replaceFunction(Function *F1, Function *F2) {
   FunctionType *F1Type = F1->getFunctionType();
   // First gather those unaffected indices.
   for (unsigned i = 0; i < F1Type->getFunctionNumParams(); ++i)
-    if (!F2->getArg(i)->use_empty())
+    if (!shouldSkipArgument(F2->getArg(i)))
       ArgMap[NumArgs++] = i;
   // Then put every other indices at the end.
   for (unsigned i = 0; i < F1Type->getFunctionNumParams(); ++i)
-    if (F2->getArg(i)->use_empty())
+    if (shouldSkipArgument(F2->getArg(i)))
       ArgMap[NumArgs++] = i;
 
   // Prepare parameter mapping for cloning. Note that we also skip no-use
@@ -424,7 +428,7 @@ static Function *replaceFunction(Function *F1, Function *F2) {
   ValueToValueMapTy VMap;
   unsigned argIdx = 0;
   for (unsigned i = 0; i < F2->arg_size(); i++) {
-    if (!F2->getArg(i)->use_empty())
+    if (!shouldSkipArgument(F2->getArg(i)))
       VMap[F2->getArg(i)] = NewFunc->getArg(argIdx++);
     else // CloneFunctionInto requires every F2 arg exists as a VMap key.
       VMap[F2->getArg(i)] = UndefValue::get(F2->getArg(i)->getType());

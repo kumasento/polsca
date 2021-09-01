@@ -30,6 +30,8 @@ using namespace mlir;
 using namespace llvm;
 using namespace phism;
 
+static constexpr const char *SCOP_CONSTANT_VALUE = "scop.constant_value";
+
 /// Union the given function and all the others it calls into 'keep'.
 static void unionCallee(FuncOp f, ModuleOp m,
                         SmallPtrSetImpl<Operation *> &keep) {
@@ -57,10 +59,11 @@ static void unionCallee(FuncOp f, ModuleOp m,
   }
 }
 
-/// If any function argument is a constant, we will rewrite its uses in the
-/// function body by the constant value. The function interface won't be
-/// changed.
-static void resolveConstantArgs(FuncOp f, ModuleOp m, OpBuilder &b) {
+/// If any argument to the given function is constant (defined by ConstantOp),
+/// we will put its value into the attributes of the function, so that at later
+/// stage, once the top function has been extracted out, we can still know what
+/// are the bound constant values.
+static void annotateConstantArgs(FuncOp f, ModuleOp m, OpBuilder &b) {
   OpBuilder::InsertionGuard g(b);
 
   // Find the caller for f.
@@ -77,9 +80,7 @@ static void resolveConstantArgs(FuncOp f, ModuleOp m, OpBuilder &b) {
     auto val = caller.getOperand(arg.index());
     if (mlir::ConstantOp constantOp =
             dyn_cast<mlir::ConstantOp>(val.getDefiningOp())) {
-      b.setInsertionPointToStart(&f.getBlocks().front());
-      Operation *newConstant = b.clone(*val.getDefiningOp());
-      arg.value().replaceAllUsesWith(newConstant->getResult(0));
+      f.setArgAttr(arg.index(), SCOP_CONSTANT_VALUE, constantOp.getValue());
     }
   }
 }
@@ -106,7 +107,7 @@ struct ExtractTopFuncPass
     FuncOp f = dyn_cast_or_null<FuncOp>(m.lookupSymbol(topFuncName));
     assert(f && "Given name cannot be found in the module as a FuncOp.");
 
-    // resolveConstantArgs(f, m, b);
+    annotateConstantArgs(f, m, b);
 
     SmallPtrSet<Operation *, 4> keep;
     unionCallee(f, m, keep);
@@ -122,7 +123,35 @@ struct ExtractTopFuncPass
 
 } // namespace
 
+/// --------------------------- ReplaceConstantArguments ----------------------
+
+namespace {
+
+struct ReplaceConstantArgumentsPass
+    : public PassWrapper<ReplaceConstantArgumentsPass,
+                         OperationPass<ModuleOp>> {
+  void runOnOperation() override {
+    ModuleOp m = getOperation();
+    OpBuilder b(m.getContext());
+
+    m.walk([&](FuncOp funcOp) {
+      for (auto arg : enumerate(funcOp.getArguments())) {
+        Attribute attr = funcOp.getArgAttr(arg.index(), SCOP_CONSTANT_VALUE);
+        if (attr) {
+          b.setInsertionPointToStart(&funcOp.getBlocks().front());
+          ConstantOp constantOp = b.create<ConstantOp>(funcOp.getLoc(), attr);
+          arg.value().replaceAllUsesWith(constantOp);
+        }
+      }
+    });
+  }
+};
+} // namespace
+
 void phism::registerExtractTopFuncPass() {
   PassRegistration<ExtractTopFuncPass>(
       "extract-top-func", "Extract the top function out of its module.");
+  PassRegistration<ReplaceConstantArgumentsPass>(
+      "replace-constant-arguments",
+      "Replace the annotated constant arguments.");
 }
