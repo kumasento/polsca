@@ -14,7 +14,7 @@ import python.utils.polybench as pb_utils
 
 
 def main():
-    pp = pprint.PrettyPrinter(indent=2)
+    pp = pprint.PrettyPrinter(width=15, indent=2)
 
     parser = argparse.ArgumentParser(
         description='Process pb-flow run results.')
@@ -29,6 +29,7 @@ def main():
     records = pb_utils.process_pb_flow_result_dir(args.result_dir)
 
     print('\n>>> Parsed results:')
+    pp.
     pp.pprint(records)
 
 
