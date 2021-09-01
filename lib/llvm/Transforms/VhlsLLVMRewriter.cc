@@ -523,9 +523,11 @@ renameBasicBlocksAndValues(Module &M,
   size_t BBCnt = 0, ValCnt = 1, ArgCnt = 0;
   for (Function &F : M) {
     // Rename arguments
-    if (F.getName() == XlnTop && ParamNames.size() == F.arg_size()) {
-      for (size_t i = 0; i < F.arg_size(); i++)
+    if (F.getName() == XlnTop) {
+      for (size_t i = 0; i < ParamNames.size(); i++)
         F.getArg(i)->setName(ParamNames[i]);
+      for (size_t i = ParamNames.size(); i < F.arg_size(); i++)
+        F.getArg(i)->setName("arg_" + Twine(ArgCnt++));
     } else {
       for (Argument &arg : F.args()) {
         arg.setName("arg_" + Twine(ArgCnt++));
