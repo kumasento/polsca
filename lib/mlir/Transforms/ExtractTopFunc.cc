@@ -181,6 +181,37 @@ struct RemoveEmptyAffineIfPass
 };
 } // namespace
 
+/// --------------------------- PropagateConstants ----------------------
+
+namespace {
+
+/// Replace the arguments of the PEs by constants if they are passed that way.
+struct PropagateConstantsPass
+    : public PassWrapper<PropagateConstantsPass, OperationPass<ModuleOp>> {
+  void runOnOperation() override {
+    ModuleOp m = getOperation();
+    OpBuilder b(m.getContext());
+
+    llvm::DenseMap<Operation *, llvm::DenseMap<unsigned, Value>> constArgs;
+    m.walk([&](CallOp caller) {
+      for (auto arg : enumerate(caller.getArgOperands()))
+        if (arg.value().getDefiningOp<ConstantOp>())
+          constArgs[caller].insert({arg.index(), arg.value()});
+    });
+
+    for (auto &it : constArgs) {
+      FuncOp callee =
+          cast<FuncOp>(m.lookupSymbol(cast<CallOp>(it.first).getCallee()));
+      b.setInsertionPointToStart(&callee.getBlocks().front());
+      for (auto &it2 : it.second) {
+        Operation *op = b.clone(*it2.second.getDefiningOp());
+        callee.getArgument(it2.first).replaceAllUsesWith(op->getResult(0));
+      }
+    }
+  }
+};
+} // namespace
+
 void phism::registerExtractTopFuncPass() {
   PassRegistration<ExtractTopFuncPass>(
       "extract-top-func", "Extract the top function out of its module.");
@@ -190,5 +221,7 @@ void phism::registerExtractTopFuncPass() {
         pm.addPass(std::make_unique<ReplaceConstantArgumentsPass>());
         pm.addPass(createCanonicalizerPass());
         pm.addPass(std::make_unique<RemoveEmptyAffineIfPass>());
+        pm.addPass(std::make_unique<PropagateConstantsPass>());
+        pm.addPass(createCanonicalizerPass());
       });
 }
