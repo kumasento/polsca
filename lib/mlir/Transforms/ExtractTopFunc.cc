@@ -14,11 +14,13 @@
 #include "mlir/IR/BlockAndValueMapping.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Dominance.h"
+#include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
@@ -148,10 +150,45 @@ struct ReplaceConstantArgumentsPass
 };
 } // namespace
 
+/// --------------------------- RemoveEmptyAffineIf ----------------------
+
+namespace {
+
+/// Check if the integer set of affine.if is empty. We don't use the trivial
+/// isEmpty test since that would only check the equalities. We try to get an
+/// integer sample, and if that doesn't exist, we know the set is empty.
+struct RemoveEmptyAffineIfPass
+    : public PassWrapper<RemoveEmptyAffineIfPass, OperationPass<ModuleOp>> {
+  void runOnOperation() override {
+    ModuleOp m = getOperation();
+    OpBuilder b(m.getContext());
+
+    SmallVector<AffineIfOp> worklist;
+
+    m.walk([&](AffineIfOp ifOp) {
+      FlatAffineConstraints cst(ifOp.getIntegerSet());
+      if (!cst.findIntegerSample().hasValue())
+        worklist.push_back(ifOp);
+      else {
+        cst.removeRedundantInequalities();
+        ifOp.setIntegerSet(cst.getAsIntegerSet(b.getContext()));
+      }
+    });
+
+    for (AffineIfOp ifOp : worklist)
+      ifOp.erase();
+  }
+};
+} // namespace
+
 void phism::registerExtractTopFuncPass() {
   PassRegistration<ExtractTopFuncPass>(
       "extract-top-func", "Extract the top function out of its module.");
-  PassRegistration<ReplaceConstantArgumentsPass>(
-      "replace-constant-arguments",
-      "Replace the annotated constant arguments.");
+  PassPipelineRegistration<>(
+      "replace-constant-arguments", "Replace the annotated constant arguments.",
+      [](OpPassManager &pm) {
+        pm.addPass(std::make_unique<ReplaceConstantArgumentsPass>());
+        pm.addPass(createCanonicalizerPass());
+        pm.addPass(std::make_unique<RemoveEmptyAffineIfPass>());
+      });
 }

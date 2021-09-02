@@ -116,7 +116,7 @@ static void createPointLoopsCaller(AffineForOp startForOp, FuncOp callee,
 
   // Get function type.
   b.setInsertionPoint(startForOp.getOperation());
-  CallOp caller = b.create<CallOp>(startForOp.getLoc(), callee, args);
+  b.create<CallOp>(startForOp.getLoc(), callee, args);
   startForOp.erase();
 }
 
