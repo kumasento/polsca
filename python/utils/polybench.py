@@ -81,6 +81,7 @@ class PbFlowOptions:
     split: str = "NO_SPLIT"  # other options: "SPLIT", "HEURISTIC"
     loop_transforms: bool = True
     constant_args: bool = True
+    improve_pipelining: bool = True
 
 
 # ----------------------- Utility functions ------------------------------------
@@ -586,11 +587,17 @@ class PbFlow:
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(
             ".mlir", ".kern.mlir"
         )
+        log_file = self.cur_file.replace(".mlir", ".log")
+        args = [
+            self.get_program_abspath("phism-opt"),
+            src_file,
+            f'-extract-top-func="name={get_top_func(src_file)}"',
+            "-improve-pipelining" if self.options.improve_pipelining else "",
+        ]
         self.run_command(
-            cmd='{} {} -extract-top-func="name={}"'.format(
-                self.get_program_abspath("phism-opt"), src_file, get_top_func(src_file)
-            ),
+            cmd=" ".join(args),
             shell=True,
+            stderr=open(log_file, "w"),
             stdout=open(self.cur_file, "w"),
             env=self.env,
         )

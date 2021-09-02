@@ -8,6 +8,7 @@
 #include "mlir/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BlockAndValueMapping.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Dominance.h"
@@ -29,6 +30,115 @@
 using namespace mlir;
 using namespace llvm;
 using namespace phism;
+
+/// -------------------------- Insert Scratchpad ---------------------------
+
+static FuncOp getTopFunction(Operation *op) {
+  while (!op->getParentOfType<FuncOp>())
+    op = op->getParentOp();
+  return op->getParentOfType<FuncOp>();
+}
+
+namespace {
+
+///
+struct InsertScratchpadPass
+    : public PassWrapper<InsertScratchpadPass, OperationPass<ModuleOp>> {
+
+  void runOnOperation() override {
+    ModuleOp m = getOperation();
+    OpBuilder b(m.getContext());
+
+    // Find if the storeOp has a corresponding load at the same memory address,
+    // within the same region.
+    SmallVector<AffineStoreOp> worklist;
+
+    m.walk([&](AffineStoreOp storeOp) {
+      DominanceInfo dom(storeOp->getParentOp());
+
+      SmallVector<Operation *> users;
+
+      Value mem = storeOp.getMemRef();
+      for (Operation *user : mem.getUsers())
+        if (user->getParentRegion() == storeOp->getParentRegion())
+          users.push_back(user);
+
+      // Store is the only user, no need to insert scratchpad.
+      if (users.size() == 1)
+        return;
+
+      unsigned numStoreOps = 0;
+      for (Operation *user : users)
+        if (isa<AffineStoreOp>(user))
+          numStoreOps++;
+
+      // We only deal with the case that there is only one write.
+      if (numStoreOps > 1)
+        return;
+
+      // Check if all load operations are dominating the store.
+      for (Operation *user : users)
+        if (isa<AffineLoadOp>(user) && !dom.dominates(user, storeOp))
+          return;
+
+      // storeOp should be the last statement.
+      if (!isa<AffineYieldOp>(storeOp->getNextNode()))
+        return;
+
+      worklist.push_back(storeOp);
+    });
+
+    for (AffineStoreOp storeOp : worklist) {
+      Value mem = storeOp.getMemRef();
+      // TODO: we should further check the address being accessed.
+      FuncOp f = getTopFunction(storeOp);
+      b.setInsertionPointToStart(&f.getBlocks().front());
+
+      // New scratchpad memory
+      // TODO: reduce its size to fit the iteration domain.
+      memref::AllocaOp newMem = b.create<memref::AllocaOp>(
+          storeOp.getLoc(), mem.getType().cast<MemRefType>());
+
+      // Add a new store to the scratchpad.
+      b.setInsertionPoint(storeOp);
+      Operation *newStoreOp = b.clone(*storeOp.getOperation());
+      cast<AffineStoreOp>(newStoreOp).setMemRef(newMem);
+
+      // Load from the scratchpad and store to the original address.
+      b.setInsertionPoint(storeOp);
+      storeOp.getAffineMap().dump();
+      AffineLoadOp newLoadOp = b.create<AffineLoadOp>(storeOp.getLoc(), newMem,
+                                                      storeOp.getAffineMap(),
+                                                      storeOp.getMapOperands());
+      storeOp.setOperand(0, newLoadOp.getResult());
+
+      // Create a duplicate of the current region.
+      mlir::AffineForOp parent = storeOp->getParentOfType<AffineForOp>();
+      if (!parent)
+        return;
+
+      b.setInsertionPointAfter(parent);
+      AffineForOp nextFor = b.create<AffineForOp>(
+          parent.getLoc(), parent.getLowerBoundOperands(),
+          parent.getLowerBoundMap(), parent.getUpperBoundOperands(),
+          parent.getUpperBoundMap());
+      b.setInsertionPointToStart(nextFor.getBody());
+
+      // For cloning.
+      BlockAndValueMapping vmap;
+      vmap.map(parent.getInductionVar(), nextFor.getInductionVar());
+
+      AffineLoadOp clonedLoad = cast<AffineLoadOp>(b.clone(*newLoadOp, vmap));
+      vmap.map(newLoadOp.getResult(), clonedLoad.getResult());
+      cast<AffineStoreOp>(b.clone(*storeOp, vmap));
+
+      // Finally, remove the old pair.
+      storeOp.erase();
+      newLoadOp.erase();
+    }
+  }
+};
+} // namespace
 
 /// -------------------------- Extract point loops ---------------------------
 
@@ -252,6 +362,12 @@ void phism::registerLoopTransformPasses() {
       "annotate-point-loops", "Annotate loops with point/tile info.");
   PassRegistration<ExtractPointLoopsPass>(
       "extract-point-loops", "Extract point loop bands into functions");
+
+  PassPipelineRegistration<>(
+      "improve-pipelining", "Improve the pipelining performance",
+      [](OpPassManager &pm) {
+        pm.addPass(std::make_unique<InsertScratchpadPass>());
+      });
 
   PassPipelineRegistration<>(
       "loop-transforms", "Phism loop transforms.", [](OpPassManager &pm) {
