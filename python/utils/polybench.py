@@ -687,7 +687,6 @@ class PbFlow:
         args = [
             self.get_program_abspath("mlir-opt"),
             src_file,
-            "-inline",  # inline only those private functions.
             "-lower-affine",
             "-convert-scf-to-std",
             "-canonicalize",
