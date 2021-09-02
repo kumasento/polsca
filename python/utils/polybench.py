@@ -597,7 +597,7 @@ set_top {top_func}
 open_solution -reset solution1
 set_part "zynq"
 create_clock -period "100MHz"
-config_compile -pipeline_loops 5
+config_compile -pipeline_loops 1
 {config}
 
 set ::LLVM_CUSTOM_CMD {{$LLVM_CUSTOM_OPT -no-warn {src_file} -o $LLVM_CUSTOM_OUTPUT}}
