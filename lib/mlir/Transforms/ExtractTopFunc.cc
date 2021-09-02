@@ -171,7 +171,14 @@ struct RemoveEmptyAffineIfPass
         worklist.push_back(ifOp);
       else {
         cst.removeRedundantInequalities();
-        ifOp.setIntegerSet(cst.getAsIntegerSet(b.getContext()));
+        IntegerSet ist = cst.getAsIntegerSet(b.getContext());
+
+        // It is not always possible to convert back to a valid (not NULL)
+        // IntegerSet from FAC. In that case, we will do nothing.
+        if (!ist)
+          return;
+
+        ifOp.setIntegerSet(ist);
       }
     });
 
