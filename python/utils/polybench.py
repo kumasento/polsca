@@ -731,6 +731,7 @@ class PbFlow:
             '-xlntop="{}"'.format(get_top_func(src_file)),
             '-xlnnames="{}"'.format(",".join(xln_names)),
             "-strip-attr",
+            "-xlnunroll"
         ]
 
         self.run_command(

@@ -5,7 +5,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
@@ -804,6 +806,37 @@ struct XilinxRewriteMathInstPass : public ModulePass {
 
 } // namespace
 
+namespace {
+
+/// Unroll all the loops in a specified function for Xilinx Vitis.
+struct XilinxUnrollPass : public ModulePass {
+  static char ID;
+  XilinxUnrollPass() : ModulePass(ID) {}
+
+  bool runOnModule(Module &M) override {
+
+    for (auto &F : M)
+      if (F.getName() == XlnTop) {
+        auto DT = llvm::DominatorTree(F);
+        LoopInfo LI(DT);
+
+        for (auto &loop : LI) {
+          LLVMContext &Context = loop->getHeader()->getContext();
+          MDNode *EnableUnrollMD = MDNode::get(
+              Context, MDString::get(Context, "llvm.loop.unroll.full"));
+          MDNode *LoopID = loop->getLoopID();
+          MDNode *NewLoopID = makePostTransformationMetadata(
+              Context, LoopID, {"llvm.loop.unroll."}, {EnableUnrollMD});
+          loop->setLoopID(NewLoopID);
+        }
+      }
+
+    return false;
+  }
+};
+
+} // namespace
+
 char ConvertMemRefToArray::ID = 0;
 static RegisterPass<ConvertMemRefToArray>
     X1("mem2ptr",
@@ -830,3 +863,8 @@ static RegisterPass<StripInvalidAttributes>
 char XilinxRewriteMathInstPass::ID = 5;
 static RegisterPass<XilinxRewriteMathInstPass>
     X6("xlnmath", "Rewrite math instructions for Xilinx Vitis.");
+
+char XilinxUnrollPass::ID = 6;
+static RegisterPass<XilinxUnrollPass>
+    X7("xlnunroll",
+       "Unroll all the loops in a specified function for Xilinx Vitis.");
