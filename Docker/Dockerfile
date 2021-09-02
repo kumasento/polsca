@@ -20,10 +20,9 @@ RUN dnf install -y https://extras.getpagespeed.com/release-el8-latest.rpm
 RUN dnf install -y gperftools gperftools-devel 
 
 # Phism dependences
-RUN dnf install -y llvm clang python3 gmp-devel pcre-devel \
+RUN dnf install -y llvm clang gmp-devel pcre-devel \
                    openssl openssl-devel llvm-devel
 RUN dnf --enablerepo=powertools install texinfo -y
-RUN python3 -m pip install pandas dataclasses
 # build the following packages from source:
 RUN mkdir -p /dkrPkgs
 # cmake 3.20
@@ -34,6 +33,16 @@ RUN cd /dkrPkgs \
     && ./bootstrap --prefix=/usr/local \
     && make -j $(grep -c ^processor /proc/cpuinfo) \
     && make install
+# python 3.8
+RUN dnf install python3 bzip2-devel libffi-devel xz-devel -y
+RUN cd /dkrPkgs \
+    && wget https://www.python.org/ftp/python/3.8.3/Python-3.8.3.tgz \
+    && tar xvf Python-3.8.3.tgz \
+    && cd Python-3.8*/ \
+    && ./configure --enable-optimizations --prefix=/usr/local \
+    && make install
+RUN pip3 install --upgrade pip
+RUN pip3 install pandas dataclasses
 
 CMD ["bash"]
 
