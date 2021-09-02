@@ -786,6 +786,21 @@ class PbFlow:
         if self.options.dry_run:
             return self
 
+        # Clean up old results
+        shutil.rmtree(os.path.join(base_dir, "proj"), ignore_errors=True)
+        shutil.rmtree(os.path.join(base_dir, "tb"), ignore_errors=True)
+        shutil.rmtree(os.path.join(base_dir, "tb.backup"), ignore_errors=True)
+
+        shutil.rmtree(
+            os.path.join(base_dir, "phism.vitis_hls.stdout.log"), ignore_errors=True
+        )
+        shutil.rmtree(
+            os.path.join(base_dir, "tbgen.vitis_hls.stdout.log"), ignore_errors=True
+        )
+        shutil.rmtree(
+            os.path.join(base_dir, "cosim.vitis_hls.stdout.log"), ignore_errors=True
+        )
+
         phism_proc = subprocess.Popen(
             ["vitis_hls", phism_vitis_tcl],
             cwd=base_dir,
