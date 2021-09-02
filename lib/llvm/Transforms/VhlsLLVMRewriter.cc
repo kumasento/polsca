@@ -267,11 +267,20 @@ duplicateFunctionsWithRankedArrays(Function *F,
   // second part should let every Seq create a new Array in their order.
   SmallVector<Type *, 4> ParamTypes;
   FunctionType *FuncType = F->getFunctionType();
+
   for (unsigned i = 0; i < FuncType->getFunctionNumParams(); ++i)
     ParamTypes.push_back(FuncType->getFunctionParamType(i));
-  for (InsExtSequence Seq : Seqs) // Each Seq has a new ArrayType arg.
-    ParamTypes.push_back(
-        PointerType::get(Seq.getRankedArrayType(), F->getAddressSpace()));
+
+  for (InsExtSequence Seq : Seqs) { // Each Seq has a new ArrayType arg.
+    AllocaInst *I = dyn_cast<AllocaInst>(Seq.ptr);
+    if (!I) // Will resolve the function arguments later.
+      ParamTypes.push_back(
+          PointerType::get(Seq.getRankedArrayType(), F->getAddressSpace()));
+    else // Create a new AllocaInst.
+      new AllocaInst(Seq.getRankedArrayType(), F->getAddressSpace(), Twine(""),
+                     I);
+  }
+
   FunctionType *NewFuncType =
       FunctionType::get(F->getReturnType(), ParamTypes, F->isVarArg());
 
@@ -290,13 +299,29 @@ duplicateFunctionsWithRankedArrays(Function *F,
   // We also map the raw pointers to the new ranked arrays. Note that the key to
   // this map is the new argument in the `NewFunc`. The value of the mapping is
   // the newly appended arguments at the end of `NewFunc`.
+  unsigned j = 0;
   for (unsigned i = 0; i < Seqs.size(); i++)
-    RankedArrVMap[VMap[Seqs[i].ptr]] = NewFunc->getArg(F->arg_size() + i);
+    if (VMap.count(Seqs[i].ptr))
+      RankedArrVMap[VMap[Seqs[i].ptr]] = NewFunc->getArg(F->arg_size() + (j++));
 
   // Finally, clone the content from the old function into the new one.
   SmallVector<ReturnInst *, 4> Returns;
   CloneFunctionInto(NewFunc, F, VMap, CloneFunctionChangeType::LocalChangesOnly,
                     Returns);
+
+  // Map the alloca pairs. It is based on the previous code that the new static
+  // alloca will always be one instruction before the one it is mapped from.
+  for (BasicBlock &BB : *NewFunc)
+    for (Instruction &I : BB) {
+      AllocaInst *Curr = dyn_cast<AllocaInst>(&I);
+      if (!Curr)
+        continue;
+      AllocaInst *Next = dyn_cast<AllocaInst>(Curr->getNextNode());
+      if (!Next)
+        continue;
+      if (Curr->isStaticAlloca())
+        RankedArrVMap[Next] = Curr;
+    }
 
   return NewFunc;
 }
@@ -512,6 +537,7 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
       Seq.replaceExtractValueUses();
       Seq.eraseAllInsts();
     }
+
     FuncToSeqs[&F] = Seqs;
   }
 
