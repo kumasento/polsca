@@ -54,7 +54,14 @@ POLYBENCH_EXAMPLES = (
     "trmm",
 )
 RESOURCE_FIELDS = ("DSP", "FF", "LUT", "BRAM_18K", "URAM")
-RECORD_FIELDS = ("name", "run_status", "latency", "res_usage", "res_avail")
+RECORD_FIELDS = (
+    "name",
+    "run_status",
+    "latency",
+    "syn_latency",
+    "res_usage",
+    "res_avail",
+)
 RUN_STATUS_FIELDS = ("phism_synth", "tbgen_cosim", "phism_cosim")
 
 PHISM_VITIS_STEPS = ("phism", "tbgen", "cosim")
@@ -82,6 +89,7 @@ class PbFlowOptions:
     loop_transforms: bool = True
     constant_args: bool = True
     improve_pipelining: bool = True
+    max_span: int = -1
 
 
 # ----------------------- Utility functions ------------------------------------
@@ -107,12 +115,14 @@ def matched(s, patterns):
     return False
 
 
-def get_single_file_with_ext(d, ext, includes=None):
+def get_single_file_with_ext(d, ext, includes=None, excludes=None):
     """Find the single file under the current directory with a specific extension."""
     for f in os.listdir(d):
         if not f.endswith(ext):
             continue
         if includes and not matched(f, includes):
+            continue
+        if excludes and matched(f, excludes):
             continue
         return f
 
@@ -138,7 +148,7 @@ def fetch_resource_usage(d, avail=False):
     if not os.path.isdir(syn_report_dir):
         return None
 
-    syn_report = get_single_file_with_ext(syn_report_dir, "xml", ["kernel"])
+    syn_report = get_single_file_with_ext(syn_report_dir, "xml", ["kernel"], ["PE"])
     if not syn_report:
         return None
 
@@ -189,6 +199,31 @@ def fetch_latency(d):
     return int(latency)
 
 
+def fetch_syn_latency(d):
+    """Fetch latency measured in the synthesis phase."""
+    syn_report_dir = os.path.join(d, "proj", "solution1", "syn", "report")
+    if not os.path.isdir(syn_report_dir):
+        return None
+
+    syn_report = get_single_file_with_ext(syn_report_dir, "xml", ["kernel"], ["PE"])
+    if not syn_report:
+        return None
+
+    syn_report = os.path.join(syn_report_dir, syn_report)
+    if not os.path.isfile(syn_report):
+        return None
+
+    # Parse the XML report and find every resource usage (tags given by RESOURCE_FIELDS)
+    root = ET.parse(syn_report).getroot()
+    latency = root.findtext(
+        "PerformanceEstimates/SummaryOfOverallLatency/Average-caseLatency"
+    )
+    try:
+        return int(latency)
+    except:
+        return None
+
+
 def fetch_run_status(d):
     """Gather the resulting status of each stage."""
 
@@ -230,6 +265,7 @@ def process_directory(d):
         example_name,
         fetch_run_status(d),
         fetch_latency(d),
+        fetch_syn_latency(d),
         fetch_resource_usage(d),
         fetch_resource_usage(d, avail=True),
     )
@@ -256,8 +292,10 @@ def filter_success(df):
     """Filter success rows."""
     return df[
         (df["phism_synth"] == "SUCCESS")
-        & (df["tbgen_cosim"] == "SUCCESS")
-        & (df["phism_cosim"] == "SUCCESS")
+        & (
+            ((df["tbgen_cosim"] == "SUCCESS") & (df["phism_cosim"] == "SUCCESS"))
+            | (df["syn_latency"])
+        )
     ]
 
 
@@ -648,7 +686,11 @@ class PbFlow:
         )
         log_file = self.cur_file.replace(".mlir", ".log")
 
-        args = [self.get_program_abspath("phism-opt"), src_file, "-loop-transforms"]
+        args = [
+            self.get_program_abspath("phism-opt"),
+            src_file,
+            f'-loop-transforms="max-span={self.options.max_span}"',
+        ]
 
         self.run_command(
             cmd=" ".join(args),

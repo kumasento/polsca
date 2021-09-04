@@ -44,6 +44,12 @@ def main():
         help="Polybench dataset size. ",
     )
     parser.add_argument("--cleanup", action="store_true", help="Cleanup after run.")
+    parser.add_argument(
+        "--max-span", type=int, default=-1, help="Max spanning of the point loops."
+    )
+    parser.add_argument(
+        "--split", type=str, default="NO_SPLIT", help="Statement split method."
+    )
     args = parser.parse_args()
 
     options = pb_utils.PbFlowOptions(**vars(args))
