@@ -10,11 +10,11 @@ import os
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
-from collections import namedtuple
+from collections import OrderedDict, namedtuple
 from dataclasses import dataclass
 from multiprocessing import Pool
 from timeit import default_timer as timer
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import pandas as pd
 
@@ -338,6 +338,157 @@ def to_pandas(records):
 
     # NOTE: dtype=object here prevents pandas converting integer to float.
     return pd.DataFrame(data=data, columns=cols, dtype=object)
+
+
+# ----------------------- Cosim utilities ---------------------------
+
+
+@dataclass
+class ApMemoryInterface:
+    name: str
+    ports: List[str]
+
+    def get_num_ports(self) -> int:
+        return len(set([port[-1] for port in self.ports]))
+
+    def is_read_only(self, port_id: int) -> bool:
+        return f"we{port_id}" not in self.ports
+
+    def is_write_only(self, port_id: int) -> bool:
+        return f"q{port_id}" not in self.ports
+
+    def is_read_write(self, port_id: int) -> bool:
+        return f"q{port_id}" in self.ports and f"d{port_id}" in self.ports
+
+
+def get_module_parameters(file: str, module_name: str) -> List[str]:
+    """Read the module definition into parameter lists."""
+    with open(file, "r") as f:
+        lines = f.readlines()
+
+    lines = [line.strip() for line in lines]
+    start_line = next(i for i, l in enumerate(lines) if f"module {module_name}" in l)
+    end_line = next(i for i, l in enumerate(lines) if ");" in l)
+
+    params = (" ".join(line for line in lines[start_line + 1 : end_line])).split(",")
+    return [param.strip() for param in params]
+
+
+def get_memory_interfaces(params: List[str]):
+    """Parse memory interfaces from the module params."""
+    interfaces = OrderedDict()
+    for param in params:
+        prefix = param.split("_")[0]
+        if prefix not in interfaces:
+            interfaces[prefix] = []
+        if param.startswith("ap") or "_" not in param:
+            continue
+        interfaces[prefix].append(param.split("_")[1])
+
+    return [
+        ApMemoryInterface(name, ports)
+        for name, ports in interfaces.items()
+        if "address0" in ports
+    ]
+
+
+@dataclass
+class CosimFixStrategy:
+    phism_directives: List[str]
+    tbgen_directives: List[str]
+    phism_mem_interfaces: List[ApMemoryInterface]
+    tbgen_mem_interfaces: List[ApMemoryInterface]
+
+    def empty(self):
+        return not self.phism_directives and not self.tbgen_directives
+
+
+def is_read_write_conflict(
+    src_mem: ApMemoryInterface, dst_mem: ApMemoryInterface, port_id: int
+) -> bool:
+    return (src_mem.is_read_only(port_id) and dst_mem.is_write_only(port_id)) or (
+        dst_mem.is_read_only(port_id) and src_mem.is_write_only(port_id)
+    )
+
+
+def fix_cosim_kernels(dir: str) -> CosimFixStrategy:
+    """Fix issues with co-simulation.
+    Returns directives for (source, destination).
+    """
+
+    dir = os.path.abspath(dir)  # canonicalize path
+    kernel_name = f"kernel_{os.path.basename(dir)}"
+
+    src_proj_dir = os.path.join(dir, "proj", "solution1")
+    assert os.path.isdir(src_proj_dir)
+
+    dst_proj_dir = os.path.join(dir, "tb.backup", "solution1")
+    assert os.path.isdir(dst_proj_dir)
+
+    src_kernel = os.path.join(src_proj_dir, "syn", "verilog", f"{kernel_name}.v")
+    assert os.path.isfile(src_kernel)
+
+    dst_kernel = os.path.join(dst_proj_dir, "syn", "verilog", f"{kernel_name}.v")
+    assert os.path.isfile(dst_kernel)
+
+    src_params = get_module_parameters(src_kernel, kernel_name)
+    dst_params = get_module_parameters(dst_kernel, kernel_name)
+
+    src_mems = get_memory_interfaces(src_params)
+    dst_mems = get_memory_interfaces(dst_params)
+
+    if len(src_mems) != len(dst_mems):
+        raise RuntimeError("The number of ap_memory interfaces should be the same.")
+    if [mem.name for mem in src_mems] != [mem.name for mem in dst_mems]:
+        raise RuntimeError("The name of the interfaces should be the same.")
+
+    # Determine whether we can fix this.
+    strategy = CosimFixStrategy(
+        phism_directives=[],
+        tbgen_directives=[],
+        phism_mem_interfaces=src_mems,
+        tbgen_mem_interfaces=dst_mems,
+    )
+
+    # Iterate every memory interface to see if there is any chance for fixing them.
+    for src_mem, dst_mem in zip(src_mems, dst_mems):
+        # If any memory interface from the source uses single port, while the target uses dual ports,
+        # we will modify the TCL for Phism.
+        if src_mem.get_num_ports() == 1 and dst_mem.get_num_ports() == 2:
+            strategy.tbgen_directives.append(
+                f"set_directive_interface {kernel_name} {dst_mem.name} -mode ap_memory -storage_type ram_1p"
+            )
+        elif src_mem.get_num_ports() == 2 and dst_mem.get_num_ports() == 1:
+            strategy.tbgen_directives.append(
+                f"set_directive_interface {kernel_name} {dst_mem.name} -mode ap_memory -storage_type ram_2p"
+            )
+        elif src_mem.get_num_ports() == dst_mem.get_num_ports():
+            num_ports = src_mem.get_num_ports()
+            if num_ports == 2:
+                # Make sure the dst_mem is 1 write n read.
+                # TODO: is this condition enough for detection?
+                if src_mem.is_read_only(1) and dst_mem.is_read_write(1):
+                    strategy.tbgen_directives.append(
+                        f"set_directive_interface {kernel_name} {dst_mem.name} -mode ap_memory -storage_type ram_1wnr"
+                    )
+                elif (
+                    src_mem.is_read_write(0)
+                    and src_mem.is_read_write(1)  # Phism is T2P
+                    and (
+                        dst_mem.is_read_only(0) or dst_mem.is_read_only(1)
+                    )  # tbgen is not
+                ):
+                    strategy.tbgen_directives.append(
+                        f"set_directive_interface {kernel_name} {dst_mem.name} -mode ap_memory -storage_type ram_t2p"
+                    )
+                elif is_read_write_conflict(
+                    src_mem, dst_mem, 0
+                ) and is_read_write_conflict(src_mem, dst_mem, 1):
+                    strategy.tbgen_directives.append(
+                        f"set_directive_interface {kernel_name} {dst_mem.name} -mode ap_memory -storage_type ram_1wnr"
+                    )
+
+    return strategy
 
 
 # ----------------------- Benchmark runners ---------------------------
@@ -790,7 +941,7 @@ class PbFlow:
 
         return self
 
-    def run_vitis(self):
+    def run_vitis(self, strategy: Optional[CosimFixStrategy] = None):
         """Run synthesize/testbench generation/co-simulation."""
         src_file = self.cur_file
         base_dir = os.path.dirname(src_file)
@@ -808,23 +959,35 @@ class PbFlow:
         dummy_src = src_file.replace(".llvm", ".dummy.c")
         with open(dummy_src, "w") as f:
             f.write("void {}() {{}}".format(top_func))
+
+        # Write the TCL for Phism.
         with open(phism_vitis_tcl, "w") as f:
+            phism_run_config = [str(run_config)]
+            if strategy:
+                phism_run_config.extend(strategy.phism_directives)
+
             f.write(
                 PHISM_VITIS_TCL.format(
                     src_file=src_file,
                     dummy_src=dummy_src,
                     top_func=top_func,
-                    config=run_config,
+                    config="\n".join(phism_run_config),
                 )
             )
+
+        # Write the TCL for TBGEN.
         with open(tbgen_vitis_tcl, "w") as f:
+            tbgen_run_config = [str(run_config)]
+            if strategy:
+                tbgen_run_config.extend(strategy.tbgen_directives)
+
             f.write(
                 TBGEN_VITIS_TCL.format(
                     src_dir=base_dir,
                     src_base=os.path.basename(src_file).split(".")[0],
                     top_func=top_func,
                     work_dir=self.work_dir,
-                    config=run_config,
+                    config="\n".join(tbgen_run_config),
                     pb_dataset=self.options.dataset,
                 )
             )
@@ -893,7 +1056,7 @@ class PbFlow:
                 dirs_exist_ok=True,
             )
 
-            for f in glob.glob(os.path.join(phism_syn_verilog_dir, "*.v*")):
+            for f in glob.glob(os.path.join(phism_syn_verilog_dir, "*.*")):
                 shutil.copy(f, tbgen_syn_verilog_dir)
 
             # Run cosim for Phism in the end
@@ -904,7 +1067,23 @@ class PbFlow:
                 stderr=open(os.path.join(base_dir, "cosim.vitis_hls.stderr.log"), "w"),
             )
             cosim_ret = cosim_proc.wait()
-            assert cosim_ret == 0, "Cosim failed."
+
+            if cosim_ret == 1:  # Cosim failed.
+                # Try to generate a strategy if it hasn't been assigned.
+                if strategy is None:
+                    strategy = fix_cosim_kernels(base_dir)
+                else:
+                    # If not, then there is no recovery.
+                    assert False, f"Cosim failed and cannot be fixed by {strategy}."
+                # If there is a viable strategy, we would try that.
+                if not strategy.empty():
+                    print(
+                        f">>> {os.path.basename(base_dir)} Attempting to fix cosim issues by {strategy} ..."
+                    )
+                    return self.run_vitis(strategy=strategy)
+
+                # If not, then there is no recovery.
+                assert False, f"Cosim failed and cannot be fixed by {strategy}."
         else:
             phism_ret = phism_proc.wait()
             assert phism_ret == 0, "Phism syn failed."
