@@ -58,96 +58,131 @@ namespace {
 struct InsertScratchpadPass
     : public PassWrapper<InsertScratchpadPass, OperationPass<ModuleOp>> {
 
+  void process(AffineStoreOp storeOp, ModuleOp m, OpBuilder &b) {
+    DominanceInfo dom(storeOp->getParentOp());
+    Value mem = storeOp.getMemRef();
+    // TODO: we should further check the address being accessed.
+    FuncOp f = getTopFunction(storeOp);
+    b.setInsertionPointToStart(&f.getBlocks().front());
+
+    // New scratchpad memory
+    // TODO: reduce its size to fit the iteration domain.
+    memref::AllocaOp newMem = b.create<memref::AllocaOp>(
+        storeOp.getLoc(), mem.getType().cast<MemRefType>());
+
+    // Add a new store to the scratchpad.
+    b.setInsertionPoint(storeOp);
+    Operation *newStoreOp = b.clone(*storeOp.getOperation());
+    cast<AffineStoreOp>(newStoreOp).setMemRef(newMem);
+
+    // Load from the scratchpad and store to the original address.
+    b.setInsertionPoint(storeOp);
+    storeOp.getAffineMap().dump();
+    AffineLoadOp newLoadOp =
+        b.create<AffineLoadOp>(storeOp.getLoc(), newMem, storeOp.getAffineMap(),
+                               storeOp.getMapOperands());
+    // Replace the loaded result for all the future uses.
+    storeOp.getValueToStore().replaceUsesWithIf(
+        newLoadOp.getResult(), [&](OpOperand &operand) {
+          return dom.dominates(newLoadOp.getOperation(), operand.getOwner());
+        });
+
+    // Create a duplicate of the current region.
+    mlir::AffineForOp parent = storeOp->getParentOfType<AffineForOp>();
+    if (!parent)
+      return;
+
+    // Split the block.
+    Block *prevBlock = parent.getBody();
+    Block *nextBlock = prevBlock->splitBlock(newLoadOp.getOperation());
+
+    // Post-fix the prev block with the missed termination op.
+    b.setInsertionPointToEnd(prevBlock);
+    b.create<AffineYieldOp>(storeOp.getLoc());
+
+    // Create a new for cloned after the parent.
+    b.setInsertionPointAfter(parent);
+    AffineForOp nextFor = b.create<AffineForOp>(
+        parent.getLoc(), parent.getLowerBoundOperands(),
+        parent.getLowerBoundMap(), parent.getUpperBoundOperands(),
+        parent.getUpperBoundMap());
+
+    // Clone every operation from the next block into the new for loop.
+    BlockAndValueMapping vmap;
+    vmap.map(parent.getInductionVar(), nextFor.getInductionVar());
+
+    SetVector<Operation *> shouldClone;
+
+    b.setInsertionPointToStart(nextFor.getBody());
+    for (Operation &op : nextBlock->getOperations())
+      if (!isa<AffineYieldOp>(op)) {
+        Operation *cloned = b.clone(op, vmap);
+
+        // If any operand from the cloned operator is defined from the original
+        // region, we should clone them as well.
+        for (auto operand : cloned->getOperands())
+          if (operand.getParentRegion() == op.getParentRegion())
+            shouldClone.insert(operand.getDefiningOp());
+      }
+
+    b.setInsertionPointToStart(nextFor.getBody());
+    for (Operation &op : prevBlock->getOperations())
+      if (shouldClone.count(&op)) {
+        Operation *cloned = b.clone(op, vmap);
+        for (unsigned i = 0; i < cloned->getNumResults(); ++i)
+          op.getResult(i).replaceUsesWithIf(
+              cloned->getResult(i), [&](OpOperand &operand) {
+                return operand.getOwner()->getBlock() == nextFor.getBody();
+              });
+      }
+
+    // Clean up
+    nextBlock->erase();
+  }
+
   void runOnOperation() override {
     ModuleOp m = getOperation();
     OpBuilder b(m.getContext());
 
-    // Find if the storeOp has a corresponding load at the same memory address,
-    // within the same region.
-    SmallVector<AffineStoreOp> worklist;
+    while (true) {
+      AffineStoreOp storeOpToProcess = nullptr; // To process.
 
-    m.walk([&](AffineStoreOp storeOp) {
-      DominanceInfo dom(storeOp->getParentOp());
+      // Find the store op.
+      m.walk([&](AffineStoreOp storeOp) {
+        DominanceInfo dom(storeOp->getParentOp());
 
-      SmallVector<Operation *> users;
+        SmallVector<Operation *> users;
 
-      Value mem = storeOp.getMemRef();
-      for (Operation *user : mem.getUsers())
-        if (user->getParentRegion() == storeOp->getParentRegion())
-          users.push_back(user);
+        Value mem = storeOp.getMemRef();
+        for (Operation *user : mem.getUsers())
+          if (user->getParentRegion() == storeOp->getParentRegion())
+            users.push_back(user);
 
-      // Store is the only user, no need to insert scratchpad.
-      if (users.size() == 1)
-        return;
-
-      unsigned numStoreOps = 0;
-      for (Operation *user : users)
-        if (isa<AffineStoreOp>(user))
-          numStoreOps++;
-
-      // We only deal with the case that there is only one write.
-      if (numStoreOps > 1)
-        return;
-
-      // Check if all load operations are dominating the store.
-      for (Operation *user : users)
-        if (isa<AffineLoadOp>(user) && !dom.dominates(user, storeOp))
+        // Store is the only user, no need to insert scratchpad.
+        if (users.size() == 1)
           return;
 
-      // storeOp should be the last statement.
-      if (!isa<AffineYieldOp>(storeOp->getNextNode()))
-        return;
+        unsigned numStoreOps = 0;
+        for (Operation *user : users)
+          if (isa<AffineStoreOp>(user))
+            numStoreOps++;
 
-      worklist.push_back(storeOp);
-    });
+        // We only deal with the case that there is only one write.
+        if (numStoreOps > 1)
+          return;
 
-    for (AffineStoreOp storeOp : worklist) {
-      Value mem = storeOp.getMemRef();
-      // TODO: we should further check the address being accessed.
-      FuncOp f = getTopFunction(storeOp);
-      b.setInsertionPointToStart(&f.getBlocks().front());
+        // Check if all load operations are dominating the store.
+        for (Operation *user : users)
+          if (isa<AffineLoadOp>(user) && !dom.dominates(user, storeOp))
+            return;
 
-      // New scratchpad memory
-      // TODO: reduce its size to fit the iteration domain.
-      memref::AllocaOp newMem = b.create<memref::AllocaOp>(
-          storeOp.getLoc(), mem.getType().cast<MemRefType>());
+        storeOpToProcess = storeOp;
+      });
 
-      // Add a new store to the scratchpad.
-      b.setInsertionPoint(storeOp);
-      Operation *newStoreOp = b.clone(*storeOp.getOperation());
-      cast<AffineStoreOp>(newStoreOp).setMemRef(newMem);
+      if (!storeOpToProcess)
+        break;
 
-      // Load from the scratchpad and store to the original address.
-      b.setInsertionPoint(storeOp);
-      storeOp.getAffineMap().dump();
-      AffineLoadOp newLoadOp = b.create<AffineLoadOp>(storeOp.getLoc(), newMem,
-                                                      storeOp.getAffineMap(),
-                                                      storeOp.getMapOperands());
-      storeOp.setOperand(0, newLoadOp.getResult());
-
-      // Create a duplicate of the current region.
-      mlir::AffineForOp parent = storeOp->getParentOfType<AffineForOp>();
-      if (!parent)
-        return;
-
-      b.setInsertionPointAfter(parent);
-      AffineForOp nextFor = b.create<AffineForOp>(
-          parent.getLoc(), parent.getLowerBoundOperands(),
-          parent.getLowerBoundMap(), parent.getUpperBoundOperands(),
-          parent.getUpperBoundMap());
-      b.setInsertionPointToStart(nextFor.getBody());
-
-      // For cloning.
-      BlockAndValueMapping vmap;
-      vmap.map(parent.getInductionVar(), nextFor.getInductionVar());
-
-      AffineLoadOp clonedLoad = cast<AffineLoadOp>(b.clone(*newLoadOp, vmap));
-      vmap.map(newLoadOp.getResult(), clonedLoad.getResult());
-      cast<AffineStoreOp>(b.clone(*storeOp, vmap));
-
-      // Finally, remove the old pair.
-      storeOp.erase();
-      newLoadOp.erase();
+      process(storeOpToProcess, m, b);
     }
   }
 };
