@@ -183,7 +183,9 @@ def fetch_latency(d):
 
     latency = None
     with open(tb_sim_report, "r") as f:
-        for line in f.readlines():
+        for line in reversed(f.readlines()):
+            if latency:
+                break
             comps = [x.strip() for x in line.strip().split("|")]
 
             # there are 9 columns, +2 before & after |
@@ -459,9 +461,10 @@ def fix_cosim_kernels(dir: str) -> CosimFixStrategy:
                 f"set_directive_interface {kernel_name} {dst_mem.name} -mode ap_memory -storage_type ram_1p"
             )
         elif src_mem.get_num_ports() == 2 and dst_mem.get_num_ports() == 1:
-            strategy.tbgen_directives.append(
-                f"set_directive_interface {kernel_name} {dst_mem.name} -mode ap_memory -storage_type ram_2p"
-            )
+            if src_mem.is_read_only(1):
+                strategy.tbgen_directives.append(
+                    f"set_directive_interface {kernel_name} {dst_mem.name} -mode ap_memory -storage_type ram_2p"
+                )
         elif src_mem.get_num_ports() == dst_mem.get_num_ports():
             num_ports = src_mem.get_num_ports()
             if num_ports == 2:
