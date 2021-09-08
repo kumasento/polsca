@@ -90,6 +90,7 @@ class PbFlowOptions:
     constant_args: bool = True
     improve_pipelining: bool = False
     max_span: int = -1
+    tile_sizes: Optional[List[int]] = None
 
 
 # ----------------------- Utility functions ------------------------------------
@@ -661,7 +662,8 @@ class PbFlow:
         # The whole flow
         try:
             (
-                self.compile_c()
+                self.generate_tile_sizes()
+                .compile_c()
                 .preprocess()
                 .split_statements()
                 .extract_top_func()
@@ -696,6 +698,20 @@ class PbFlow:
         return str(
             subprocess.check_output(["which", program], env=self.env), "utf-8"
         ).strip()
+
+    def generate_tile_sizes(self):
+        """Generate the tile.sizes file that Pluto will read."""
+        if not self.options.tile_sizes:
+            return self
+
+        base_dir = os.path.dirname(self.cur_file)
+        tile_file = os.path.join(base_dir, "tile.sizes")
+
+        with open(tile_file, "w") as f:
+            for tile in self.options.tile_sizes:
+                f.write(f"{tile}\n")
+
+        return self
 
     def compile_c(self):
         """Compile C code to MLIR using mlir-clang."""

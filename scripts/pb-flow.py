@@ -60,6 +60,9 @@ def main():
         action="store_true",
         help="Enable loop transforms",
     )
+    parser.add_argument(
+        "--tile-sizes", nargs="+", default=[], help="Tile sizes for each loop nest."
+    )
     args = parser.parse_args()
 
     options = pb_utils.PbFlowOptions(**vars(args))
