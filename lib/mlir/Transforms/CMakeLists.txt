@@ -2,6 +2,7 @@ add_mlir_library(PhismTransforms
   ExtractTopFunc.cc
   LoopTransforms.cc
   PhismTransforms.cc
+  ArrayPartition.cc
 
   ADDITIONAL_HEADER_DIRS
   "${PHISM_MAIN_INCLUDE_DIR}/phism/mlir/Transforms"  
