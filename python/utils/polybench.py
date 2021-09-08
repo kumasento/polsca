@@ -20,7 +20,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-POLYBENCH_DATASETS = ("MINI", "SMALL", "LARGE", "EXTRALARGE")
+POLYBENCH_DATASETS = ("MINI", "SMALL", "MEDIUM", "LARGE", "EXTRALARGE")
 POLYBENCH_EXAMPLES = (
     "2mm",
     "3mm",
@@ -86,9 +86,9 @@ class PbFlowOptions:
     dry_run: bool = False
     examples: List[str] = POLYBENCH_EXAMPLES
     split: str = "NO_SPLIT"  # other options: "SPLIT", "HEURISTIC"
-    loop_transforms: bool = True
+    loop_transforms: bool = False
     constant_args: bool = True
-    improve_pipelining: bool = True
+    improve_pipelining: bool = False
     max_span: int = -1
 
 
@@ -933,7 +933,7 @@ class PbFlow:
             '-xlntop="{}"'.format(get_top_func(src_file)),
             '-xlnnames="{}"'.format(",".join(xln_names)),
             "-strip-attr",
-            "-xlnunroll"
+            "-xlnunroll",
         ]
 
         self.run_command(
