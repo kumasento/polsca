@@ -876,3 +876,4 @@ char XilinxUnrollPass::ID = 6;
 static RegisterPass<XilinxUnrollPass>
     X7("xlnunroll",
        "Unroll all the loops in a specified function for Xilinx Vitis.");
+
