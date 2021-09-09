@@ -1007,6 +1007,79 @@ struct XilinxUnrollPass : public ModulePass {
 
 } // namespace
 
+/// Return a set of <dimension, size> as the partition information for the
+/// current array type. The function only extacts the first half dimensions as
+/// the others are the dimensions for the tilied units
+std::vector<std::pair<unsigned, unsigned>>
+getPartitionInfo(ArrayType *arrayTy) {
+  std::vector<std::pair<unsigned, unsigned>> partitions;
+  unsigned d = 0;
+  do {
+    partitions.push_back(
+        std::pair<unsigned, unsigned>(d + 1, arrayTy->getNumElements()));
+    arrayTy = dyn_cast<ArrayType>(arrayTy->getElementType());
+    d++;
+  } while (arrayTy);
+
+  // The dimension number of arrays after Polymer should be a even number
+  assert(d % 2 == 0);
+
+  partitions.resize(d / 2);
+  return partitions;
+}
+
+namespace {
+
+/// Partition arrays in the top-level function arguments for Xilinx Vitis.
+/// This pass partitions the array in first half dimensions completely to
+/// parallelise the transformed arrays from Polymer. For instance, an array of
+/// size 2x3x32x32 will be partitioned into 6 blocks of size 32x32
+struct XilinxArrayPartitionPass : public ModulePass {
+  static char ID;
+  XilinxArrayPartitionPass() : ModulePass(ID) {}
+
+  bool runOnModule(Module &M) override {
+
+    // Declare array partition APIs in Vitis HLS LLVM frontend
+    auto mod = &M;
+    auto voidTy = Type::getVoidTy(mod->getContext());
+    mod->getOrInsertFunction("llvm.sideeffect",
+                             FunctionType::get(voidTy, {}, false));
+    auto arrayPartitionFunc = mod->getFunction("llvm.sideeffect");
+    arrayPartitionFunc->addFnAttr(llvm::Attribute::InaccessibleMemOnly);
+    arrayPartitionFunc->addFnAttr(llvm::Attribute::NoUnwind);
+
+    for (auto &F : M)
+      if (F.getName() == XlnTop) {
+        auto &BB = F.getEntryBlock();
+        IRBuilder<> builder(&BB, BB.begin());
+        for (unsigned i = 0; i < F.arg_size(); i++) {
+          auto arg = F.getArg(i);
+          if (arg->getType()->isPointerTy() &&
+              arg->getType()->getPointerElementType()->isArrayTy()) {
+            auto arrayTy =
+                dyn_cast<ArrayType>(arg->getType()->getPointerElementType());
+            auto partitions = getPartitionInfo(arrayTy);
+            for (auto partition : partitions) {
+              auto int32ty = Type::getInt32Ty(mod->getContext());
+              OperandBundleDef bd = OperandBundleDef(
+                  "xlx_array_partition",
+                  (std::vector<Value *>){
+                      arg, ConstantInt::get(int32ty, partition.first),
+                      ConstantInt::get(int32ty, partition.second),
+                      ConstantInt::get(int32ty, 1) /* block scheme*/});
+              builder.CreateCall(arrayPartitionFunc, {}, {bd});
+            }
+          }
+        }
+      }
+
+    return false;
+  }
+};
+
+} // namespace
+
 char ConvertMemRefToArray::ID = 0;
 static RegisterPass<ConvertMemRefToArray>
     X1("mem2ptr",
@@ -1038,3 +1111,8 @@ char XilinxUnrollPass::ID = 6;
 static RegisterPass<XilinxUnrollPass>
     X7("xlnunroll",
        "Unroll all the loops in a specified function for Xilinx Vitis.");
+
+char XilinxArrayPartitionPass::ID = 7;
+static RegisterPass<XilinxArrayPartitionPass> X8(
+    "xlnarraypartition",
+    "Partition arrays in the top-level function arguments for Xilinx Vitis.");
