@@ -8,7 +8,6 @@ jobs:
   # Build Phism and run its tests.
   build-phism:
     name: Build and Test Phism
-    needs: build-llvm
     runs-on: ubuntu-20.04
     steps:
       # - name: Configure Environment

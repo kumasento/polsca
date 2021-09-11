@@ -1028,12 +1028,20 @@ struct SimpleArrayPartitionPass
     OpBuilder b(m.getContext());
 
     FuncOp top = getTopFunction(m);
+    if (!top) {
+      m.emitRemark() << "No top function found for array partition. Have you "
+                        "forgot to annotate {scop.pe} to callers?\n";
+      return;
+    }
 
     SmallVector<CallOp> callers;
     top.walk([&](CallOp caller) {
       if (caller->hasAttr("scop.pe"))
         callers.push_back(caller);
     });
+
+    if (callers.empty())
+      return;
 
     // Get all the memrefs that can be partitioned.
     // TODO: consider scratchpad as well?
