@@ -63,6 +63,9 @@ def main():
     parser.add_argument(
         "--tile-sizes", nargs="+", default=[], help="Tile sizes for each loop nest."
     )
+    parser.add_argument(
+        "--array-partition", action="store_true", help="Use array partition."
+    )
     args = parser.parse_args()
 
     options = pb_utils.PbFlowOptions(**vars(args))
