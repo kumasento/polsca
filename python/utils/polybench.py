@@ -710,7 +710,8 @@ class PbFlow:
         tile_file = os.path.join(base_dir, "tile.sizes")
 
         if not self.options.tile_sizes:
-            shutil.rmtree(tile_file, ignore_errors=True)
+            if os.path.isfile(tile_file):
+                os.remove(tile_file)
             return self
 
         with open(tile_file, "w") as f:
