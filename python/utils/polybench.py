@@ -1031,6 +1031,7 @@ class PbFlow:
             )
 
         # Write the TCL for TBGEN.
+        # Write the TCL for TBGEN.
         command = os.path.join(self.root_dir, "llvm", "build", "bin", "opt") + " " + \
                   src_file + " -S -enable-new-pm=0 " + '-load "{}"'.format( \
                 os.path.join(self.root_dir, "build", "lib", "VhlsLLVMRewriter.so")) + \
@@ -1040,6 +1041,22 @@ class PbFlow:
                 work_dir=self.work_dir, pb_dataset=self.options.dataset) + \
                 "' -xlntbtclnames=\"" + tbgen_vitis_tcl + "\" > /dev/null\n" 
         os.system(command)
+
+        # Keep it for now in case we need C baseline simulation?
+        # with open(tbgen_vitis_tcl, "w") as f:
+        #     tbgen_run_config = [str(run_config)]
+        #     if strategy:
+        #         tbgen_run_config.extend(strategy.tbgen_directives)
+        #     f.write(
+        #         TBGEN_VITIS_TCL.format(
+        #             src_dir=base_dir,
+        #             src_base=os.path.basename(src_file).split(".")[0],
+        #             top_func=top_func,
+        #             work_dir=self.work_dir,
+        #             config="\n".join(tbgen_run_config),
+        #             pb_dataset=self.options.dataset,
+        #         )
+        #     )
 
         # Write the TCL for COSIM.
         with open(cosim_vitis_tcl, "w") as f:
@@ -1063,6 +1080,7 @@ class PbFlow:
             os.path.join(base_dir, "cosim.vitis_hls.stdout.log"), ignore_errors=True
         )
 
+        assert False
         phism_proc = subprocess.Popen(
             ["vitis_hls", phism_vitis_tcl],
             cwd=base_dir,
