@@ -1080,7 +1080,6 @@ class PbFlow:
             os.path.join(base_dir, "cosim.vitis_hls.stdout.log"), ignore_errors=True
         )
 
-        assert False
         phism_proc = subprocess.Popen(
             ["vitis_hls", phism_vitis_tcl],
             cwd=base_dir,
