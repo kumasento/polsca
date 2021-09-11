@@ -609,7 +609,7 @@ csynth_design
 exit
 """
 
-TBGEN_VITIS_TCL_FILES = "add_files {{{src_dir}/{src_base}.c}} -cflags \"-I {src_dir} -I {work_dir}/utilities -D {pb_dataset}_DATASET\" -csimflags \"-I {src_dir} -I {work_dir}/utilities -D{pb_dataset}_DATASET\"\\nadd_files -tb {{{src_dir}/{src_base}.c {work_dir}/utilities/polybench.c}} -cflags \"-I {src_dir} -I {work_dir}/utilities -D{pb_dataset}_DATASET\" -csimflags \"-I {src_dir} -I {work_dir}/utilities -D{pb_dataset}_DATASET\"\\n"
+TBGEN_VITIS_TCL_FILES = 'add_files {{{src_dir}/{src_base}.c}} -cflags "-I {src_dir} -I {work_dir}/utilities -D {pb_dataset}_DATASET" -csimflags "-I {src_dir} -I {work_dir}/utilities -D{pb_dataset}_DATASET"\\nadd_files -tb {{{src_dir}/{src_base}.c {work_dir}/utilities/polybench.c}} -cflags "-I {src_dir} -I {work_dir}/utilities -D{pb_dataset}_DATASET" -csimflags "-I {src_dir} -I {work_dir}/utilities -D{pb_dataset}_DATASET"\\n'
 
 TBGEN_VITIS_TCL = """
 open_project -reset tb
@@ -984,7 +984,7 @@ class PbFlow:
             '-xlnnames="{}"'.format(",".join(xln_names)),
             "-strip-attr",
             "-xlnunroll",
-            "-xlnarraypartition",
+            "-xlnarraypartition" if self.options.array_partition else "",
         ]
 
         self.run_command(
@@ -1032,14 +1032,27 @@ class PbFlow:
 
         # Write the TCL for TBGEN.
         # Write the TCL for TBGEN.
-        command = os.path.join(self.root_dir, "llvm", "build", "bin", "opt") + " " + \
-                  src_file + " -S -enable-new-pm=0 " + '-load "{}"'.format( \
-                os.path.join(self.root_dir, "build", "lib", "VhlsLLVMRewriter.so")) + \
-                " -xlntop=" + top_func + " -xlntbgen -xlntbfilesettings=$'" + \
-                TBGEN_VITIS_TCL_FILES.format(src_dir=base_dir, \
-                src_base=os.path.basename(src_file).split(".")[0], \
-                work_dir=self.work_dir, pb_dataset=self.options.dataset) + \
-                "' -xlntbtclnames=\"" + tbgen_vitis_tcl + "\" > /dev/null\n" 
+        command = (
+            os.path.join(self.root_dir, "llvm", "build", "bin", "opt")
+            + " "
+            + src_file
+            + " -S -enable-new-pm=0 "
+            + '-load "{}"'.format(
+                os.path.join(self.root_dir, "build", "lib", "VhlsLLVMRewriter.so")
+            )
+            + " -xlntop="
+            + top_func
+            + " -xlntbgen -xlntbfilesettings=$'"
+            + TBGEN_VITIS_TCL_FILES.format(
+                src_dir=base_dir,
+                src_base=os.path.basename(src_file).split(".")[0],
+                work_dir=self.work_dir,
+                pb_dataset=self.options.dataset,
+            )
+            + "' -xlntbtclnames=\""
+            + tbgen_vitis_tcl
+            + '" > /dev/null\n'
+        )
         os.system(command)
 
         # Keep it for now in case we need C baseline simulation?
