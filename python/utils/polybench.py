@@ -609,6 +609,8 @@ csynth_design
 exit
 """
 
+TBGEN_VITIS_TCL_FILES = "add_files {{{src_dir}/{src_base}.c}} -cflags \"-I {src_dir} -I {work_dir}/utilities -D {pb_dataset}_DATASET\" -csimflags \"-I {src_dir} -I {work_dir}/utilities -D{pb_dataset}_DATASET\"\\nadd_files -tb {{{src_dir}/{src_base}.c {work_dir}/utilities/polybench.c}} -cflags \"-I {src_dir} -I {work_dir}/utilities -D{pb_dataset}_DATASET\" -csimflags \"-I {src_dir} -I {work_dir}/utilities -D{pb_dataset}_DATASET\"\\n"
+
 TBGEN_VITIS_TCL = """
 open_project -reset tb
 add_files {{{src_dir}/{src_base}.c}} -cflags "-I {src_dir} -I {work_dir}/utilities -D {pb_dataset}_DATASET" -csimflags "-I {src_dir} -I {work_dir}/utilities -D{pb_dataset}_DATASET"
@@ -1029,21 +1031,17 @@ class PbFlow:
             )
 
         # Write the TCL for TBGEN.
-        with open(tbgen_vitis_tcl, "w") as f:
-            tbgen_run_config = [str(run_config)]
-            if strategy:
-                tbgen_run_config.extend(strategy.tbgen_directives)
+        command = os.path.join(self.root_dir, "llvm", "build", "bin", "opt") + " " + \
+                  src_file + " -S -enable-new-pm=0 " + '-load "{}"'.format( \
+                os.path.join(self.root_dir, "build", "lib", "VhlsLLVMRewriter.so")) + \
+                " -xlntop=" + top_func + " -xlntbgen -xlntbfilesettings=$'" + \
+                TBGEN_VITIS_TCL_FILES.format(src_dir=base_dir, \
+                src_base=os.path.basename(src_file).split(".")[0], \
+                work_dir=self.work_dir, pb_dataset=self.options.dataset) + \
+                "' -xlntbtclnames=\"" + tbgen_vitis_tcl + "\" > /dev/null\n" 
+        os.system(command)
 
-            f.write(
-                TBGEN_VITIS_TCL.format(
-                    src_dir=base_dir,
-                    src_base=os.path.basename(src_file).split(".")[0],
-                    top_func=top_func,
-                    work_dir=self.work_dir,
-                    config="\n".join(tbgen_run_config),
-                    pb_dataset=self.options.dataset,
-                )
-            )
+        # Write the TCL for COSIM.
         with open(cosim_vitis_tcl, "w") as f:
             f.write(COSIM_VITIS_TCL)
 
