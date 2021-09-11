@@ -1058,6 +1058,10 @@ struct XilinxArrayPartitionPass : public ModulePass {
     auto arrayPartitionFunc = mod->getFunction("llvm.sideeffect");
     arrayPartitionFunc->addFnAttr(llvm::Attribute::InaccessibleMemOnly);
     arrayPartitionFunc->addFnAttr(llvm::Attribute::NoUnwind);
+    // Remove unsupported attributes by Vitis HLS
+    arrayPartitionFunc->removeFnAttr(llvm::Attribute::NoFree);
+    arrayPartitionFunc->removeFnAttr(llvm::Attribute::NoSync);
+    arrayPartitionFunc->removeFnAttr(llvm::Attribute::WillReturn);
 
     for (auto &F : M)
       if (F.getName() == XlnTop) {
@@ -1176,4 +1180,3 @@ static RegisterPass<XilinxArrayPartitionPass> X8(
 char XilinxTBTclGenPass::ID = 8;
 static RegisterPass<XilinxTBTclGenPass>
     X9("xlntbgen", "Generate test bench tcl script for Xilinx Vitis.");
-
