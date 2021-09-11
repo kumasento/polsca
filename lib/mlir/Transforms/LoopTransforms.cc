@@ -377,44 +377,6 @@ static int extractPointLoops(FuncOp f, int startId, int maxSpan, OpBuilder &b) {
   return startId;
 }
 
-static void annotateDependence(FuncOp f, ModuleOp m, OpBuilder &b) {
-  f.walk([&](mlir::AffineForOp forOp) {
-    SmallVector<Operation *> callers;
-
-    forOp.walk([&](mlir::CallOp caller) {
-      if (caller->hasAttr("scop.pe"))
-        callers.push_back(caller);
-    });
-
-    for (Operation *op : callers) {
-      mlir::CallOp caller = cast<mlir::CallOp>(op);
-      FuncOp callee = cast<FuncOp>(m.lookupSymbol(caller.getCallee()));
-
-      SmallVector<std::pair<Value, unsigned>> memrefs;
-      for (auto arg : enumerate(caller.getArgOperands()))
-        if (arg.value().getType().isa<MemRefType>())
-          memrefs.push_back({arg.value(), arg.index()});
-
-      for (auto memref : memrefs) {
-        Value arg = callee.getArgument(memref.second);
-
-        // Get all the read/write accesses.
-        SmallVector<Operation *> loadOps, storeOps;
-        copy_if(arg.getUsers(), std::back_inserter(loadOps),
-                [](Operation *op) { return isa<mlir::AffineLoadOp>(op); });
-        copy_if(arg.getUsers(), std::back_inserter(storeOps),
-                [](Operation *op) { return isa<mlir::AffineStoreOp>(op); });
-
-        FlatAffineConstraints readCst;
-        for (Operation *op : loadOps) {
-          mlir::AffineLoadOp loadOp = cast<mlir::AffineLoadOp>(op);
-          AffineValueMap vmap(loadOp.getAffineMap(), loadOp.getMapOperands());
-        }
-      }
-    }
-  });
-}
-
 namespace {
 struct ExtractPointLoopsPass
     : public mlir::PassWrapper<ExtractPointLoopsPass, OperationPass<ModuleOp>> {
@@ -440,9 +402,6 @@ struct ExtractPointLoopsPass
     int startId = 0;
     for (FuncOp f : fs)
       startId += extractPointLoops(f, startId, maxSpan, b);
-
-    for (FuncOp f : fs)
-      annotateDependence(f, m, b);
   }
 };
 } // namespace

@@ -37,23 +37,27 @@ namespace {
 /// https://mlir.llvm.org/docs/ConversionToLLVMDialect/#default-convention
 class InsExtSequence {
 public:
-  Value *ptr = nullptr;            /// aligned pointer.
-  int64_t offset = -1;             /// memref offset.
-  SmallVector<int64_t, 4> dims;    /// dimensionality.
-  SmallVector<int64_t, 4> strides; /// stride in each dim.
+  Value *ptr = nullptr;                  /// aligned pointer.
+  Value *offset = nullptr;               /// offset.
+  SmallVector<Value *, 4> dim_values;    /// dimensionality.
+  SmallVector<Value *, 4> stride_values; /// stride in each dim.
+  SmallVector<int64_t, 4> dims;          /// dimensionality.
+  SmallVector<int64_t, 4> strides;       /// stride in each dim.
 
   /// Sequences of `insertvalue` and `extractvalue` instructions.
   SmallVector<Instruction *, 4> insertInsts;
   SmallVector<Instruction *, 4> extractInsts;
 
-  /// Create a new type from the ptr and dims.
-  Type *getRankedArrayType() const {
+  Type *getRankedArrayType(ArrayRef<int64_t> dims) const {
     Type *newType =
         ArrayType::get(ptr->getType()->getPointerElementType(), dims.back());
     for (size_t i = 1; i < dims.size(); i++)
       newType = ArrayType::get(newType, dims[dims.size() - i - 1]);
     return newType;
   }
+
+  /// Create a new type from the ptr and dims.
+  Type *getRankedArrayType() const { return getRankedArrayType(dims); }
 
   /// Initialize the data fields.
   bool initialize(Type *type) {
@@ -70,6 +74,7 @@ public:
       return false;
     // Unset the dims array.
     dims.assign(dimsType->getNumElements(), -1);
+    dim_values.assign(dimsType->getNumElements(), nullptr);
 
     // Gather strides.
     ArrayType *stridesType = dyn_cast<ArrayType>(structType->getElementType(4));
@@ -77,6 +82,7 @@ public:
         stridesType->getNumElements() != dimsType->getNumElements())
       return false;
     strides.assign(stridesType->getNumElements(), -1);
+    stride_values.assign(stridesType->getNumElements(), nullptr);
 
     return true;
   }
@@ -114,6 +120,84 @@ public:
     return CI->getSExtValue();
   }
 
+  /// From the scalar offset to a set of offset for each dim.
+  /// There should be in total dimSize * 2 expressions.
+  /// Dim size will be dims.size() * 2 since the dims in this Seq only has the
+  /// tile dims.
+  void processOffset(Function &F) {
+    // Won't process constant offsets.
+    if (isa<ConstantInt>(offset))
+      return;
+
+    SmallVector<Value *> offsets;
+    SmallVector<int64_t> strides;
+
+    Value *curr = offset;
+    BinaryOperator *binOp;
+    unsigned dimSize = dims.size() * 2;
+    for (unsigned i = 0; i < dimSize; ++i) {
+      binOp = cast<BinaryOperator>(curr);
+      // binOp->dump();
+      assert(binOp->getOpcode() == BinaryOperator::Add);
+
+      Value *lhs = binOp->getOperand(0), *rhs = binOp->getOperand(1);
+      BinaryOperator *lhsBinOp = dyn_cast<BinaryOperator>(lhs);
+      BinaryOperator *rhsBinOp = dyn_cast<BinaryOperator>(rhs);
+      BinaryOperator *mul =
+          (lhsBinOp && lhsBinOp->getOpcode() == BinaryOperator::Mul) ? lhsBinOp
+                                                                     : rhsBinOp;
+      BinaryOperator *add =
+          (lhsBinOp && lhsBinOp->getOpcode() == BinaryOperator::Mul) ? rhsBinOp
+                                                                     : lhsBinOp;
+
+      assert(mul && mul->getOpcode() == BinaryOperator::Mul);
+      assert(!add || add->getOpcode() == BinaryOperator::Add);
+
+      // Offsets and strides are both from the mul operands, since we basically
+      // multiply offset by stride.
+      // Strides should be constant values.
+      offsets.push_back(mul->getOperand(0));
+      strides.push_back(getI64Value(mul->getOperand(1)));
+
+      if (add)
+        curr = cast<Value>(add);
+    }
+
+    assert(!offsets.empty());
+    assert(offsets.size() == strides.size());
+    assert(strides[0] == 1);
+
+    SmallVector<int64_t> partialDims;
+    for (unsigned i = 1; i < strides.size(); ++i)
+      partialDims.push_back(strides[i] / strides[i - 1]);
+    assert(partialDims.size() == dimSize - 1);
+
+    std::reverse(partialDims.begin(), partialDims.end());
+    std::reverse(offsets.begin(), offsets.end());
+
+    Type *rankedArrType = getRankedArrayType(partialDims);
+    Type *restoredType =
+        PointerType::get(PointerType::get(rankedArrType, F.getAddressSpace()),
+                         F.getAddressSpace());
+
+    // Below is a sequence of instructions that -
+    // 1. Cast the original pointer to a pointer that points to an array;
+    // 2. Load the array
+    // 3. Get the subarray based on the offsets using GEP.
+    // 4. Cast the subarray into raw pointer, so that it can be accepted by the
+    // original callers.
+    BitCastInst *bitCastInst = new BitCastInst(
+        ptr, restoredType, Twine(""), cast<Instruction>(offset)->getNextNode());
+    LoadInst *load = new LoadInst(
+        cast<PointerType>(restoredType)->getElementType(), bitCastInst,
+        Twine(""), cast<Instruction>(bitCastInst->getNextNode()));
+    GetElementPtrInst *gep = GetElementPtrInst::Create(
+        rankedArrType, load, {offsets[0], offsets[1]}, Twine(""),
+        cast<Instruction>(load->getNextNode()));
+    ptr = new BitCastInst(gep, ptr->getType(), Twine(""),
+                          cast<Instruction>(gep)->getNextNode());
+  }
+
   /// Append insInst to the insertInsts list, and gather the value to be
   /// inserted into the members of this class.
   bool addInsertInst(InsertValueInst *insInst) {
@@ -128,16 +212,18 @@ public:
       setMemberOnce(ptr, insInst->getInsertedValueOperand());
       assert(ptr->getType()->isPointerTy() && "ptr should be a pointer.");
     } else if (indices[0] == 2) {
-      setMemberOnce(offset, getI64Value(insInst->getInsertedValueOperand()),
-                    -1);
+      setMemberOnce(offset, insInst->getInsertedValueOperand());
     } else if (indices[0] == 3) {
       assert(dims.size() > indices[1]);
       setMemberOnce(dims[indices[1]],
                     getI64Value(insInst->getInsertedValueOperand()), -1);
+      setMemberOnce(dim_values[indices[1]], insInst->getInsertedValueOperand());
     } else if (indices[0] == 4) {
       assert(strides.size() > indices[1]);
       setMemberOnce(strides[indices[1]],
                     getI64Value(insInst->getInsertedValueOperand()), -1);
+      setMemberOnce(stride_values[indices[1]],
+                    insInst->getInsertedValueOperand());
     }
 
     insertInsts.push_back(insInst);
@@ -150,12 +236,16 @@ public:
   void eraseAllInsts() {
     while (!extractInsts.empty()) {
       Instruction *inst = extractInsts.pop_back_val();
+      if (!inst->use_empty())
+        inst->dump();
       assert(inst->use_empty());
       inst->eraseFromParent();
     }
 
     while (!insertInsts.empty()) {
       Instruction *inst = insertInsts.pop_back_val();
+      if (!inst->use_empty())
+        inst->dump();
       assert(inst->use_empty());
       inst->eraseFromParent();
     }
@@ -166,8 +256,18 @@ public:
   void replaceExtractValueUses() {
     for (Instruction *inst : extractInsts) {
       ExtractValueInst *extInst = dyn_cast<ExtractValueInst>(inst);
-      if (extInst->getNumIndices() == 1 && *extInst->idx_begin() == 1)
-        extInst->replaceAllUsesWith(ptr);
+      if (extInst->getNumIndices() == 1) {
+        if (extInst->getIndices()[0] == 1)
+          extInst->replaceAllUsesWith(ptr);
+        if (extInst->getIndices()[0] == 2)
+          extInst->replaceAllUsesWith(offset);
+      } else if (extInst->getNumIndices() == 2) {
+        if (extInst->getIndices()[0] == 3) {
+          extInst->replaceAllUsesWith(dim_values[extInst->getIndices()[1]]);
+        } else if (extInst->getIndices()[0] == 4) {
+          extInst->replaceAllUsesWith(stride_values[extInst->getIndices()[1]]);
+        }
+      }
     }
   }
 
@@ -191,6 +291,7 @@ static void
 findInsertExractValueSequences(Function &F,
                                SmallVectorImpl<InsExtSequence> &seqs) {
   SmallPtrSet<Instruction *, 4> visited;
+  SmallDenseMap<Value *, unsigned> StructToSeqId;
 
   for (BasicBlock &BB : F) {
     for (Instruction &I : BB) {
@@ -249,8 +350,11 @@ findInsertExractValueSequences(Function &F,
           }
 
           // Every condition is matched.
-          if (isValidSeq)
+          if (isValidSeq) {
+            seq.processOffset(F);
+            seq.replaceExtractValueUses();
             seqs.push_back(seq);
+          }
         }
       }
     }
@@ -273,12 +377,28 @@ duplicateFunctionsWithRankedArrays(Function *F,
   for (unsigned i = 0; i < FuncType->getFunctionNumParams(); ++i)
     ParamTypes.push_back(FuncType->getFunctionParamType(i));
 
-  for (InsExtSequence Seq : Seqs) { // Each Seq has a new ArrayType arg.
+  SmallPtrSet<Value *, 4> ExistArgs;
+  for (unsigned i = 0; i < F->arg_size(); ++i)
+    ExistArgs.insert(F->getArg(i));
+
+  // Map an argument to the new ranked array type.
+  SmallDenseMap<Value *, Type *> ArgToArrType;
+  for (InsExtSequence &Seq : Seqs) // Each Seq has a new ArrayType arg.
+    // Note that here we only set the array type ONCE. It is based on the
+    // understanding that the first sequence will give the full info of the
+    // target memref.
+    if (ExistArgs.count(Seq.ptr) && !ArgToArrType.count(Seq.ptr))
+      ArgToArrType[Seq.ptr] = Seq.getRankedArrayType();
+
+  for (InsExtSequence &Seq : Seqs) { // Each Seq has a new ArrayType arg.
     AllocaInst *I = dyn_cast<AllocaInst>(Seq.ptr);
-    if (!I) // Will resolve the function arguments later.
-      ParamTypes.push_back(
-          PointerType::get(Seq.getRankedArrayType(), F->getAddressSpace()));
-    else // Create a new AllocaInst.
+    if (!I) { // Will resolve the function arguments later.
+      // If the source ptr for the Sequence is a function argument, we extend
+      // the function signature.
+      if (ExistArgs.count(Seq.ptr))
+        ParamTypes.push_back(
+            PointerType::get(ArgToArrType[Seq.ptr], F->getAddressSpace()));
+    } else // Create a new AllocaInst.
       new AllocaInst(Seq.getRankedArrayType(), F->getAddressSpace(), Twine(""),
                      I);
   }
@@ -523,24 +643,23 @@ static SmallVector<Function *> TopologicalSort(ArrayRef<Function *> funcs) {
 /// If ranked is passed as false, this function stops at step 1.
 ///
 static void convertMemRefToArray(Module &M, bool ranked = false) {
-  DenseMap<Function *, SmallVector<InsExtSequence>> FuncToSeqs;
+  DenseMap<Function *, SmallVector<InsExtSequence, 4>> FuncToSeqs;
 
   /// First, we gather the mapping from Functions to all the InsExtSequences
   /// that they should rewrite on.
   for (auto &F : M) {
-    SmallVector<InsExtSequence> Seqs;
+    SmallVector<InsExtSequence, 4> Seqs;
     findInsertExractValueSequences(F, Seqs);
 
     if (Seqs.empty())
       continue;
 
-    // Clean up the current function.
-    for (InsExtSequence Seq : Seqs) {
-      Seq.replaceExtractValueUses();
-      Seq.eraseAllInsts();
-    }
-
     FuncToSeqs[&F] = Seqs;
+
+    // Clean up the sequences in the current function in reversed order.
+    std::reverse(Seqs.begin(), Seqs.end());
+    for (InsExtSequence &Seq : Seqs)
+      Seq.eraseAllInsts();
   }
 
   // If it is ok to keep the array unranked, we can just return.
@@ -562,7 +681,7 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
   // ranked arrays.
   for (Function *F : Funcs) {
     ValueToValueMapTy RankedArrVMap;
-    SmallVector<InsExtSequence> &Seqs = FuncToSeqs[F];
+    auto &Seqs = FuncToSeqs[F];
 
     Function *NewFunc =
         duplicateFunctionsWithRankedArrays(F, Seqs, RankedArrVMap);
@@ -602,19 +721,62 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
           NumArg++;
         }
 
-      // Duplicated arguments.
-      for (Value *Arg : Caller->args())
+      // Duplicated arguments (new memref).
+      SmallVector<Instruction *> toErase;
+      for (Value *Arg : Caller->args()) {
+        // If it is a newly mapped memref argument -
         if (RankedArrVMap.count(Arg))
           Args.push_back(RankedArrVMap[Arg]);
+        else if (isa<BitCastInst>(Arg)) {
+          // Or it is a result from a bitcast expression chain.
+          // This chain is based on the instructions generated by the
+          // processOffset function.
+          /// TODO:  can we make this a pattern?
+          BitCastInst *bitCastInst = cast<BitCastInst>(Arg);
+          GetElementPtrInst *gep =
+              cast<GetElementPtrInst>(bitCastInst->getOperand(0));
+          LoadInst *loadInst = cast<LoadInst>(gep->getOperand(0));
+          BitCastInst *src = cast<BitCastInst>(loadInst->getOperand(0));
+
+          // Now we should replace these instructions by a single GEP.
+          // This GEP directly calculates the address from the input ranked
+          // array pointer.
+          Value *newArg = RankedArrVMap[src->getOperand(0)];
+          SmallVector<Value *> indices;
+          // Start with 0.
+          indices.push_back(
+              ConstantInt::get((*gep->idx_begin())->getType(), 0));
+          // Borrow the indices from the original GEP.
+          for (Value *val : gep->indices())
+            indices.push_back(val);
+          // Construct the new GEP.
+          GetElementPtrInst *newGEP = GetElementPtrInst::Create(
+              cast<PointerType>(newArg->getType())->getElementType(), newArg,
+              indices, Twine(""),
+              cast<Instruction>(bitCastInst->getNextNode()));
+
+          // The result from this newGEP will be the new argument, i.e., the
+          // subview pointer.
+          Args.push_back(newGEP);
+
+          // Prepare what to erase in the end. They should be in the reversed
+          // order.
+          toErase.append({bitCastInst, gep, loadInst, src});
+        }
+      }
 
       // New caller.
       CallInst::Create(FuncToNew[Callee], Args, Twine(), Caller);
       // Erase the original caller.
       Caller->eraseFromParent();
+      for (Instruction *inst : toErase)
+        inst->eraseFromParent();
     }
 
     FuncToNew[F] = replaceFunction(F, NewFunc);
     FuncToNew[F]->addFnAttr(Attribute::NoInline);
+
+    // FuncToNew[F]->dump();
 
     // Finally, delete the duplicate.
     NewFunc->eraseFromParent();
@@ -954,3 +1116,4 @@ char XilinxArrayPartitionPass::ID = 7;
 static RegisterPass<XilinxArrayPartitionPass> X8(
     "xlnarraypartition",
     "Partition arrays in the top-level function arguments for Xilinx Vitis.");
+
