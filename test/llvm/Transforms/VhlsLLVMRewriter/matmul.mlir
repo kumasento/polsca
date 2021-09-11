@@ -1,6 +1,7 @@
 // RUN: mlir-opt -lower-affine -convert-scf-to-std -convert-std-to-llvm='use-bare-ptr-memref-call-conv=1' %s | mlir-translate -mlir-to-llvmir | opt -enable-new-pm=0 -load ${PHISM_LIBS_DIR}/VhlsLLVMRewriter.so -mem2arr -instcombine -strip-debug -S | FileCheck %s 
 
-// CHECK: define void @matmul([200 x [300 x float]]* %[[A:.*]], [300 x [400 x float]]* %[[B:.*]], [200 x [400 x float]]* %[[C:.*]]) {
+// CHECK: noinline
+// CHECK: define void @matmul([200 x [300 x float]]* %[[A:.*]], [300 x [400 x float]]* %[[B:.*]], [200 x [400 x float]]* %[[C:.*]]) #[[ATTR:.*]]
 func @matmul(%A: memref<200x300xf32>, %B: memref<300x400xf32>, %C: memref<200x400xf32>) {
   affine.for %i = 0 to 200 {
     affine.for %j = 0 to 400 {
