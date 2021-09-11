@@ -27,6 +27,16 @@ static cl::opt<std::string>
 static cl::opt<std::string>
     XlnNames("xlnnames", cl::desc("Specify the top function param names."),
              cl::value_desc("paramname"));
+static cl::opt<std::string> XlnTBTclNames(
+    "xlntbtclnames",
+    cl::desc(
+        "Specify the file name of the tcl script for test bench generation."),
+    cl::value_desc("tbname"));
+static cl::opt<std::string> XlnTBSources(
+    "xlntbfilesettings",
+    cl::desc(
+        "Specify the file settings for the test bench, e.g. \"add_files ...\""),
+    cl::value_desc("tbfiles"));
 
 namespace {
 
@@ -918,6 +928,52 @@ struct XilinxArrayPartitionPass : public ModulePass {
 
 } // namespace
 
+namespace {
+
+/// Generate test bench tcl script for Xilinx Vitis. This pass parses the LLVM
+/// IR and generates compatible test bench for the design in LLVM IR.
+struct XilinxTBTclGenPass : public ModulePass {
+  static char ID;
+  XilinxTBTclGenPass() : ModulePass(ID) {}
+
+  bool runOnModule(Module &M) override {
+    std::error_code ec;
+    llvm::raw_fd_ostream XlnTBTcl(XlnTBTclNames, ec);
+
+    XlnTBTcl << "open_project -reset tb\n"
+             << XlnTBSources << "set_top " << XlnTop << "\n"
+             << "open_solution -reset solution1\n"
+             << "set_part \"zynq\"\n"
+             << "create_clock -period \"100MHz\"\n"
+             << "config_bind -effort high\n";
+
+    for (auto &F : M)
+      if (F.getName() == XlnTop) {
+        for (unsigned i = 0; i < F.arg_size(); i++) {
+          auto arg = F.getArg(i);
+          if (arg->getType()->isPointerTy() &&
+              arg->getType()->getPointerElementType()->isArrayTy()) {
+            auto arrayTy =
+                dyn_cast<ArrayType>(arg->getType()->getPointerElementType());
+            auto partitions = getPartitionInfo(arrayTy);
+            for (auto partition : partitions)
+              XlnTBTcl << "set_directive_array_partition -dim "
+                       << partition.first << " -factor " << partition.second
+                       << " -type block \"" << XlnTop << "\" " << arg->getName()
+                       << "\n";
+          }
+        }
+      }
+
+    XlnTBTcl << "csim_design\n"
+             << "csynth_design cosim_design\n"
+             << "exit\n";
+    return false;
+  }
+};
+
+} // namespace
+
 char ConvertMemRefToArray::ID = 0;
 static RegisterPass<ConvertMemRefToArray>
     X1("mem2ptr",
@@ -954,3 +1010,7 @@ char XilinxArrayPartitionPass::ID = 7;
 static RegisterPass<XilinxArrayPartitionPass> X8(
     "xlnarraypartition",
     "Partition arrays in the top-level function arguments for Xilinx Vitis.");
+
+char XilinxTBTclGenPass::ID = 8;
+static RegisterPass<XilinxTBTclGenPass>
+    X9("xlntbgen", "Generate test bench tcl script for Xilinx Vitis.");
