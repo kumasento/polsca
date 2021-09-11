@@ -50,6 +50,22 @@ def main():
     parser.add_argument(
         "--split", type=str, default="NO_SPLIT", help="Statement split method."
     )
+    parser.add_argument(
+        "--improve-pipelining",
+        action="store_true",
+        help="Enable pipelining improvement",
+    )
+    parser.add_argument(
+        "--loop-transforms",
+        action="store_true",
+        help="Enable loop transforms",
+    )
+    parser.add_argument(
+        "--tile-sizes", nargs="+", default=[], help="Tile sizes for each loop nest."
+    )
+    parser.add_argument(
+        "--array-partition", action="store_true", help="Use array partition."
+    )
     args = parser.parse_args()
 
     options = pb_utils.PbFlowOptions(**vars(args))

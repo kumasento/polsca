@@ -20,7 +20,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-POLYBENCH_DATASETS = ("MINI", "SMALL", "LARGE", "EXTRALARGE")
+POLYBENCH_DATASETS = ("MINI", "SMALL", "MEDIUM", "LARGE", "EXTRALARGE")
 POLYBENCH_EXAMPLES = (
     "2mm",
     "3mm",
@@ -86,10 +86,12 @@ class PbFlowOptions:
     dry_run: bool = False
     examples: List[str] = POLYBENCH_EXAMPLES
     split: str = "NO_SPLIT"  # other options: "SPLIT", "HEURISTIC"
-    loop_transforms: bool = True
+    loop_transforms: bool = False
     constant_args: bool = True
-    improve_pipelining: bool = True
+    improve_pipelining: bool = False
     max_span: int = -1
+    tile_sizes: Optional[List[int]] = None
+    array_partition: bool = False
 
 
 # ----------------------- Utility functions ------------------------------------
@@ -661,13 +663,15 @@ class PbFlow:
         # The whole flow
         try:
             (
-                self.compile_c()
+                self.generate_tile_sizes()
+                .compile_c()
                 .preprocess()
                 .split_statements()
                 .extract_top_func()
                 .polymer_opt()
                 .loop_transforms()
                 .constant_args()
+                .array_partition()
                 .lower_llvm()
                 .vitis_opt()
                 .run_vitis()
@@ -680,6 +684,7 @@ class PbFlow:
         self, cmd: str = "", cmd_list: Optional[List[str]] = None, **kwargs
     ):
         """Single entry for running a command."""
+        kwargs.update({"cwd": os.path.dirname(self.cur_file)})
         if cmd_list:
             if self.options.dry_run:
                 print(" ".join(cmd_list))
@@ -696,6 +701,21 @@ class PbFlow:
         return str(
             subprocess.check_output(["which", program], env=self.env), "utf-8"
         ).strip()
+
+    def generate_tile_sizes(self):
+        """Generate the tile.sizes file that Pluto will read."""
+        base_dir = os.path.dirname(self.cur_file)
+        tile_file = os.path.join(base_dir, "tile.sizes")
+
+        if not self.options.tile_sizes:
+            shutil.rmtree(tile_file, ignore_errors=True)
+            return self
+
+        with open(tile_file, "w") as f:
+            for tile in self.options.tile_sizes:
+                f.write(f"{tile}\n")
+
+        return self
 
     def compile_c(self):
         """Compile C code to MLIR using mlir-clang."""
@@ -813,6 +833,7 @@ class PbFlow:
         passes += [
             "-extract-scop-stmt",
             "-pluto-opt",
+            "-debug",
         ]
 
         self.run_command(
@@ -836,7 +857,7 @@ class PbFlow:
             return self
 
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(
-            ".mlir", ".loop_transforms.mlir"
+            ".mlir", ".lt.mlir"
         )
         log_file = self.cur_file.replace(".mlir", ".log")
 
@@ -856,13 +877,40 @@ class PbFlow:
 
         return self
 
+    def array_partition(self):
+        """Run Phism array partition transforms."""
+        if not self.options.array_partition:
+            return self
+
+        src_file, self.cur_file = self.cur_file, self.cur_file.replace(
+            ".mlir", ".ap.mlir"
+        )
+        log_file = self.cur_file.replace(".mlir", ".log")
+
+        args = [
+            self.get_program_abspath("phism-opt"),
+            src_file,
+            "-simple-array-partition",
+            "-debug-only=array-partition",
+        ]
+
+        self.run_command(
+            cmd=" ".join(args),
+            shell=True,
+            stderr=open(log_file, "w"),
+            stdout=open(self.cur_file, "w"),
+            env=self.env,
+        )
+
+        return self
+
     def constant_args(self):
         """Run Phism constant args."""
         if not self.options.constant_args:
             return self
 
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(
-            ".mlir", ".constant_args.mlir"
+            ".mlir", ".ca.mlir"
         )
         log_file = self.cur_file.replace(".mlir", ".log")
 
@@ -933,7 +981,8 @@ class PbFlow:
             '-xlntop="{}"'.format(get_top_func(src_file)),
             '-xlnnames="{}"'.format(",".join(xln_names)),
             "-strip-attr",
-            "-xlnunroll"
+            "-xlnunroll",
+            "-xlnarraypartition",
         ]
 
         self.run_command(
