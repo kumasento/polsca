@@ -982,6 +982,7 @@ class PbFlow:
             '-xlnnames="{}"'.format(",".join(xln_names)),
             "-strip-attr",
             "-xlnunroll",
+            "-xlnarraypartition",
         ]
 
         self.run_command(

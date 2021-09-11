@@ -165,6 +165,7 @@ function opt_llvm_for_vitis() {
     -xlnanno -xlntop="${top_func}" \
     -strip-attr \
     -xlnunroll \
+    -xlnarraypartition \
     > "${dst_file}"
   
   echo "${dst_file}"
