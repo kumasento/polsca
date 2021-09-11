@@ -969,6 +969,20 @@ struct XilinxRewriteMathInstPass : public ModulePass {
 
 } // namespace
 
+static void unrollLoop(Loop *loop) {
+  LLVMContext &Context = loop->getHeader()->getContext();
+  MDNode *EnableUnrollMD =
+      MDNode::get(Context, MDString::get(Context, "llvm.loop.unroll.full"));
+  MDNode *LoopID = loop->getLoopID();
+  MDNode *NewLoopID = makePostTransformationMetadata(
+      Context, LoopID, {"llvm.loop.unroll."}, {EnableUnrollMD});
+  loop->setLoopID(NewLoopID);
+
+  if (!loop->isInnermost())
+    for (auto &subloop : loop->getSubLoops())
+      unrollLoop(subloop);
+}
+
 namespace {
 
 /// Unroll all the loops in a specified function for Xilinx Vitis.
@@ -983,15 +997,8 @@ struct XilinxUnrollPass : public ModulePass {
         auto DT = llvm::DominatorTree(F);
         LoopInfo LI(DT);
 
-        for (auto &loop : LI) {
-          LLVMContext &Context = loop->getHeader()->getContext();
-          MDNode *EnableUnrollMD = MDNode::get(
-              Context, MDString::get(Context, "llvm.loop.unroll.full"));
-          MDNode *LoopID = loop->getLoopID();
-          MDNode *NewLoopID = makePostTransformationMetadata(
-              Context, LoopID, {"llvm.loop.unroll."}, {EnableUnrollMD});
-          loop->setLoopID(NewLoopID);
-        }
+        for (auto &loop : LI)
+          unrollLoop(loop);
       }
 
     return false;
