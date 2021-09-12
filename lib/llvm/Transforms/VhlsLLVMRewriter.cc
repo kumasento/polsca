@@ -642,24 +642,24 @@ static SmallVector<Function *> TopologicalSort(ArrayRef<Function *> funcs) {
 }
 
 /// See the doc from rewriteModuloGepIndices.
-static void rewriteModulo(Value *value) {
+static Value *rewriteModulo(Value *value) {
   SelectInst *selectInst = dyn_cast<SelectInst>(value);
   if (!selectInst)
-    return;
+    return nullptr;
 
   ICmpInst *icmpInst = dyn_cast<ICmpInst>(selectInst->getCondition());
   if (!icmpInst)
-    return;
+    return nullptr;
 
   BinaryOperator *addInst =
       dyn_cast<BinaryOperator>(selectInst->getTrueValue());
   if (!addInst || addInst->getOpcode() != BinaryOperator::Add)
-    return;
+    return nullptr;
 
   BinaryOperator *sremInst =
       dyn_cast<BinaryOperator>(selectInst->getFalseValue());
   if (!sremInst || sremInst->getOpcode() != BinaryOperator::SRem)
-    return;
+    return nullptr;
 
   // Now the pattern has been matched, do the rewrite.
   selectInst->replaceAllUsesWith(sremInst);
@@ -668,6 +668,8 @@ static void rewriteModulo(Value *value) {
   selectInst->eraseFromParent();
   addInst->eraseFromParent();
   icmpInst->eraseFromParent();
+
+  return sremInst;
 }
 
 /// Look at the indices passed to the given GEP and see if there is any chance
@@ -683,7 +685,7 @@ static void rewriteModulo(Value *value) {
 /// to:
 ///      %0 = srem i64 %arg, 32
 ///
-static void rewriteModuloGepIndices(GetElementPtrInst *inst) {
+static SmallVector<Value *> rewriteModuloGepIndices(GetElementPtrInst *inst) {
   assert(inst->getNumIndices() == 1 &&
          "The input GEP should have a single index operand.");
 
@@ -712,8 +714,11 @@ static void rewriteModuloGepIndices(GetElementPtrInst *inst) {
     }
   }
 
+  SmallVector<Value *> indices;
   for (Value *value : selectInsts)
-    rewriteModulo(value);
+    indices.push_back(rewriteModulo(value));
+
+  return indices;
 }
 
 /// This helper function convert the MemRef value represented by an
@@ -784,10 +789,25 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
     for (Instruction *I : GEPList) {
       // Simplify the address calculation expressions to make Vitis happy.
       // It is easier to work on the original GEP.
-      rewriteModuloGepIndices(cast<GetElementPtrInst>(I));
+      SmallVector<Value *> indices =
+          rewriteModuloGepIndices(cast<GetElementPtrInst>(I));
 
-      Instruction *NewGEP =
-          duplicateGEPWithRankedArray(I, RankedArrVMap, NumNewGEP);
+      Instruction *NewGEP;
+      if (any_of(indices, [&](Value *value) { return !value; })) {
+        NewGEP = duplicateGEPWithRankedArray(I, RankedArrVMap, NumNewGEP);
+      } else {
+        // We can directly use the indices from the rewrite to get the new GEP.
+        /// TODO: should be more careful.
+        Value *ptr = RankedArrVMap[I->getOperand(0)];
+        assert(ptr);
+
+        indices.push_back(ConstantInt::get(indices.front()->getType(), 0));
+        std::reverse(indices.begin(), indices.end());
+
+        NewGEP = GetElementPtrInst::CreateInBounds(ptr, indices, Twine(""),
+                                                   I->getNextNode());
+      }
+
       I->replaceAllUsesWith(NewGEP);
       I->eraseFromParent();
     }
