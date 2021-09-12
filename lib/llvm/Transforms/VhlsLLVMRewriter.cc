@@ -19,6 +19,8 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 
+#include <queue>
+
 using namespace llvm;
 
 static cl::opt<std::string>
@@ -639,6 +641,81 @@ static SmallVector<Function *> TopologicalSort(ArrayRef<Function *> funcs) {
   return sorted;
 }
 
+/// See the doc from rewriteModuloGepIndices.
+static void rewriteModulo(Value *value) {
+  SelectInst *selectInst = dyn_cast<SelectInst>(value);
+  if (!selectInst)
+    return;
+
+  ICmpInst *icmpInst = dyn_cast<ICmpInst>(selectInst->getCondition());
+  if (!icmpInst)
+    return;
+
+  BinaryOperator *addInst =
+      dyn_cast<BinaryOperator>(selectInst->getTrueValue());
+  if (!addInst || addInst->getOpcode() != BinaryOperator::Add)
+    return;
+
+  BinaryOperator *sremInst =
+      dyn_cast<BinaryOperator>(selectInst->getFalseValue());
+  if (!sremInst || sremInst->getOpcode() != BinaryOperator::SRem)
+    return;
+
+  // Now the pattern has been matched, do the rewrite.
+  selectInst->replaceAllUsesWith(sremInst);
+
+  // Clean up
+  selectInst->eraseFromParent();
+  addInst->eraseFromParent();
+  icmpInst->eraseFromParent();
+}
+
+/// Look at the indices passed to the given GEP and see if there is any chance
+/// we can make the modulo expressions simplier given that the address of GEP
+/// should be positive.
+///
+/// For example, transform:
+///      %0 = srem i64 %arg, 32
+///      %1 = icmp slt i64 %0, 0
+///      %2 = add i64 %0, 32
+///      %3 = select i1 %1, i64 %2, i64 %0
+///
+/// to:
+///      %0 = srem i64 %arg, 32
+///
+static void rewriteModuloGepIndices(GetElementPtrInst *inst) {
+  assert(inst->getNumIndices() == 1 &&
+         "The input GEP should have a single index operand.");
+
+  // First, we trace the address calculation (mul and add) chain for the GEP
+  // index.
+  // It would looks like -
+  //      %0 = mul %i, 32
+  //      %1 = add %0, %j
+  SmallVector<Value *> selectInsts;
+
+  // A simple BFS algorithm iterates through the mul-add chain.
+  std::queue<Value *> worklist;
+  worklist.push(*inst->idx_begin());
+  while (!worklist.empty()) {
+    Value *value = worklist.front();
+    worklist.pop();
+
+    if (BinaryOperator *binOp = dyn_cast<BinaryOperator>(value)) {
+      if (binOp->getOpcode() == BinaryOperator::Add ||
+          binOp->getOpcode() == BinaryOperator::Mul) {
+        worklist.push(binOp->getOperand(0));
+        worklist.push(binOp->getOperand(1));
+      }
+    } else if (isa<SelectInst>(value)) {
+      selectInsts.push_back(value);
+    }
+  }
+
+  for (Value *value : selectInsts)
+    rewriteModulo(value);
+}
+
 /// This helper function convert the MemRef value represented by an
 /// aggregated type to a ranked N-d array. The function interface, as well
 /// as the internal usage of GEP will be updated.
@@ -705,6 +782,10 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
     // Create new GEPs that use the ranked arrays and remove the old ones.
     unsigned NumNewGEP = 0;
     for (Instruction *I : GEPList) {
+      // Simplify the address calculation expressions to make Vitis happy.
+      // It is easier to work on the original GEP.
+      rewriteModuloGepIndices(cast<GetElementPtrInst>(I));
+
       Instruction *NewGEP =
           duplicateGEPWithRankedArray(I, RankedArrVMap, NumNewGEP);
       I->replaceAllUsesWith(NewGEP);
