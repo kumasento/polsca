@@ -1239,7 +1239,7 @@ struct XilinxTBTclGenPass : public ModulePass {
 
 } // namespace
 
-static void nameAndFlattenLoop(Loop *loop, int &loopCounter) {
+static void nameLoop(Loop *loop, int &loopCounter) {
   SmallVector<Metadata *, 4> Args;
 
   // Reserve operand 0 for loop id self reference.
@@ -1252,12 +1252,6 @@ static void nameAndFlattenLoop(Loop *loop, int &loopCounter) {
       MDString::get(Context, "llvm.loop.name"),
       MDString::get(Context, "VITIS_LOOP_" + std::to_string(loopCounter))};
   Args.push_back(MDNode::get(Context, nameVals));
-
-  // Loop flatten (?)
-  Metadata *flattenVals[] = {MDString::get(Context, "llvm.loop.flatten.enable"),
-                             ConstantAsMetadata::get(ConstantInt::get(
-                                 Type::getInt1Ty(Context), true))};
-  Args.push_back(MDNode::get(Context, flattenVals));
 
   // Set the first operand to itself.
   MDNode *LoopID = MDNode::get(Context, Args);
@@ -1273,9 +1267,9 @@ static void nameAndFlattenLoop(Loop *loop, int &loopCounter) {
 namespace {
 
 /// Assign a name to each loop and enable flattening for Xilinx Vitis.
-struct XilinxNameAndFlattenLoopPass : public ModulePass {
+struct XilinxNameLoopPass : public ModulePass {
   static char ID;
-  XilinxNameAndFlattenLoopPass() : ModulePass(ID) {}
+  XilinxNameLoopPass() : ModulePass(ID) {}
 
   bool runOnModule(Module &M) override {
 
@@ -1287,7 +1281,7 @@ struct XilinxNameAndFlattenLoopPass : public ModulePass {
 
         if (!LI.empty())
           for (auto &loop : LI)
-            nameAndFlattenLoop(loop, loopCounter);
+            nameLoop(loop, loopCounter);
       }
 
     return false;
@@ -1337,7 +1331,6 @@ char XilinxTBTclGenPass::ID = 8;
 static RegisterPass<XilinxTBTclGenPass>
     X9("xlntbgen", "Generate test bench tcl script for Xilinx Vitis.");
 
-char XilinxNameAndFlattenLoopPass::ID = 9;
-static RegisterPass<XilinxNameAndFlattenLoopPass>
-    X10("xlnloopnameflatten",
-        "Name loops and enable flattening for Xilinx Vitis.");
+char XilinxNameLoopPass::ID = 9;
+static RegisterPass<XilinxNameLoopPass> X10("xlnloopname",
+                                            "Name loops for Xilinx Vitis.");
