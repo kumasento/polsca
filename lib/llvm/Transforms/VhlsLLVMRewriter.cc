@@ -1108,8 +1108,9 @@ struct XilinxUnrollPass : public ModulePass {
         auto DT = llvm::DominatorTree(F);
         LoopInfo LI(DT);
 
-        for (auto &loop : LI)
-          unrollLoop(loop);
+        if (!LI.empty())
+          for (auto &loop : LI)
+            unrollLoop(loop);
       }
 
     return false;
@@ -1159,10 +1160,6 @@ struct XilinxArrayPartitionPass : public ModulePass {
     auto arrayPartitionFunc = mod->getFunction("llvm.sideeffect");
     arrayPartitionFunc->addFnAttr(llvm::Attribute::InaccessibleMemOnly);
     arrayPartitionFunc->addFnAttr(llvm::Attribute::NoUnwind);
-    // Remove unsupported attributes by Vitis HLS
-    arrayPartitionFunc->removeFnAttr(llvm::Attribute::NoFree);
-    arrayPartitionFunc->removeFnAttr(llvm::Attribute::NoSync);
-    arrayPartitionFunc->removeFnAttr(llvm::Attribute::WillReturn);
 
     for (auto &F : M)
       if (F.getName() == XlnTop) {
@@ -1242,6 +1239,63 @@ struct XilinxTBTclGenPass : public ModulePass {
 
 } // namespace
 
+static void nameAndFlattenLoop(Loop *loop, int &loopCounter) {
+  SmallVector<Metadata *, 4> Args;
+
+  // Reserve operand 0 for loop id self reference.
+  LLVMContext &Context = loop->getHeader()->getContext();
+  auto TempNode = MDNode::getTemporary(Context, None);
+  Args.push_back(TempNode.get());
+
+  // Loop name
+  Metadata *nameVals[] = {
+      MDString::get(Context, "llvm.loop.name"),
+      MDString::get(Context, "VITIS_LOOP_" + std::to_string(loopCounter))};
+  Args.push_back(MDNode::get(Context, nameVals));
+
+  // Loop flatten (?)
+  Metadata *flattenVals[] = {MDString::get(Context, "llvm.loop.flatten.enable"),
+                             ConstantAsMetadata::get(ConstantInt::get(
+                                 Type::getInt1Ty(Context), true))};
+  Args.push_back(MDNode::get(Context, flattenVals));
+
+  // Set the first operand to itself.
+  MDNode *LoopID = MDNode::get(Context, Args);
+  LoopID->replaceOperandWith(0, LoopID);
+  loop->setLoopID(LoopID);
+  loopCounter++;
+
+  if (!loop->isInnermost())
+    for (auto &subloop : loop->getSubLoops())
+      nameLoop(subloop, loopCounter);
+}
+
+namespace {
+
+/// Assign a name to each loop and enable flattening for Xilinx Vitis.
+struct XilinxNameAndFlattenLoopPass : public ModulePass {
+  static char ID;
+  XilinxNameAndFlattenLoopPass() : ModulePass(ID) {}
+
+  bool runOnModule(Module &M) override {
+
+    int loopCounter = 0;
+    for (auto &F : M)
+      if (F.getName() != XlnTop && !F.empty()) {
+        auto DT = llvm::DominatorTree(F);
+        LoopInfo LI(DT);
+
+        if (!LI.empty())
+          for (auto &loop : LI)
+            nameAndFlattenLoop(loop, loopCounter);
+      }
+
+    return false;
+  }
+};
+
+} // namespace
+
 char ConvertMemRefToArray::ID = 0;
 static RegisterPass<ConvertMemRefToArray>
     X1("mem2ptr",
@@ -1282,3 +1336,8 @@ static RegisterPass<XilinxArrayPartitionPass> X8(
 char XilinxTBTclGenPass::ID = 8;
 static RegisterPass<XilinxTBTclGenPass>
     X9("xlntbgen", "Generate test bench tcl script for Xilinx Vitis.");
+
+char XilinxNameAndFlattenLoopPass::ID = 9;
+static RegisterPass<XilinxNameAndFlattenLoopPass>
+    X10("xlnloopnameflatten",
+        "Name loops and enable flattening for Xilinx Vitis.");
