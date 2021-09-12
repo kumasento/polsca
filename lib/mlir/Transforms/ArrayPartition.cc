@@ -559,11 +559,22 @@ static MapVector<Value, TileInfo> getTilingInfo(ArrayRef<Value> memrefs,
       for (AffineForOp forOp : forOps) {
         // Filter out the result that are constants. We don't care about them.
         // ()[s0] -> (70, s0 * 32 + 32) will be ()[s0] -> (s0 * 32 + 32)
-        tmpLbMaps.push_back(
-            filterExtraConstantResults(forOp.getLowerBoundMap()));
-        tmpUbMaps.push_back(
-            filterExtraConstantResults(forOp.getUpperBoundMap()));
+        AffineMap lbMap = filterExtraConstantResults(forOp.getLowerBoundMap());
+        AffineMap ubMap = filterExtraConstantResults(forOp.getUpperBoundMap());
+
+        if (lbMap.isSingleConstant() && ubMap.isSingleConstant()) {
+          llvm::errs() << "There appears a pair of constant loop bounds. We "
+                          "cannot deal with this yet.\n";
+          isIdentical = false;
+          break;
+        }
+
+        tmpLbMaps.push_back(lbMap);
+        tmpUbMaps.push_back(ubMap);
       }
+
+      if (!isIdentical)
+        break;
 
       // Simply ignore those with constant lower upper bounds.
       // They won't cause much trouble (heuristically) if we don't partition
@@ -863,7 +874,8 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
               Value operand = op->getOperand(i);
 
               // The index for a tiled memref will be from an affine.apply op.
-              AffineApplyOp applyOp = operand.getDefiningOp<AffineApplyOp>();
+              mlir::AffineApplyOp applyOp =
+                  operand.getDefiningOp<mlir::AffineApplyOp>();
               if (!applyOp)
                 continue;
               assert(applyOp.getNumOperands() == 1);
@@ -871,9 +883,12 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
               Value indvar = applyOp.getOperand(0);
 
               mlir::AffineForOp forOp = getForInductionVarOwner(indvar);
-              // forOp.dump();
-              assert(forOp.getLowerBoundOperands().size() == 1 ||
-                     forOp.getUpperBoundOperands().size() == 1);
+
+              // At least one bound should have a single operand (for the loop
+              // indvar).
+              if (!(forOp.getLowerBoundOperands().size() == 1 ||
+                    forOp.getUpperBoundOperands().size() == 1))
+                continue;
 
               Value source = forOp.getUpperBoundOperands().size() == 1
                                  ? forOp.getUpperBoundOperands()[0]
@@ -887,6 +902,13 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
             if (indices.empty())
               std::swap(tmpIndices, indices);
             else {
+              LLVM_DEBUG({
+                op->dump();
+                if (tmpIndices != indices) {
+                  llvm::interleaveComma(tmpIndices, llvm::errs());
+                  llvm::interleaveComma(indices, llvm::errs());
+                }
+              });
               assert(tmpIndices == indices);
               std::swap(tmpIndices, indices);
             }
@@ -1052,6 +1074,13 @@ struct SimpleArrayPartitionPass
 
     // Get the tiling info.
     auto tiling = getTilingInfo(memrefs, m);
+    for (Value memref : memrefs)
+      if (!tiling.count(memref)) {
+        llvm::errs()
+            << "There is at least one memref not partitioned. We discard the "
+               "whole case since the performance gain would be minor.\n";
+        return;
+      }
 
     // Tile the top function.
     FuncOp newTop = tileTopFunction(top, memrefs, tiling, m, b);
