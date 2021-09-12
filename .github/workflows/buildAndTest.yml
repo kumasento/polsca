@@ -51,10 +51,12 @@ jobs:
       # Build LLVM if we didn't hit in the cache. Even though we build it in
       # the previous job, there is a low chance that it'll have been evicted by
       # the time we get here.
+      # Need to delete the test directory to avoid caching them.
       - name: Rebuild and Install LLVM
         if: steps.cache-llvm.outputs.cache-hit != 'true'
         run: |
           ./scripts/build-llvm.sh ci
+          rm -rf ./llvm/build/test 
       # --------
       # Build and test Phism in both debug and release mode.
       # --------

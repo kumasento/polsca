@@ -793,7 +793,8 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
           rewriteModuloGepIndices(cast<GetElementPtrInst>(I));
 
       Instruction *NewGEP;
-      if (any_of(indices, [&](Value *value) { return !value; })) {
+      if (indices.empty() ||
+          any_of(indices, [&](Value *value) { return !value; })) {
         NewGEP = duplicateGEPWithRankedArray(I, RankedArrVMap, NumNewGEP);
       } else {
         // We can directly use the indices from the rewrite to get the new GEP.
