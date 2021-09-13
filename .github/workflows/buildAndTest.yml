@@ -37,17 +37,13 @@ jobs:
         id: get-llvm-hash
         run: echo "::set-output name=hash::$(git rev-parse @:./llvm)"
         shell: bash
-      - name: Get workflow spec hash
-        id: get-workflow-hash
-        run: echo "::set-output name=hash::$(md5sum $GITHUB_WORKSPACE/.github/workflows/buildAndTest.yml)"
-        shell: bash
       # Try to fetch LLVM from the cache.
       - name: Cache LLVM
         id: cache-llvm
         uses: actions/cache@v2
         with:
           path: llvm/build
-          key: ${{ runner.os }}-llvm-${{ steps.get-llvm-hash.outputs.hash }}-${{ steps.get-workflow-hash.outputs.hash }}
+          key: ${{ runner.os }}-llvm-${{ steps.get-llvm-hash.outputs.hash }}
       # Build LLVM if we didn't hit in the cache. Even though we build it in
       # the previous job, there is a low chance that it'll have been evicted by
       # the time we get here.
@@ -71,6 +67,7 @@ jobs:
           ./scripts/pb-flow.py ./example/polybench --dataset SMALL --skip-vitis
           ./scripts/pb-flow.py ./example/polybench --dataset SMALL --polymer --skip-vitis
           ./scripts/pb-flow.py ./example/polybench --dataset SMALL --polymer --loop-transforms --skip-vitis
+          ./scripts/pb-flow.py ./example/polybench --dataset SMALL --polymer --loop-transforms --array-partition --skip-vitis
 
 
 

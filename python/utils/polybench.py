@@ -689,16 +689,24 @@ class PbFlow:
     ):
         """Single entry for running a command."""
         kwargs.update({"cwd": os.path.dirname(self.cur_file)})
+
         if cmd_list:
             if self.options.dry_run:
                 print(" ".join(cmd_list))
                 return
-            return subprocess.run(cmd_list, **kwargs)
+            proc = subprocess.run(cmd_list, **kwargs)
         else:
             if self.options.dry_run:
                 print(cmd)
                 return
-            return subprocess.run(cmd, **kwargs)
+            proc = subprocess.run(cmd, **kwargs)
+
+        cmd_str = cmd if cmd else " ".join(cmd_list)
+
+        if proc.returncode != 0:
+            raise RuntimeError(f"{cmd_str} failed.")
+
+        return proc
 
     def get_program_abspath(self, program: str) -> str:
         """Get the absolute path of a program."""
@@ -870,6 +878,7 @@ class PbFlow:
             self.get_program_abspath("phism-opt"),
             src_file,
             f'-loop-transforms="max-span={self.options.max_span}"',
+            "-debug-only=loop-transforms",
         ]
 
         self.run_command(
@@ -970,6 +979,7 @@ class PbFlow:
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(
             ".llvm", ".vitis.llvm"
         )
+        log_file = self.cur_file.replace(".llvm", ".log")
 
         xln_names = get_top_func_param_names(
             self.c_source, self.work_dir, llvm_dir=os.path.join(self.root_dir, "llvm")
@@ -1000,12 +1010,14 @@ class PbFlow:
             "-xlnarraypartition" if self.options.array_partition else "",
             "-xln-ap-enabled" if xln_ap_enabled else "",
             "-strip-attr",
+            "-debug",
         ]
 
         self.run_command(
             cmd=" ".join(args),
             shell=True,
             stdout=open(self.cur_file, "w"),
+            stderr=open(log_file, "w"),
             env=self.env,
         )
 

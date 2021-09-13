@@ -519,11 +519,12 @@ static void detectScopPeWithMultipleStmts(ModuleOp m,
 /// Assuming the memrefs at the top-level are not aliases.
 /// Also assuming each scop.stmt will have its accessed memrefs once in its
 /// interface.
-static bool areScopStmtsSeparable(FuncOp f) {
+static bool areScopStmtsSeparable(FuncOp f, ModuleOp m) {
   SetVector<Value> visited; // memrefs visited.
   SetVector<Value> conflicted;
   f.walk([&](mlir::CallOp caller) {
-    if (!caller->hasAttr("scop.stmt"))
+    FuncOp callee = dyn_cast<FuncOp>(m.lookupSymbol(caller.getCallee()));
+    if (!callee || !callee->hasAttr("scop.stmt"))
       return;
 
     for (Value arg : caller.getArgOperands())
@@ -816,7 +817,7 @@ struct RedistributeScopStatementsPass
     /// TODO: detailed dependence analysis to cover more cases.
     SetVector<FuncOp> pesToProc;
     for (FuncOp pe : pes) {
-      if (!areScopStmtsSeparable(pe)) {
+      if (!areScopStmtsSeparable(pe, m)) {
         LLVM_DEBUG({
           llvm::errs() << "Discared " << pe.getName()
                        << "since its scop.stmts are not separable.\n";
@@ -1170,6 +1171,6 @@ void phism::registerLoopTransformPasses() {
         pm.addPass(createCanonicalizerPass());
         pm.addPass(std::make_unique<LoopMergePass>());
         pm.addPass(createCanonicalizerPass());
-        pm.addPass(createInlinerPass());
+        // pm.addPass(createInlinerPass());
       });
 }

@@ -16,12 +16,15 @@
 #include "llvm/IR/Value.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 
 #include <queue>
 
 using namespace llvm;
+
+#define DEBUG_TYPE "vhls_llvm"
 
 static cl::opt<std::string>
     XlnTop("xlntop", cl::desc("Specify the top function for Xilinx HLS."),
@@ -143,6 +146,12 @@ public:
     if (isa<ConstantInt>(offset))
       return;
 
+    LLVM_DEBUG({
+      dbgs() << "\n--------------------------------------\n";
+      dbgs() << "Processing offset for target pointer: \n";
+      ptr->dump();
+    });
+
     SmallVector<Value *> offsets;
     SmallVector<int64_t> strides;
 
@@ -151,7 +160,6 @@ public:
     unsigned dimSize = dims.size() * 2;
     for (unsigned i = 0; i < dimSize; ++i) {
       binOp = cast<BinaryOperator>(curr);
-      // binOp->dump();
       assert(binOp->getOpcode() == BinaryOperator::Add);
 
       Value *lhs = binOp->getOperand(0), *rhs = binOp->getOperand(1);
@@ -181,10 +189,29 @@ public:
     assert(offsets.size() == strides.size());
     assert(strides[0] == 1);
 
+    LLVM_DEBUG({
+      dbgs() << "Offsets: \n";
+      for (Value *offset : offsets)
+        offset->dump();
+      dbgs() << "Strides: ";
+      interleave(
+          strides, [&](const int64_t &stride) { dbgs() << stride; },
+          [&]() { dbgs() << ", "; });
+      dbgs() << "\n\n";
+    });
+
     SmallVector<int64_t> partialDims;
     for (unsigned i = 1; i < strides.size(); ++i)
       partialDims.push_back(strides[i] / strides[i - 1]);
     assert(partialDims.size() == dimSize - 1);
+
+    LLVM_DEBUG({
+      dbgs() << "Partial dims:\n";
+      interleave(
+          partialDims, [&](const int64_t &v) { dbgs() << v; },
+          [&]() { dbgs() << ", "; });
+      dbgs() << "\n";
+    });
 
     std::reverse(partialDims.begin(), partialDims.end());
     std::reverse(offsets.begin(), offsets.end());
@@ -205,11 +232,26 @@ public:
     LoadInst *load = new LoadInst(
         cast<PointerType>(restoredType)->getElementType(), bitCastInst,
         Twine(""), cast<Instruction>(bitCastInst->getNextNode()));
-    GetElementPtrInst *gep = GetElementPtrInst::Create(
-        rankedArrType, load, {offsets[0], offsets[1]}, Twine(""),
-        cast<Instruction>(load->getNextNode()));
+
+    SmallVector<Value *> gepInds;
+    for (unsigned i = 0; i < offsets.size() / 2; ++i)
+      gepInds.push_back(offsets[i]);
+    GetElementPtrInst *gep =
+        GetElementPtrInst::Create(rankedArrType, load, gepInds, Twine(""),
+                                  cast<Instruction>(load->getNextNode()));
     ptr = new BitCastInst(gep, ptr->getType(), Twine(""),
                           cast<Instruction>(gep)->getNextNode());
+
+    LLVM_DEBUG({
+      dbgs() << "Created the following instructions:\n";
+      bitCastInst->dump();
+      load->dump();
+      gep->dump();
+      ptr->dump();
+
+      dbgs() << "\nExpected result type:\n";
+      gep->getType()->dump();
+    });
   }
 
   /// Append insInst to the insertInsts list, and gather the value to be
@@ -774,12 +816,24 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
   // same as the original one, just have additional arguments that are
   // ranked arrays.
   for (Function *F : Funcs) {
+    LLVM_DEBUG({
+      dbgs() << "\nTransforming function:  \n\n";
+      F->dump();
+    });
     ValueToValueMapTy RankedArrVMap;
     auto &Seqs = FuncToSeqs[F];
 
+    // -----------------------------------------------------------------
+    // Step 1: create a rank-duplicated interface.
     Function *NewFunc =
         duplicateFunctionsWithRankedArrays(F, Seqs, RankedArrVMap);
+    LLVM_DEBUG({
+      dbgs() << "\nDuplicated function:  \n\n";
+      NewFunc->dump();
+    });
 
+    // -----------------------------------------------------------------
+    // Step 2: update the GEP expressions.
     SmallVector<Instruction *, 4> GEPList;
     for (BasicBlock &BB : *NewFunc)
       for (Instruction &I : BB)
@@ -815,6 +869,13 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
       I->eraseFromParent();
     }
 
+    LLVM_DEBUG({
+      dbgs() << "\nGEP updated function: \n\n";
+      NewFunc->dump();
+    });
+
+    // -----------------------------------------------------------------
+    // Step 3: update callers within the new function.
     // If there is any caller.
     SmallVector<CallInst *> Callers;
     for (BasicBlock &BB : *NewFunc)
@@ -842,6 +903,12 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
         if (RankedArrVMap.count(Arg))
           Args.push_back(RankedArrVMap[Arg]);
         else if (isa<BitCastInst>(Arg)) {
+          LLVM_DEBUG({
+            dbgs() << "Found ";
+            Arg->dump();
+            dbgs() << " as a result from bitcast. Need to transform it into "
+                      "the multi-dimensional type.\n";
+          });
           // Or it is a result from a bitcast expression chain.
           // This chain is based on the instructions generated by the
           // processOffset function.
@@ -878,6 +945,25 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
           toErase.append({bitCastInst, gep, loadInst, src});
         }
       }
+
+      LLVM_DEBUG({
+        dbgs() << "Creating caller for " << FuncToNew[Callee]->getName()
+               << ", signature: ";
+        FuncToNew[Callee]->getFunctionType()->dump();
+        dbgs() << "-----------------------\n\n";
+        dbgs() << "Argument list:\n";
+        for (auto arg : enumerate(Args)) {
+          dbgs() << arg.index() << "\t-> ";
+          arg.value()->dump();
+        }
+        dbgs() << "\nArgument types:\n";
+        for (auto arg : enumerate(Args)) {
+          dbgs() << arg.index() << "\t-> ";
+          arg.value()->getType()->dump();
+          dbgs() << "\t-> ";
+          FuncToNew[Callee]->getArg(arg.index())->getType()->dump();
+        }
+      });
 
       // New caller.
       CallInst::Create(FuncToNew[Callee], Args, Twine(), Caller);
