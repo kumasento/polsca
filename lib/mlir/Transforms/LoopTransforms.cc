@@ -1171,6 +1171,6 @@ void phism::registerLoopTransformPasses() {
         pm.addPass(createCanonicalizerPass());
         pm.addPass(std::make_unique<LoopMergePass>());
         pm.addPass(createCanonicalizerPass());
-        // pm.addPass(createInlinerPass());
+        pm.addPass(createInlinerPass());
       });
 }
