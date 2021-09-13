@@ -8,18 +8,19 @@ jobs:
   # Build Phism and run its tests.
   build-phism:
     name: Build and Test Phism
-    runs-on: ubuntu-20.04
+    runs-on: self-hosted
     steps:
       # - name: Configure Environment
       #   run: echo "${GITHUB_WORKSPACE}/llvm/install/bin" >> $GITHUB_PATH
-      - name: Get dependences
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y build-essential libtool autoconf pkg-config flex bison libgmp-dev clang-9 libclang-9-dev texinfo python3
-      - name: Update the LLVM/Clang version to 9
-        run: |
-          sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-9 100
-          sudo update-alternatives --install /usr/bin/FileCheck FileCheck /usr/bin/FileCheck-9 100
+      # Disabled for self-hosted
+      # - name: Get dependences
+      #   run: |
+      #     sudo apt-get update -y
+      #     sudo apt-get install -y build-essential libtool autoconf pkg-config flex bison libgmp-dev clang-9 libclang-9-dev texinfo python3
+      # - name: Update the LLVM/Clang version to 9
+      #   run: |
+      #     sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-9 100
+      #     sudo update-alternatives --install /usr/bin/FileCheck FileCheck /usr/bin/FileCheck-9 100
           
      
       # Clone the Phism repo and its submodules. Do shallow clone to save clone
