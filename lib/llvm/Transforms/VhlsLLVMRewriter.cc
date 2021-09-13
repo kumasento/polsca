@@ -39,6 +39,8 @@ static cl::opt<std::string> XlnTBSources(
     cl::desc(
         "Specify the file settings for the test bench, e.g. \"add_files ...\""),
     cl::value_desc("tbfiles"));
+static cl::opt<bool> XlnArrayPartitionEnabled(
+    "xln-ap-enabled", cl::desc("Whether array partition has been enabled"));
 
 namespace {
 
@@ -1153,6 +1155,8 @@ struct XilinxArrayPartitionPass : public ModulePass {
   XilinxArrayPartitionPass() : ModulePass(ID) {}
 
   bool runOnModule(Module &M) override {
+    if (!XlnArrayPartitionEnabled)
+      return true;
 
     // Declare array partition APIs in Vitis HLS LLVM frontend
     auto mod = &M;
@@ -1221,12 +1225,14 @@ struct XilinxTBTclGenPass : public ModulePass {
               arg->getType()->getPointerElementType()->isArrayTy()) {
             auto arrayTy =
                 dyn_cast<ArrayType>(arg->getType()->getPointerElementType());
-            auto partitions = getPartitionInfo(arrayTy);
-            for (auto partition : partitions)
-              XlnTBTcl << "set_directive_array_partition -dim "
-                       << partition.first << " -factor " << partition.second
-                       << " -type block \"" << XlnTop << "\" " << arg->getName()
-                       << "\n";
+            if (XlnArrayPartitionEnabled) {
+              auto partitions = getPartitionInfo(arrayTy);
+              for (auto partition : partitions)
+                XlnTBTcl << "set_directive_array_partition -dim "
+                         << partition.first << " -factor " << partition.second
+                         << " -type block \"" << XlnTop << "\" "
+                         << arg->getName() << "\n";
+            }
           }
         }
       }

@@ -92,6 +92,7 @@ class PbFlowOptions:
     max_span: int = -1
     tile_sizes: Optional[List[int]] = None
     array_partition: bool = False
+    skip_vitis: bool = False
 
 
 # ----------------------- Utility functions ------------------------------------
@@ -676,6 +677,7 @@ class PbFlow:
                 .array_partition()
                 .lower_llvm()
                 .vitis_opt()
+                .write_tb_tcl_by_llvm()
                 .run_vitis()
             )
         except Exception as e:
@@ -891,7 +893,7 @@ class PbFlow:
         log_file = self.cur_file.replace(".mlir", ".log")
 
         array_partition_file = os.path.join(
-            os.path.basename(self.cur_file), "array_partition.txt"
+            os.path.dirname(self.cur_file), "array_partition.txt"
         )
         if os.path.isfile(array_partition_file):
             os.remove(array_partition_file)
@@ -973,7 +975,8 @@ class PbFlow:
             self.c_source, self.work_dir, llvm_dir=os.path.join(self.root_dir, "llvm")
         )
 
-        array_partition_successful = os.path.isfile(
+        # Whether array partition has been successful.
+        xln_ap_enabled = os.path.isfile(
             os.path.join(os.path.basename(self.cur_file), "array_partition.txt")
         )
 
@@ -994,9 +997,8 @@ class PbFlow:
             '-xlntop="{}"'.format(get_top_func(src_file)),
             '-xlnnames="{}"'.format(",".join(xln_names)),
             "-xlnunroll",
-            "-xlnarraypartition"
-            if self.options.array_partition and array_partition_successful
-            else "",
+            "-xlnarraypartition" if self.options.array_partition else "",
+            "-xln-ap-enabled" if xln_ap_enabled else "",
             "-strip-attr",
         ]
 
@@ -1009,8 +1011,59 @@ class PbFlow:
 
         return self
 
+    def write_tb_tcl_by_llvm(self):
+        """Generate the tbgen TCL file from LLVM passes."""
+        if self.options.skip_vitis:
+            return self
+
+        src_file = self.cur_file
+        base_dir = os.path.dirname(src_file)
+        top_func = get_top_func(src_file)
+
+        # Whether array partition has been successful.
+        xln_ap_enabled = os.path.isfile(os.path.join(base_dir, "array_partition.txt"))
+
+        tbgen_vitis_tcl = os.path.join(base_dir, "tbgen.tcl")
+
+        tb_tcl_log = "write_tb_tcl_by_llvm.log"
+
+        # Write the TCL for TBGEN.
+        args = [
+            os.path.join(self.root_dir, "llvm", "build", "bin", "opt"),
+            src_file,
+            "-S",
+            "-enable-new-pm=0",
+            '-load "{}"'.format(
+                os.path.join(self.root_dir, "build", "lib", "VhlsLLVMRewriter.so")
+            ),
+            f'-xlntop="{top_func}"',
+            "-xlntbgen",
+            "-xln-ap-enabled" if xln_ap_enabled else "",
+            "-xlntbfilesettings=$'{}'".format(
+                TBGEN_VITIS_TCL_FILES.format(
+                    src_dir=base_dir,
+                    src_base=os.path.basename(src_file).split(".")[0],
+                    work_dir=self.work_dir,
+                    pb_dataset=self.options.dataset,
+                )
+            ),
+            f'-xlntbtclnames="{tbgen_vitis_tcl}"',
+        ]
+
+        self.run_command(
+            cmd=" ".join(args),
+            shell=True,
+            stdout=open(tb_tcl_log, "w"),
+            env=self.env,
+        )
+
+        return self
+
     def run_vitis(self, strategy: Optional[CosimFixStrategy] = None):
         """Run synthesize/testbench generation/co-simulation."""
+        if self.options.skip_vitis:
+            return self
+
         src_file = self.cur_file
         base_dir = os.path.dirname(src_file)
         top_func = get_top_func(src_file)
@@ -1042,30 +1095,6 @@ class PbFlow:
                     config="\n".join(phism_run_config),
                 )
             )
-
-        # Write the TCL for TBGEN.
-        command = (
-            os.path.join(self.root_dir, "llvm", "build", "bin", "opt")
-            + " "
-            + src_file
-            + " -S -enable-new-pm=0 "
-            + '-load "{}"'.format(
-                os.path.join(self.root_dir, "build", "lib", "VhlsLLVMRewriter.so")
-            )
-            + " -xlntop="
-            + top_func
-            + " -xlntbgen -xlntbfilesettings=$'"
-            + TBGEN_VITIS_TCL_FILES.format(
-                src_dir=base_dir,
-                src_base=os.path.basename(src_file).split(".")[0],
-                work_dir=self.work_dir,
-                pb_dataset=self.options.dataset,
-            )
-            + "' -xlntbtclnames=\""
-            + tbgen_vitis_tcl
-            + '" > /dev/null\n'
-        )
-        os.system(command)
 
         # Keep it for now in case we need C baseline simulation?
         # with open(tbgen_vitis_tcl, "w") as f:
@@ -1244,5 +1273,7 @@ def pb_flow_runner(options: PbFlowOptions):
     end = timer()
     print("Elapsed time: {:.6f} sec".format(end - start))
 
-    print(">>> Dumping report ... ")
-    pb_flow_dump_report(options)
+    # Will only dump report if Vitis has been run.
+    if not options.skip_vitis:
+        print(">>> Dumping report ... ")
+        pb_flow_dump_report(options)

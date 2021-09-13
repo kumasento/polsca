@@ -15,7 +15,7 @@ jobs:
       - name: Get dependences
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y build-essential libtool autoconf pkg-config flex bison libgmp-dev clang-9 libclang-9-dev texinfo
+          sudo apt-get install -y build-essential libtool autoconf pkg-config flex bison libgmp-dev clang-9 libclang-9-dev texinfo python3
       - name: Update the LLVM/Clang version to 9
         run: |
           sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-9 100
@@ -63,3 +63,14 @@ jobs:
       - name: Build and Test Phism (Assert)
         run: |
           ./scripts/build-phism.sh ci
+      
+      # Build and test Phism with pb-flow.
+      - name: Build and Test Phism (pb-flow)
+        run: |
+          python3 -m pip install --user -r requirements.txt
+          ./scripts/pb-flow.py ./example/polybench --dataset SMALL --skip-vitis
+          ./scripts/pb-flow.py ./example/polybench --dataset SMALL --polymer --skip-vitis
+          ./scripts/pb-flow.py ./example/polybench --dataset SMALL --polymer --loop-transforms --skip-vitis
+
+
+

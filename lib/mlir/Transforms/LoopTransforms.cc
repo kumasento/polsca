@@ -999,7 +999,6 @@ static LogicalResult loopMergeOnScopStmt(FuncOp f, ModuleOp m, OpBuilder &b) {
   transform(innermosts, std::back_inserter(csts), [&](mlir::AffineForOp forOp) {
     FlatAffineConstraints cst;
     cst.addInductionVarOrTerminalSymbol(forOp.getInductionVar());
-    // cst.addAffineForOpDomain(forOp);
 
     LLVM_DEBUG(cst.dump());
 
@@ -1009,6 +1008,15 @@ static LogicalResult loopMergeOnScopStmt(FuncOp f, ModuleOp m, OpBuilder &b) {
   // Make every constraint has the same induction variable.
   for (unsigned i = 1; i < csts.size(); ++i)
     csts[i].setIdValue(0, csts[0].getIdValue(0));
+
+  // Check if all the constraints share the same number of columns.
+  for (unsigned i = 1; i < csts.size(); ++i) {
+    if (csts[i].getNumCols() != csts[0].getNumCols()) {
+      LLVM_DEBUG(dbgs() << "Number of columns don't match between two "
+                           "candidate constraints.\n");
+      return failure();
+    }
+  }
 
   // Check if two loops have intersection.
   for (unsigned i = 0; i < csts.size(); ++i)
