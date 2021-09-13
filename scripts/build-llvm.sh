@@ -55,4 +55,8 @@ if [ ! -f "CMakeCache.txt" ]; then
 fi 
  
 # Run building
-cmake --build . --target all -- -j "$(nproc)"
+if [ "${CMAKE_GENERATOR}" == "Ninja" ]; then
+  ninja
+else 
+  make -j "$(nproc)"
+fi
