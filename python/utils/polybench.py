@@ -983,9 +983,9 @@ class PbFlow:
             "-xlnanno",
             '-xlntop="{}"'.format(get_top_func(src_file)),
             '-xlnnames="{}"'.format(",".join(xln_names)),
-            "-strip-attr",
             "-xlnunroll",
             "-xlnarraypartition" if self.options.array_partition else "",
+            "-strip-attr",
         ]
 
         self.run_command(

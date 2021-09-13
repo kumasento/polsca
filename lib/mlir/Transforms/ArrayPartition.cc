@@ -1,6 +1,7 @@
 //===- ArrayPartitions.cc - Partitioning arrays ------------------ C++-===//
 
 #include "phism/mlir/Transforms/PhismTransforms.h"
+#include "phism/mlir/Transforms/Utils.h"
 
 #include "mlir/Analysis/AffineAnalysis.h"
 #include "mlir/Analysis/AffineStructures.h"
@@ -34,26 +35,6 @@
 using namespace mlir;
 using namespace llvm;
 using namespace phism;
-
-static bool hasPeCaller(FuncOp f) {
-  bool ret = false;
-  f.walk([&](CallOp caller) {
-    if (caller->hasAttr("scop.pe"))
-      ret = true;
-  });
-  return ret;
-}
-
-static FuncOp getTopFunction(ModuleOp m) {
-  FuncOp top = nullptr;
-  m.walk([&](FuncOp f) {
-    if (hasPeCaller(f)) {
-      assert(!top && "There should be only one top function.");
-      top = f;
-    }
-  });
-  return top;
-}
 
 /// -------------------------- Dependence analysis ---------------------------
 
@@ -361,7 +342,6 @@ static void arrayPartition(FuncOp f, ModuleOp m, OpBuilder &b) {
     if (checkAccessOverlap(info, m, partitions))
       continue;
 
-    memref.dump();
     llvm::errs() << "Partitions: \n";
     for (auto it : partitions) {
       for (auto bound : enumerate(it)) {
@@ -949,7 +929,6 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
           memref::SubViewOp subView =
               b.create<memref::SubViewOp>(caller.getLoc(), newTiledMemRefType,
                                           newMemRef, offsets, sizes, strides);
-          subView.dump();
 
           // Strip the affine map
           MemRefType castMemRefType =
@@ -977,8 +956,6 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
       tiling[vmap.lookup(worklist[j])] = tiling[worklist[j]];
       worklist[j] = vmap.lookup(worklist[j]);
     }
-
-    newFunc.dump();
 
     prevFunc = newFunc;
   }
@@ -1076,9 +1053,11 @@ struct SimpleArrayPartitionPass
     auto tiling = getTilingInfo(memrefs, m);
     for (Value memref : memrefs)
       if (!tiling.count(memref)) {
-        llvm::errs()
-            << "There is at least one memref not partitioned. We discard the "
-               "whole case since the performance gain would be minor.\n";
+        LLVM_DEBUG({
+          llvm::errs()
+              << "There is at least one memref not partitioned. We discard the "
+                 "whole case since the performance gain would be minor.\n";
+        });
         return;
       }
 
