@@ -497,6 +497,9 @@ static void getAllScopStmts(FuncOp func, SetVector<FuncOp> &stmts, ModuleOp m) {
 static void detectScopPeWithMultipleStmts(ModuleOp m,
                                           SetVector<mlir::FuncOp> &pes) {
   FuncOp top = getTopFunction(m);
+  if (!top)
+    return;
+
   top.walk([&](mlir::CallOp caller) {
     if (!caller->hasAttr("scop.pe"))
       return;
@@ -1103,6 +1106,9 @@ struct LoopMergePass
 
     SmallVector<FuncOp> pes;
     FuncOp f = getTopFunction(m);
+    if (!f)
+      return;
+
     f.walk([&](mlir::CallOp caller) {
       if (!caller->hasAttr("scop.pe"))
         return;
