@@ -27,6 +27,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SetVector.h"
 
+#include <fstream>
 #include <queue>
 #include <set>
 
@@ -35,6 +36,16 @@
 using namespace mlir;
 using namespace llvm;
 using namespace phism;
+
+namespace {
+struct ArrayPartitionPipelineOptions
+    : public mlir::PassPipelineOptions<ArrayPartitionPipelineOptions> {
+  Option<bool> dumpFile{
+      *this, "dumpFile",
+      llvm::cl::desc("Enable dumping the tile info into a file."),
+      llvm::cl::init(false)};
+};
+} // namespace
 
 /// -------------------------- Dependence analysis ---------------------------
 
@@ -1022,6 +1033,13 @@ static void renameTiledFunctions(ModuleOp m, OpBuilder &b) {
 
 struct SimpleArrayPartitionPass
     : public PassWrapper<SimpleArrayPartitionPass, OperationPass<ModuleOp>> {
+  bool dumpFile = false;
+
+  SimpleArrayPartitionPass() = default;
+  SimpleArrayPartitionPass(const SimpleArrayPartitionPass &pass) {}
+  SimpleArrayPartitionPass(const ArrayPartitionPipelineOptions &options)
+      : dumpFile(options.dumpFile) {}
+
   void runOnOperation() override {
     ModuleOp m = getOperation();
     OpBuilder b(m.getContext());
@@ -1061,6 +1079,8 @@ struct SimpleArrayPartitionPass
         return;
       }
 
+    auto tilingCopy = tiling;
+
     // Tile the top function.
     FuncOp newTop = tileTopFunction(top, memrefs, tiling, m, b);
 
@@ -1069,15 +1089,33 @@ struct SimpleArrayPartitionPass
 
     // Reset names.
     renameTiledFunctions(m, b);
+
+    // If array partition has been succesful, dump a file that stores the
+    // corresponding information.
+    if (dumpFile) {
+      std::ofstream infoFile;
+      infoFile.open("array_partition.txt", std::ios::out);
+      if (infoFile.is_open()) {
+        for (auto &it : tilingCopy) {
+          interleave(
+              it.second.sizes,
+              [&](const int64_t &size) { infoFile << std::to_string(size); },
+              [&]() { infoFile << ", "; });
+          infoFile << '\n';
+        }
+      }
+    }
   }
 };
 } // namespace
 
 void phism::registerArrayPartitionPasses() {
   PassRegistration<ArrayPartitionPass>("array-partition", "Partition arrays");
-  PassPipelineRegistration<>(
-      "simple-array-partition", "Partition arrays", [&](OpPassManager &pm) {
-        pm.addPass(std::make_unique<SimpleArrayPartitionPass>());
+
+  PassPipelineRegistration<ArrayPartitionPipelineOptions>(
+      "simple-array-partition", "Partition arrays",
+      [&](OpPassManager &pm, const ArrayPartitionPipelineOptions &options) {
+        pm.addPass(std::make_unique<SimpleArrayPartitionPass>(options));
         pm.addPass(createCanonicalizerPass());
       });
 }

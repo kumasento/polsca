@@ -1135,7 +1135,8 @@ getPartitionInfo(ArrayType *arrayTy) {
   } while (arrayTy);
 
   // The dimension number of arrays after Polymer should be a even number
-  assert(d % 2 == 0);
+  if (d % 2 != 0)
+    return {};
 
   partitions.resize(d / 2);
   return partitions;

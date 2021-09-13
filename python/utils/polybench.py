@@ -890,10 +890,16 @@ class PbFlow:
         )
         log_file = self.cur_file.replace(".mlir", ".log")
 
+        array_partition_file = os.path.join(
+            os.path.basename(self.cur_file), "array_partition.txt"
+        )
+        if os.path.isfile(array_partition_file):
+            os.remove(array_partition_file)
+
         args = [
             self.get_program_abspath("phism-opt"),
             src_file,
-            "-simple-array-partition",
+            "-simple-array-partition=dumpFile",
             "-debug-only=array-partition",
         ]
 
@@ -967,6 +973,10 @@ class PbFlow:
             self.c_source, self.work_dir, llvm_dir=os.path.join(self.root_dir, "llvm")
         )
 
+        array_partition_successful = os.path.isfile(
+            os.path.join(os.path.basename(self.cur_file), "array_partition.txt")
+        )
+
         args = [
             os.path.join(self.root_dir, "llvm", "build", "bin", "opt"),
             src_file,
@@ -984,7 +994,9 @@ class PbFlow:
             '-xlntop="{}"'.format(get_top_func(src_file)),
             '-xlnnames="{}"'.format(",".join(xln_names)),
             "-xlnunroll",
-            "-xlnarraypartition" if self.options.array_partition else "",
+            "-xlnarraypartition"
+            if self.options.array_partition and array_partition_successful
+            else "",
             "-strip-attr",
         ]
 
@@ -1031,7 +1043,6 @@ class PbFlow:
                 )
             )
 
-        # Write the TCL for TBGEN.
         # Write the TCL for TBGEN.
         command = (
             os.path.join(self.root_dir, "llvm", "build", "bin", "opt")
