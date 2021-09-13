@@ -1261,6 +1261,9 @@ def pb_flow_runner(options: PbFlowOptions):
     """Run pb-flow with the provided arguments."""
     assert os.path.isdir(options.pb_dir)
 
+    if not options.examples:
+        options.examples = POLYBENCH_EXAMPLES
+
     # Copy all the files from the source pb_dir to a target temporary directory.
     if not options.work_dir:
         options.work_dir = os.path.join(

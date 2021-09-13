@@ -54,8 +54,3 @@ cmake ../llvm \
  
 # Run building
 cmake --build . --target all -- -j "$(nproc)"
-
-if [ "${TARGET}" == "ci" ]; then
-  # Run test
-  cmake --build . --target check-llvm -- -j "$(nproc)"
-fi
