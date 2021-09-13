@@ -1063,12 +1063,16 @@ static LogicalResult loopMergeOnScopStmt(FuncOp f, ModuleOp m, OpBuilder &b) {
                 loopToErase = loop2;
 
                 // Set the new upper bound;
-                SmallVector<AffineExpr> results;
-                copy_if(ubMap.getResults(), std::back_inserter(results),
-                        [&](AffineExpr expr) { return expr != ub; });
+                SetVector<AffineExpr> results;
+                for (AffineExpr expr : ubMap.getResults())
+                  if (expr != ub)
+                    results.insert(expr);
+                for (AffineExpr expr : loop2.getUpperBoundMap().getResults())
+                  results.insert(expr);
+
                 AffineMap newUbMap =
                     AffineMap::get(ubMap.getNumDims(), ubMap.getNumSymbols(),
-                                   results, ubMap.getContext());
+                                   results.takeVector(), ubMap.getContext());
                 LLVM_DEBUG({
                   dbgs() << "New upper bound: \n";
                   newUbMap.dump();
