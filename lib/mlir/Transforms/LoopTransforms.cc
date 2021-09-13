@@ -543,6 +543,23 @@ static bool areScopStmtsSeparable(FuncOp f) {
   return false;
 }
 
+/// Erase those affine.for with empty blocks.
+static void eraseEmptyAffineFor(FuncOp f) {
+  SmallVector<Operation *> eraseOps;
+  while (true) {
+    eraseOps.clear();
+    f.walk([&](mlir::AffineForOp forOp) {
+      if (llvm::hasSingleElement(*forOp.getBody())) // the yield
+        eraseOps.push_back(forOp.getOperation());
+    });
+    for (Operation *op : eraseOps)
+      op->erase();
+
+    if (eraseOps.empty())
+      break;
+  }
+}
+
 static std::pair<FuncOp, SmallVector<unsigned>>
 distributeScopStmt(FuncOp stmt, FuncOp f, ModuleOp m, OpBuilder &b) {
   OpBuilder::InsertionGuard g(b);
@@ -560,20 +577,7 @@ distributeScopStmt(FuncOp stmt, FuncOp f, ModuleOp m, OpBuilder &b) {
   for (Operation *op : eraseOps)
     op->erase();
 
-  // Erase those affine.for with empty blocks.
-  /// TODO: would canonicalizer just do the work?
-  while (true) {
-    eraseOps.clear();
-    newFunc.walk([&](mlir::AffineForOp forOp) {
-      if (llvm::hasSingleElement(*forOp.getBody())) // the yield
-        eraseOps.push_back(forOp.getOperation());
-    });
-    for (Operation *op : eraseOps)
-      op->erase();
-
-    if (eraseOps.empty())
-      break;
-  }
+  eraseEmptyAffineFor(newFunc);
 
   // Erase not used arguments.
   SmallVector<unsigned> usedArgs;
@@ -864,6 +868,261 @@ struct RedistributeScopStatementsPass
 };
 } // namespace
 
+/// --------------------- Loop merge pass ---------------------------
+
+static LogicalResult loopMergeOnScopStmt(FuncOp f, ModuleOp m, OpBuilder &b) {
+  SetVector<FuncOp> stmts;
+  getAllScopStmts(f, stmts, m);
+
+  if (!llvm::hasSingleElement(stmts)) {
+    LLVM_DEBUG(
+        dbgs()
+        << "Being conservative not to merge loops with multiple scop.stmts.\n");
+    return failure();
+  }
+
+  FuncOp targetStmt = *stmts.begin();
+
+  // Get all the callers for the target scop.stmt
+  SmallVector<mlir::CallOp> callers;
+  f.walk([&](mlir::CallOp caller) {
+    if (caller.getCallee() == targetStmt.getName())
+      callers.push_back(caller);
+  });
+
+  if (hasSingleElement(callers)) {
+    LLVM_DEBUG(dbgs() << "There is only one caller instance for PE: "
+                      << f.getName() << ".\n");
+    return failure();
+  }
+
+  // ----------------------------------------------------------------------
+  // Step 1: make sure there are no empty sets in loop domains.
+  SetVector<Operation *> erased;
+  for (mlir::CallOp caller : callers) {
+    SmallVector<Operation *> ops;
+    getEnclosingAffineForAndIfOps(*caller.getOperation(), &ops);
+
+    FlatAffineConstraints cst;
+    getIndexSet(ops, &cst);
+
+    if (!cst.findIntegerSample().hasValue()) {
+      LLVM_DEBUG({
+        dbgs() << "Found a caller in an empty loop nest.\n";
+        caller.dump();
+      });
+      erased.insert(caller.getOperation());
+    };
+  }
+
+  callers.erase(remove_if(callers,
+                          [&](mlir::CallOp caller) {
+                            return erased.count(caller.getOperation());
+                          }),
+                callers.end());
+  for (Operation *op : erased)
+    op->erase();
+
+  eraseEmptyAffineFor(f);
+
+  if (hasSingleElement(callers)) {
+    LLVM_DEBUG(dbgs() << "There is only one caller instance for PE: "
+                      << f.getName() << " after empty loop removal.\n");
+    return failure();
+  }
+
+  // ----------------------------------------------------------------------
+  // Step 2: gather loop structure
+  // Make sure the callers have the same prefix, only the last forOp different.
+  SmallVector<mlir::AffineForOp> outerLoops;
+  SmallVector<mlir::AffineForOp> innermosts; // each corresponds to a caller.
+  for (mlir::CallOp caller : callers) {
+    SmallVector<Operation *> ops;
+    getEnclosingAffineForAndIfOps(*caller.getOperation(), &ops);
+
+    if (ops.empty()) {
+      LLVM_DEBUG(dbgs() << "Callers should be wrapped within loops.\n");
+      return failure();
+    }
+
+    if (any_of(ops, [&](Operation *op) { return isa<mlir::AffineIfOp>(op); })) {
+      LLVM_DEBUG(dbgs() << "Cannot deal with affine.if yet.\n");
+      return failure();
+    }
+
+    // Initialise
+    if (outerLoops.empty()) {
+      innermosts.push_back(cast<mlir::AffineForOp>(ops.back()));
+      ops.pop_back();
+
+      for (Operation *op : ops)
+        outerLoops.push_back(cast<mlir::AffineForOp>(op));
+    } else {
+      SmallVector<mlir::AffineForOp> tmpOuters;
+      mlir::AffineForOp innermost;
+
+      innermost = cast<mlir::AffineForOp>(ops.back());
+      ops.pop_back();
+
+      for (Operation *op : ops)
+        tmpOuters.push_back(cast<mlir::AffineForOp>(op));
+
+      if (tmpOuters != outerLoops) {
+        LLVM_DEBUG(dbgs() << "Outer loops are not the same among statements "
+                             "(given the last being different).\n");
+        return failure();
+      }
+
+      if (find(innermosts, innermost) != innermosts.end()) {
+        LLVM_DEBUG(dbgs() << "Weird to find the same loop structures between "
+                             "two caller instances.\n");
+        return failure();
+      }
+
+      innermosts.push_back(innermost);
+    }
+  }
+
+  LLVM_DEBUG({
+    dbgs() << "\n-----------------------------------\n";
+    dbgs() << "Merging PE: \n";
+    f.dump();
+  });
+
+  // ----------------------------------------------------------------------
+  // Step 3: Affine analysis
+  // Check if the innermost loops have no intersection.
+  SmallVector<FlatAffineConstraints, 4> csts;
+  transform(innermosts, std::back_inserter(csts), [&](mlir::AffineForOp forOp) {
+    FlatAffineConstraints cst;
+    cst.addInductionVarOrTerminalSymbol(forOp.getInductionVar());
+    // cst.addAffineForOpDomain(forOp);
+
+    LLVM_DEBUG(cst.dump());
+
+    return cst;
+  });
+
+  // Make every constraint has the same induction variable.
+  for (unsigned i = 1; i < csts.size(); ++i)
+    csts[i].setIdValue(0, csts[0].getIdValue(0));
+
+  // Check if two loops have intersection.
+  for (unsigned i = 0; i < csts.size(); ++i)
+    for (unsigned j = i + 1; j < csts.size(); ++j) {
+      FlatAffineConstraints tmp{csts[i]};
+      tmp.append(csts[j]);
+
+      if (tmp.findIntegerSample().hasValue()) {
+        LLVM_DEBUG(dbgs() << "There is intersection between two innermost "
+                             "loops. Cannot merge them safely.\n");
+        return failure();
+      }
+    }
+
+  // Merge: check if one can be merged into another iteratively, until there is
+  // no chance of merging.
+  while (true) {
+    bool merged = false;
+
+    mlir::AffineForOp loopToErase;
+
+    for (unsigned i = 0; i < innermosts.size() && !merged; ++i)
+      for (unsigned j = 0; j < innermosts.size() && !merged; ++j) {
+        if (i == j)
+          continue;
+
+        mlir::AffineForOp loop1 = innermosts[i];
+        mlir::AffineForOp loop2 = innermosts[j];
+
+        AffineMap ubMap = loop1.getUpperBoundMap();
+
+        // Condition BEGIN -
+        if (loop2.getLowerBoundMap().isSingleConstant()) {
+          int64_t constLb = loop2.getLowerBoundMap().getSingleConstantResult();
+          for (AffineExpr ub : ubMap.getResults()) {
+            if (AffineConstantExpr constUbExpr =
+                    ub.dyn_cast<AffineConstantExpr>()) {
+              int64_t constUb = constUbExpr.getValue();
+              if (constLb == constUb) {
+                // Condition END -
+                LLVM_DEBUG(dbgs()
+                           << "Found loop2's single constant lower bound "
+                           << constLb
+                           << " equals to one of the upper bounds of loop1 "
+                           << constUb
+                           << ". We can merge them together since loop1 and "
+                              "loop2 don't intersect.\n");
+
+                merged = true;
+
+                // Set to erase;
+                loopToErase = loop2;
+
+                // Set the new upper bound;
+                SmallVector<AffineExpr> results;
+                copy_if(ubMap.getResults(), std::back_inserter(results),
+                        [&](AffineExpr expr) { return expr != ub; });
+                AffineMap newUbMap =
+                    AffineMap::get(ubMap.getNumDims(), ubMap.getNumSymbols(),
+                                   results, ubMap.getContext());
+                LLVM_DEBUG({
+                  dbgs() << "New upper bound: \n";
+                  newUbMap.dump();
+                });
+                loop1.setUpperBoundMap(newUbMap);
+
+                break;
+              }
+            }
+          }
+        }
+      }
+
+    if (loopToErase) {
+      innermosts.erase(find(innermosts, loopToErase));
+      loopToErase.erase();
+    }
+
+    if (!merged)
+      break;
+  }
+
+  return success();
+}
+
+namespace {
+
+/// Will only work within scop.pe on scop.stmt to avoid side effects.
+struct LoopMergePass
+    : public mlir::PassWrapper<LoopMergePass, OperationPass<ModuleOp>> {
+
+  void runOnOperation() override {
+    ModuleOp m = getOperation();
+    OpBuilder b(m.getContext());
+
+    SmallVector<FuncOp> pes;
+    FuncOp f = getTopFunction(m);
+    f.walk([&](mlir::CallOp caller) {
+      if (!caller->hasAttr("scop.pe"))
+        return;
+      FuncOp pe = dyn_cast<FuncOp>(m.lookupSymbol(caller.getCallee()));
+      if (!pe)
+        return;
+      pes.push_back(pe);
+    });
+
+    for (FuncOp pe : pes) {
+      if (failed(loopMergeOnScopStmt(pe, m, b))) {
+        LLVM_DEBUG(dbgs() << "Failed to merge loops in: " << pe.getName()
+                          << ".\n");
+      }
+    }
+  }
+};
+
+} // namespace
+
 void phism::registerLoopTransformPasses() {
   PassRegistration<AnnotatePointLoopsPass>(
       "annotate-point-loops", "Annotate loops with point/tile info.");
@@ -872,6 +1131,8 @@ void phism::registerLoopTransformPasses() {
   PassRegistration<RedistributeScopStatementsPass>(
       "redis-scop-stmts",
       "Redistribute scop statements across extracted point loops.");
+  PassRegistration<LoopMergePass>("loop-merge",
+                                  "Merge loops by affine analysis.");
 
   PassPipelineRegistration<>(
       "improve-pipelining", "Improve the pipelining performance",
@@ -887,8 +1148,10 @@ void phism::registerLoopTransformPasses() {
         pm.addPass(std::make_unique<ExtractPointLoopsPass>(pipelineOptions));
         pm.addPass(createCanonicalizerPass());
         // only those private functions will be inlined.
-        // pm.addPass(std::make_unique<RedistributeScopStatementsPass>());
-        // pm.addPass(createCanonicalizerPass());
-        // pm.addPass(createInlinerPass());
+        pm.addPass(std::make_unique<RedistributeScopStatementsPass>());
+        pm.addPass(createCanonicalizerPass());
+        pm.addPass(std::make_unique<LoopMergePass>());
+        pm.addPass(createCanonicalizerPass());
+        pm.addPass(createInlinerPass());
       });
 }
