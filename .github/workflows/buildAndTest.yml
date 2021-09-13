@@ -62,13 +62,15 @@ jobs:
           ./scripts/build-phism.sh ci
       
       # Build and test Phism with pb-flow.
-      # - name: Build and Test Phism (pb-flow)
-      #   run: |
-      #     python3 -m pip install --user -r requirements.txt
-      #     ./scripts/pb-flow.py ./example/polybench --dataset SMALL --skip-vitis
-      #     ./scripts/pb-flow.py ./example/polybench --dataset SMALL --polymer --skip-vitis
-      #     ./scripts/pb-flow.py ./example/polybench --dataset SMALL --polymer --loop-transforms --skip-vitis
-      #     ./scripts/pb-flow.py ./example/polybench --dataset SMALL --polymer --loop-transforms --array-partition --skip-vitis
+      - name: Build and Test Phism (pb-flow)
+        run: |
+          python3 -m venv env
+          source env/bin/activate
+          python3 -m pip install --user -r requirements.txt
+          ./scripts/pb-flow.py ./example/polybench --dataset SMALL --skip-vitis
+          ./scripts/pb-flow.py ./example/polybench --dataset SMALL --polymer --skip-vitis
+          ./scripts/pb-flow.py ./example/polybench --dataset SMALL --polymer --loop-transforms --skip-vitis
+          ./scripts/pb-flow.py ./example/polybench --dataset SMALL --polymer --loop-transforms --array-partition --skip-vitis
 
 
 
