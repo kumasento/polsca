@@ -678,7 +678,8 @@ class PbFlow:
                 .lower_llvm()
                 .vitis_opt()
                 .write_tb_tcl_by_llvm()
-                .run_vitis()
+                .run_vitis_on_phism()
+                .run_tbgen_csim()
             )
         except Exception as e:
             self.status = 1
@@ -878,6 +879,7 @@ class PbFlow:
             self.get_program_abspath("phism-opt"),
             src_file,
             f'-loop-transforms="max-span={self.options.max_span}"',
+            "-loop-redis-and-merge",
             "-debug-only=loop-transforms",
         ]
 
@@ -999,6 +1001,8 @@ class PbFlow:
                 os.path.join(self.root_dir, "build", "lib", "VhlsLLVMRewriter.so")
             ),
             "-strip-debug",
+            "-anno-noinline",
+            "-inline",
             "-mem2arr",
             "-instcombine",
             "-xlnmath",
@@ -1070,6 +1074,142 @@ class PbFlow:
         )
 
         return self
+
+    def run_vitis_on_phism(self):
+        """Just run vitis_hls on the LLVM generated from Phism."""
+        if self.options.skip_vitis:
+            return self
+
+        src_file = self.cur_file
+        base_dir = os.path.dirname(src_file)
+        top_func = get_top_func(src_file)
+
+        phism_vitis_tcl = os.path.join(base_dir, "phism.tcl")
+        run_config = "config_bind -effort high"
+        if self.options.debug:
+            run_config = ""
+
+        # Generate dummy C code as the interface for the top function.
+        dummy_src = src_file.replace(".llvm", ".dummy.c")
+        with open(dummy_src, "w") as f:
+            f.write("void {}() {{}}".format(top_func))
+
+        # Write the TCL for Phism.
+        with open(phism_vitis_tcl, "w") as f:
+            phism_run_config = [str(run_config)]
+            f.write(
+                PHISM_VITIS_TCL.format(
+                    src_file=src_file,
+                    dummy_src=dummy_src,
+                    top_func=top_func,
+                    config="\n".join(phism_run_config),
+                )
+            )
+
+        log_file = os.path.join(base_dir, "phism.vitis_hls.stdout.log")
+
+        # Clean up old results
+        shutil.rmtree(os.path.join(base_dir, "proj"), ignore_errors=True)
+        if os.path.isfile(log_file):
+            os.remove(log_file)
+
+        if self.options.dry_run:
+            return self
+
+        self.run_command(
+            cmd_list=["vitis_hls", phism_vitis_tcl],
+            stdout=open(log_file, "w"),
+            stderr=open(os.path.join(base_dir, "phism.vitis_hls.stderr.log"), "w"),
+            env=self.env,
+        )
+
+        return self
+
+    def run_tbgen_csim(self):
+        """Run the tbgen.tcl file. Assuming the Tcl file has been written."""
+        if not self.options.cosim:
+            return self
+
+        src_file = self.cur_file
+        base_dir = os.path.dirname(src_file)
+
+        tbgen_vitis_tcl = os.path.join(base_dir, "tbgen.tcl")
+        assert os.path.isfile(tbgen_vitis_tcl), f"{tbgen_vitis_tcl} should exist."
+
+        if self.options.dry_run:
+            return self
+
+        shutil.rmtree(os.path.join(base_dir, "tb"), ignore_errors=True)
+        log_file = os.path.join(base_dir, "tbgen.vitis_hls.stdout.log")
+        if os.path.isfile(log_file):
+            os.remove(log_file)
+
+        self.run_command(
+            cmd_list=["vitis_hls", tbgen_vitis_tcl],
+            stdout=open(log_file, "w"),
+            stderr=open(os.path.join(base_dir, "tbgen.vitis_hls.stderr.log"), "w"),
+            env=self.env,
+        )
+
+        return self
+
+    def copy_design_from_phism_to_tb(self):
+        """Move design files from Phism output to the testbench directory."""
+        src_file = self.cur_file
+        base_dir = os.path.dirname(src_file)
+        top_func = get_top_func(src_file)
+
+        # The place to store the csim results.
+        shutil.rmtree(os.path.join(base_dir, "tb.csim"), ignore_errors=True)
+
+        # Check results
+        phism_syn_verilog_dir = os.path.join(
+            base_dir, "proj", "solution1", "syn", "verilog"
+        )
+        assert os.path.isdir(
+            phism_syn_verilog_dir
+        ), f"{phism_syn_verilog_dir} doens't exist."
+
+        tbgen_syn_verilog_dir = os.path.join(
+            base_dir, "tb", "solution1", "syn", "verilog"
+        )
+        assert os.path.isdir(
+            tbgen_syn_verilog_dir
+        ), f"{tbgen_syn_verilog_dir} doens't exist."
+
+        tbgen_sim_verilog_dir = os.path.join(
+            base_dir, "tb", "solution1", "sim", "verilog"
+        )
+        assert os.path.isdir(
+            tbgen_sim_verilog_dir
+        ), f"{tbgen_sim_verilog_dir} doens't exist."
+
+        # Backup the tbgen (csim) results.
+        shutil.copytree(
+            os.path.join(base_dir, "tb"),
+            os.path.join(base_dir, "tb.csim"),
+            dirs_exist_ok=True,
+        )
+
+        # Copy and paste the design files.
+        design_files = glob.glob(os.path.join(phism_syn_verilog_dir, "*.*"))
+        assert design_files, "There should exist design files."
+        for f in design_files:
+            shutil.copy(f, tbgen_syn_verilog_dir)
+
+        # Fix the inconsistency between the testbench and the design top.
+        phism_top = os.path.join(tbgen_syn_verilog_dir, f"{top_func}.v")
+        assert os.path.isfile(phism_top), f"The top module {phism_top} should exist."
+        tbgen_top = os.path.join(tbgen_sim_verilog_dir, f"{top_func}.v")
+        assert os.path.isfile(tbgen_top), f"The top module {tbgen_top} should exist."
+
+        phism_params = get_module_parameters(phism_top, top_func)
+        tbgen_params = get_module_parameters(tbgen_top, top_func)
+
+        phism_mems = get_memory_interfaces(phism_params)
+        tbgen_mems = get_memory_interfaces(tbgen_params)
+        print(phism_mems)
+        print(tbgen_mems)
 
     def run_vitis(self, strategy: Optional[CosimFixStrategy] = None):
         """Run synthesize/testbench generation/co-simulation."""

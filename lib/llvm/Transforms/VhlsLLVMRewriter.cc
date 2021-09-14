@@ -45,6 +45,29 @@ static cl::opt<std::string> XlnTBSources(
 static cl::opt<bool> XlnArrayPartitionEnabled(
     "xln-ap-enabled", cl::desc("Whether array partition has been enabled"));
 
+/// Will abort if the Value is not a ConstantInt.
+static int64_t getI64Value(Value *value) {
+  assert(isa<ConstantInt>(value));
+
+  ConstantInt *CI = dyn_cast<ConstantInt>(value);
+  assert(CI->getBitWidth() == 64);
+
+  return CI->getSExtValue();
+}
+
+/// Get the dimensions from the provided array type.
+static SmallVector<int64_t> getDimsFromArrayType(ArrayType *type) {
+  SmallVector<int64_t> dims;
+  dims.push_back(type->getNumElements());
+
+  while (type && type->getArrayElementType()->isArrayTy()) {
+    type = dyn_cast<ArrayType>(type->getArrayElementType());
+    dims.push_back(type->getNumElements());
+  }
+
+  return dims;
+}
+
 namespace {
 
 /// InsExtSequence holds a sequence of `insertvalue` and `extractvalue`
@@ -126,17 +149,6 @@ public:
 
     return true;
   }
-
-  /// Will abort if the Value is not a ConstantInt.
-  int64_t getI64Value(Value *value) {
-    assert(isa<ConstantInt>(value));
-
-    ConstantInt *CI = dyn_cast<ConstantInt>(value);
-    assert(CI->getBitWidth() == 64);
-
-    return CI->getSExtValue();
-  }
-
   /// From the scalar offset to a set of offset for each dim.
   /// There should be in total dimSize * 2 expressions.
   /// Dim size will be dims.size() * 2 since the dims in this Seq only has the
@@ -716,6 +728,146 @@ static Value *rewriteModulo(Value *value) {
   return sremInst;
 }
 
+static bool isValidGepIndex(Value *value) {
+  return isa<SelectInst, PHINode, ConstantInt>(value);
+}
+
+/// We trace the address calculation (mul and add) chain for the GEP index.
+///
+/// It would looks like (from heat-3d) -
+///
+///     %val_9 = mul i64 %val_3, 400
+///     %val_10 = add i64 %val_9, 400 <-----  Add the offset value of 400
+///     %val_11 = mul i64 %val_5, 20
+///     %val_12 = add i64 %val_10, %val_11
+///     %val_13 = add i64 %val_12, %val_7
+///
+/// Without offset
+///
+///     %val_20 = mul i64 %val_3, 400
+///     %val_21 = mul i64 %val_5, 20
+///     %val_22 = add i64 %val_20, %val_21
+///     %val_23 = add i64 %val_22, %val_7
+///
+/// We cannot recover the indices when there is an offset at present.
+/// It will return all the found indices.
+/// The provided type argument is to verify the extracted information.
+static SmallVector<Value *> getGepIndices(GetElementPtrInst *inst, Type *type) {
+  LLVM_DEBUG({
+    dbgs() << "Recognizing GEP indices from ";
+    inst->dump();
+    dbgs() << "\n";
+    dbgs() << "Using type: ";
+    type->dump();
+    dbgs() << "\n\n";
+  });
+
+  if (inst->getNumIndices() != 1) {
+    LLVM_DEBUG(dbgs() << "Given GEP has 0 or more than 1 indices.");
+    return {};
+  }
+
+  // First of all, all the adders will be connected by their LHS operator.
+  SmallVector<BinaryOperator *> addInsts;
+  BinaryOperator *addInst = dyn_cast<BinaryOperator>(*inst->idx_begin());
+  while (addInst && addInst->getOpcode() == BinaryOperator::Add) {
+    addInsts.push_back(addInst);
+    addInst = dyn_cast<BinaryOperator>(addInst->getOperand(0));
+  }
+
+  LLVM_DEBUG({
+    dbgs() << "Recognized adders:\n";
+    for (BinaryOperator *op : addInsts)
+      op->dump();
+    dbgs() << "\n\n";
+  });
+
+  // Get all the adder operands.
+  SmallVector<Value *> operands;
+  for (unsigned i = 0; i < addInsts.size(); ++i) {
+    if (i == addInsts.size() - 1)
+      operands.push_back(addInsts[i]->getOperand(0));
+    operands.push_back(addInsts[i]->getOperand(1));
+  }
+
+  LLVM_DEBUG({
+    dbgs() << "Adder operands:\n";
+    for (Value *operand : operands)
+      operand->dump();
+    dbgs() << "\n\n";
+  });
+
+  // Replace operand with multipliers.
+  // Will use this to check with the ranked array type.
+  SmallVector<int64_t> mulDims;
+  for (unsigned i = 0; i < operands.size(); ++i) {
+    BinaryOperator *mulInst = dyn_cast<BinaryOperator>(operands[i]);
+    if (!mulInst || mulInst->getOpcode() != BinaryOperator::Mul)
+      continue;
+    if (!isa<ConstantInt>(mulInst->getOperand(1))) {
+      LLVM_DEBUG({
+        dbgs() << "The RHS of a multiplied index is not a constant integer.";
+        mulInst->dump();
+      });
+      return {};
+    }
+
+    mulDims.push_back(getI64Value(mulInst->getOperand(1)));
+    operands[i] = mulInst->getOperand(0);
+  }
+
+  LLVM_DEBUG({
+    dbgs() << "Updated operands by mul:\n";
+    for (Value *operand : operands)
+      operand->dump();
+    dbgs() << "\n\n";
+  });
+
+  // Check if every operand can be a valid GEP index.
+  for (Value *operand : operands) {
+    if (!isValidGepIndex(operand)) {
+      LLVM_DEBUG({
+        dbgs() << "Found an invalid operand:";
+        operand->dump();
+      });
+      return {};
+    }
+  }
+
+  // Finally, check whether the type matches with the parsed results.
+  ArrayType *arrayType = cast<ArrayType>(type->getPointerElementType());
+  SmallVector<int64_t> dims = getDimsFromArrayType(arrayType);
+  if (dims.size() != operands.size()) {
+    LLVM_DEBUG({
+      dbgs() << "Number of dims from the type: " << dims.size()
+             << " doesn't match the number of operands: " << operands.size()
+             << "\n";
+    });
+    return {};
+  }
+
+  SmallVector<int64_t> parDims;
+  for (unsigned i = 1; i < dims.size(); ++i)
+    parDims.push_back(dims[i] * (parDims.empty() ? 1 : parDims.back()));
+
+  LLVM_DEBUG({
+    dbgs() << "Partial dims resolved from type: ";
+    interleaveComma(parDims, dbgs());
+    dbgs() << "\nPartial dims resolved from multipliers: ";
+    interleaveComma(mulDims, dbgs());
+    dbgs() << "\n";
+  });
+
+  if (parDims != mulDims) {
+    LLVM_DEBUG(dbgs() << "Partial dims don't match.\n");
+    return {};
+  }
+
+  std::reverse(operands.begin(), operands.end());
+
+  return operands;
+}
+
 /// Look at the indices passed to the given GEP and see if there is any chance
 /// we can make the modulo expressions simplier given that the address of GEP
 /// should be positive.
@@ -729,40 +881,14 @@ static Value *rewriteModulo(Value *value) {
 /// to:
 ///      %0 = srem i64 %arg, 32
 ///
-static SmallVector<Value *> rewriteModuloGepIndices(GetElementPtrInst *inst) {
-  assert(inst->getNumIndices() == 1 &&
-         "The input GEP should have a single index operand.");
-
-  // First, we trace the address calculation (mul and add) chain for the GEP
-  // index.
-  // It would looks like -
-  //      %0 = mul %i, 32
-  //      %1 = add %0, %j
-  SmallVector<Value *> selectInsts;
-
-  // A simple BFS algorithm iterates through the mul-add chain.
-  std::queue<Value *> worklist;
-  worklist.push(*inst->idx_begin());
-  while (!worklist.empty()) {
-    Value *value = worklist.front();
-    worklist.pop();
-
-    if (BinaryOperator *binOp = dyn_cast<BinaryOperator>(value)) {
-      if (binOp->getOpcode() == BinaryOperator::Add ||
-          binOp->getOpcode() == BinaryOperator::Mul) {
-        worklist.push(binOp->getOperand(0));
-        worklist.push(binOp->getOperand(1));
-      }
-    } else if (isa<SelectInst>(value)) {
-      selectInsts.push_back(value);
+static void rewriteModuloGepIndices(SmallVectorImpl<Value *> &indices) {
+  for (unsigned i = 0; i < indices.size(); ++i)
+    if (!isa<SelectInst>(indices[i])) {
+      Value *newInd = rewriteModulo(indices[i]);
+      if (!newInd)
+        continue;
+      indices[i] = newInd;
     }
-  }
-
-  SmallVector<Value *> indices;
-  for (Value *value : selectInsts)
-    indices.push_back(rewriteModulo(value));
-
-  return indices;
 }
 
 /// This helper function convert the MemRef value represented by an
@@ -846,13 +972,17 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
       // Simplify the address calculation expressions to make Vitis happy.
       // It is easier to work on the original GEP.
       SmallVector<Value *> indices =
-          rewriteModuloGepIndices(cast<GetElementPtrInst>(I));
+          getGepIndices(cast<GetElementPtrInst>(I),
+                        RankedArrVMap[I->getOperand(0)]->getType());
 
       Instruction *NewGEP;
-      if (indices.empty() ||
-          any_of(indices, [&](Value *value) { return !value; })) {
+      if (indices.empty()) {
         NewGEP = duplicateGEPWithRankedArray(I, RankedArrVMap, NumNewGEP);
       } else {
+        // We will directly use the resolved indices.
+        // Try to rewrite the modulo expressions.
+        rewriteModuloGepIndices(indices);
+
         // We can directly use the indices from the rewrite to get the new GEP.
         /// TODO: should be more careful.
         Value *ptr = RankedArrVMap[I->getOperand(0)];
@@ -1384,6 +1514,49 @@ struct XilinxNameLoopPass : public ModulePass {
 
 } // namespace
 
+// -----------------------------------------------------------------------------------
+// Mark no inline for kernels'
+
+/// Check if the input function is a scop.stmt based on the pattern S[0-1]+
+static bool isScopStmt(Function &F) {
+  StringRef name = F.getName();
+  if (!name.startswith("S"))
+    return false;
+
+  StringRef suffix = name.drop_front();
+  if (any_of(suffix, [](const char &c) { return !isdigit(c); }))
+    return false;
+
+  return true;
+}
+
+namespace {
+
+struct AnnotateNoInlinePass : public ModulePass {
+  static char ID; // Pass identification, replacement for typeid
+  AnnotateNoInlinePass() : ModulePass(ID) {}
+
+  bool runOnModule(Module &M) override {
+    bool modified = false;
+    for (auto &F : M) {
+      if (!isScopStmt(F)) {
+        if (!F.hasFnAttribute(Attribute::NoInline)) {
+          modified = true;
+          F.addFnAttr(Attribute::NoInline);
+        }
+      } else {
+        modified = true;
+        // Should always inline scop.stmt.
+        F.addFnAttr(Attribute::AlwaysInline);
+      }
+    }
+
+    return modified;
+  }
+};
+
+} // namespace
+
 char ConvertMemRefToArray::ID = 0;
 static RegisterPass<ConvertMemRefToArray>
     X1("mem2ptr",
@@ -1428,3 +1601,7 @@ static RegisterPass<XilinxTBTclGenPass>
 char XilinxNameLoopPass::ID = 9;
 static RegisterPass<XilinxNameLoopPass> X10("xlnloopname",
                                             "Name loops for Xilinx Vitis.");
+
+char AnnotateNoInlinePass::ID = 10;
+static RegisterPass<AnnotateNoInlinePass>
+    X11("anno-noinline", "Annotate noinline to the functions.");

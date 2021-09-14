@@ -259,7 +259,6 @@ createPointLoopsCallee(mlir::AffineForOp forOp, int id, FuncOp f,
     mapping.map(arg, entry->addArgument(arg.getType()));
 
   callee.setType(b.getFunctionType(entry->getArgumentTypes(), llvm::None));
-  callee.setVisibility(SymbolTable::Visibility::Public);
 
   b.clone(*forOp.getOperation(), mapping);
 
@@ -522,10 +521,14 @@ static void detectScopPeWithMultipleStmts(ModuleOp m,
 static bool areScopStmtsSeparable(FuncOp f, ModuleOp m) {
   SetVector<Value> visited; // memrefs visited.
   SetVector<Value> conflicted;
+  SetVector<FuncOp> visitedStmts;
   f.walk([&](mlir::CallOp caller) {
     FuncOp callee = dyn_cast<FuncOp>(m.lookupSymbol(caller.getCallee()));
     if (!callee || !callee->hasAttr("scop.stmt"))
       return;
+    if (visitedStmts.count(callee))
+      return;
+    visitedStmts.insert(callee);
 
     for (Value arg : caller.getArgOperands())
       if (arg.getType().isa<MemRefType>()) {
@@ -1166,7 +1169,11 @@ void phism::registerLoopTransformPasses() {
         pm.addPass(std::make_unique<AnnotatePointLoopsPass>());
         pm.addPass(std::make_unique<ExtractPointLoopsPass>(pipelineOptions));
         pm.addPass(createCanonicalizerPass());
-        // only those private functions will be inlined.
+      });
+
+  PassPipelineRegistration<>(
+      "loop-redis-and-merge", "Redistribute stmts and merge loops.",
+      [](OpPassManager &pm) {
         pm.addPass(std::make_unique<RedistributeScopStatementsPass>());
         pm.addPass(createCanonicalizerPass());
         pm.addPass(std::make_unique<LoopMergePass>());
