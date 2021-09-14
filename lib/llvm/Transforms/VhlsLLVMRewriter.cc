@@ -767,53 +767,58 @@ static SmallVector<Value *> getGepIndices(GetElementPtrInst *inst, Type *type) {
     return {};
   }
 
-  // First of all, all the adders will be connected by their LHS operator.
-  SmallVector<BinaryOperator *> addInsts;
-  BinaryOperator *addInst = dyn_cast<BinaryOperator>(*inst->idx_begin());
-  while (addInst && addInst->getOpcode() == BinaryOperator::Add) {
-    addInsts.push_back(addInst);
-    addInst = dyn_cast<BinaryOperator>(addInst->getOperand(0));
-  }
-
-  LLVM_DEBUG({
-    dbgs() << "Recognized adders:\n";
-    for (BinaryOperator *op : addInsts)
-      op->dump();
-    dbgs() << "\n\n";
-  });
-
-  // Get all the adder operands.
   SmallVector<Value *> operands;
-  for (unsigned i = 0; i < addInsts.size(); ++i) {
-    if (i == addInsts.size() - 1)
-      operands.push_back(addInsts[i]->getOperand(0));
-    operands.push_back(addInsts[i]->getOperand(1));
-  }
-
-  LLVM_DEBUG({
-    dbgs() << "Adder operands:\n";
-    for (Value *operand : operands)
-      operand->dump();
-    dbgs() << "\n\n";
-  });
-
-  // Replace operand with multipliers.
   // Will use this to check with the ranked array type.
   SmallVector<int64_t> mulDims;
-  for (unsigned i = 0; i < operands.size(); ++i) {
-    BinaryOperator *mulInst = dyn_cast<BinaryOperator>(operands[i]);
-    if (!mulInst || mulInst->getOpcode() != BinaryOperator::Mul)
-      continue;
-    if (!isa<ConstantInt>(mulInst->getOperand(1))) {
-      LLVM_DEBUG({
-        dbgs() << "The RHS of a multiplied index is not a constant integer.";
-        mulInst->dump();
-      });
-      return {};
+
+  // First of all, all the adders will be connected by their LHS operator.
+  // If the input is already an index.
+  if (isValidGepIndex(*inst->idx_begin())) {
+    operands.push_back(*inst->idx_begin());
+  } else {
+    SmallVector<BinaryOperator *> addInsts;
+    BinaryOperator *addInst = dyn_cast<BinaryOperator>(*inst->idx_begin());
+    while (addInst && addInst->getOpcode() == BinaryOperator::Add) {
+      addInsts.push_back(addInst);
+      addInst = dyn_cast<BinaryOperator>(addInst->getOperand(0));
     }
 
-    mulDims.push_back(getI64Value(mulInst->getOperand(1)));
-    operands[i] = mulInst->getOperand(0);
+    LLVM_DEBUG({
+      dbgs() << "Recognized adders:\n";
+      for (BinaryOperator *op : addInsts)
+        op->dump();
+      dbgs() << "\n\n";
+    });
+
+    for (unsigned i = 0; i < addInsts.size(); ++i) {
+      if (i == addInsts.size() - 1)
+        operands.push_back(addInsts[i]->getOperand(0));
+      operands.push_back(addInsts[i]->getOperand(1));
+    }
+
+    LLVM_DEBUG({
+      dbgs() << "Adder operands:\n";
+      for (Value *operand : operands)
+        operand->dump();
+      dbgs() << "\n\n";
+    });
+
+    // Replace operand with multipliers.
+    for (unsigned i = 0; i < operands.size(); ++i) {
+      BinaryOperator *mulInst = dyn_cast<BinaryOperator>(operands[i]);
+      if (!mulInst || mulInst->getOpcode() != BinaryOperator::Mul)
+        continue;
+      if (!isa<ConstantInt>(mulInst->getOperand(1))) {
+        LLVM_DEBUG({
+          dbgs() << "The RHS of a multiplied index is not a constant integer.";
+          mulInst->dump();
+        });
+        return {};
+      }
+
+      mulDims.push_back(getI64Value(mulInst->getOperand(1)));
+      operands[i] = mulInst->getOperand(0);
+    }
   }
 
   LLVM_DEBUG({
@@ -883,10 +888,20 @@ static SmallVector<Value *> getGepIndices(GetElementPtrInst *inst, Type *type) {
 ///
 static void rewriteModuloGepIndices(SmallVectorImpl<Value *> &indices) {
   for (unsigned i = 0; i < indices.size(); ++i)
-    if (!isa<SelectInst>(indices[i])) {
+    if (isa<SelectInst>(indices[i])) {
       Value *newInd = rewriteModulo(indices[i]);
-      if (!newInd)
+      if (!newInd) {
+        LLVM_DEBUG({
+          dbgs() << "Failed to rewrite index at " << i << " : ";
+          indices[i]->dump();
+        });
         continue;
+      }
+
+      LLVM_DEBUG({
+        dbgs() << "Rewritten index at " << i << " to ";
+        newInd->dump();
+      });
       indices[i] = newInd;
     }
 }
@@ -983,6 +998,12 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
         // Try to rewrite the modulo expressions.
         rewriteModuloGepIndices(indices);
 
+        LLVM_DEBUG({
+          dbgs() << "Indices to use: \n";
+          for (Value *index : indices)
+            index->dump();
+        });
+
         // We can directly use the indices from the rewrite to get the new GEP.
         /// TODO: should be more careful.
         Value *ptr = RankedArrVMap[I->getOperand(0)];
@@ -993,6 +1014,10 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
 
         NewGEP = GetElementPtrInst::CreateInBounds(ptr, indices, Twine(""),
                                                    I->getNextNode());
+        LLVM_DEBUG({
+          dbgs() << "Newly generated GEP: ";
+          NewGEP->dump();
+        });
       }
 
       I->replaceAllUsesWith(NewGEP);

@@ -475,13 +475,17 @@ static MapVector<Value, TileInfo> getTilingInfo(ArrayRef<Value> memrefs,
   MapVector<Value, TileInfo> tiling;
   // See if they have simple access patterns that can be directly extracted.
   for (Value memref : memrefs) {
+    LLVM_DEBUG({
+      dbgs() << "Trying to tile: ";
+      memref.dump();
+    });
     // Check if all the users of memref are scop.pe callers.
     if (any_of(memref.getUsers(), [&](Operation *op) {
           return !isa<CallOp>(op) || !op->hasAttr("scop.pe");
         })) {
       LLVM_DEBUG({
         memref.dump();
-        llvm::errs() << " has been skipped since it has non PE caller users.\n";
+        dbgs() << " has been skipped since it has non PE caller users.\n";
       });
       continue;
     }
@@ -511,10 +515,10 @@ static MapVector<Value, TileInfo> getTilingInfo(ArrayRef<Value> memrefs,
 
     // Debug the accesses.
     LLVM_DEBUG({
-      memref.dump();
-      for (MemRefAccess &access : accesses) {
+      dbgs() << "Found the following accesses:\n";
+      for (MemRefAccess &access : accesses)
         access.opInst->dump();
-      }
+      dbgs() << "---------------------------\n";
     });
 
     // Check if all accesses are idenity maps.
@@ -586,8 +590,10 @@ static MapVector<Value, TileInfo> getTilingInfo(ArrayRef<Value> memrefs,
         std::swap(tmpUbMaps, ubMaps);
       } else {
         isIdentical = tmpLbMaps == lbMaps && tmpUbMaps == ubMaps;
-        if (!isIdentical)
+        if (!isIdentical) {
+          LLVM_DEBUG(dbgs() << "Found not identical loop bound maps.\n");
           break;
+        }
       }
     }
 
@@ -627,11 +633,19 @@ static MapVector<Value, TileInfo> getTilingInfo(ArrayRef<Value> memrefs,
     // Abandon further processing if the tile size cannot match memref's type.
     if ((int64_t)tileSizes.size() !=
         memref.getType().cast<MemRefType>().getRank()) {
-      llvm::errs() << "Tile sizes are not equal to the rank of the memref.\n";
+      LLVM_DEBUG(
+          dbgs() << "Tile sizes are not equal to the rank of the memref.\n");
       continue;
     }
 
     // The resolved memref tiling.
+    LLVM_DEBUG({
+      dbgs() << "Memref ";
+      memref.dump();
+      dbgs() << " has been tiled into: ";
+      interleaveComma(tileSizes, dbgs());
+      dbgs() << "\n\n";
+    });
     tiling[memref] = TileInfo{tileSizes, memref};
   }
 
@@ -1072,9 +1086,10 @@ struct SimpleArrayPartitionPass
     for (Value memref : memrefs)
       if (!tiling.count(memref)) {
         LLVM_DEBUG({
-          llvm::errs()
-              << "There is at least one memref not partitioned. We discard the "
-                 "whole case since the performance gain would be minor.\n";
+          dbgs() << "There is at least one memref: ";
+          memref.dump();
+          dbgs() << " has not partitioned. We discard the whole case since the "
+                    "performance gain would be minor.\n";
         });
         return;
       }

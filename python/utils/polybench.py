@@ -1001,8 +1001,6 @@ class PbFlow:
                 os.path.join(self.root_dir, "build", "lib", "VhlsLLVMRewriter.so")
             ),
             "-strip-debug",
-            "-anno-noinline",
-            "-inline",
             "-mem2arr",
             "-instcombine",
             "-xlnmath",
