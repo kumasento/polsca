@@ -18,8 +18,6 @@ from typing import List, Optional, Tuple
 
 import pandas as pd
 
-logger = logging.getLogger(__name__)
-
 POLYBENCH_DATASETS = ("MINI", "SMALL", "MEDIUM", "LARGE", "EXTRALARGE")
 POLYBENCH_EXAMPLES = (
     "2mm",
@@ -93,6 +91,7 @@ class PbFlowOptions:
     tile_sizes: Optional[List[int]] = None
     array_partition: bool = False
     skip_vitis: bool = False
+    skip_csim: bool = False  # Given cosim = True, you can still turn down csim.
 
 
 # ----------------------- Utility functions ------------------------------------
@@ -376,19 +375,55 @@ def get_module_parameters(file: str, module_name: str) -> List[str]:
     end_line = next(i for i, l in enumerate(lines) if ");" in l)
 
     params = (" ".join(line for line in lines[start_line + 1 : end_line])).split(",")
-    return [param.strip() for param in params]
+    return [param.strip() for param in params if param.strip()]
+
+
+def get_autotb_parameters(file: str) -> List[str]:
+    """Read interface from autotb files."""
+    assert os.path.isfile(file)
+    assert file.endswith(".autotb.v")
+
+    with open(file, "r") as f:
+        lines = f.readlines()
+    lines = [line.strip() for line in lines]
+
+    start_line = next(
+        i for i, l in enumerate(lines) if f"`AUTOTB_DUT `AUTOTB_DUT_INST(" in l
+    )
+    assert start_line >= 0 and start_line < len(lines)
+
+    end_line = next(i for i, l in enumerate(lines) if ");" in l and i > start_line)
+    assert end_line >= 0 and end_line < len(lines)
+
+    # Deal with things like -
+    # .ap_clk(ap_clk),
+    # .ap_rst(ap_rst),
+
+    conns = (" ".join(line for line in lines[start_line + 1 : end_line + 1])).split(",")
+    conns = [conn.strip() for conn in conns]
+
+    params = []
+    for conn in conns:
+        if conn.endswith(");"):
+            conn = conn[:-2]
+        assert conn[0] == "." and "(" in conn and conn[-1] == ")"
+        param = conn.split("(")[0][1:]
+        assert param == conn.split("(")[1][:-1]
+        params.append(param)
+
+    return params
 
 
 def get_memory_interfaces(params: List[str]):
     """Parse memory interfaces from the module params."""
     interfaces = OrderedDict()
     for param in params:
-        prefix = param.split("_")[0]
+        prefix = "_".join(param.split("_")[:-1])
         if prefix not in interfaces:
             interfaces[prefix] = []
         if param.startswith("ap") or "_" not in param:
             continue
-        interfaces[prefix].append(param.split("_")[1])
+        interfaces[prefix].append(param.split("_")[-1])
 
     return [
         ApMemoryInterface(name, ports)
@@ -658,10 +693,29 @@ class PbFlow:
         self.status = 0
         self.errmsg = "No Error"
 
+        # Logger
+        self.logger = logging.getLogger("pb-flow")
+        self.logger.setLevel(logging.DEBUG)
+
     def run(self, src_file):
         """Run the whole pb-flow on the src_file (*.c)."""
         self.cur_file = src_file
         self.c_source = src_file  # Will be useful in some later stages
+
+        base_dir = os.path.dirname(src_file)
+
+        # Setup logging
+        log_file = os.path.join(base_dir, f"pb-flow.log")
+        if os.path.isfile(log_file):
+            os.remove(log_file)
+
+        formatter = logging.Formatter(
+            "[%(asctime)s][%(name)s][%(levelname)s] %(message)s"
+        )
+        fh = logging.FileHandler(log_file)
+        fh.setFormatter(formatter)
+        fh.setLevel(logging.DEBUG)
+        self.logger.addHandler(fh)
 
         # The whole flow
         try:
@@ -680,6 +734,8 @@ class PbFlow:
                 .write_tb_tcl_by_llvm()
                 .run_vitis_on_phism()
                 .run_tbgen_csim()
+                .backup_csim_results()
+                .copy_design_from_phism_to_tb()
             )
         except Exception as e:
             self.status = 1
@@ -692,18 +748,20 @@ class PbFlow:
         kwargs.update({"cwd": os.path.dirname(self.cur_file)})
 
         if cmd_list:
+            cmd_ = " \\\n\t".join(cmd_list)
+            self.logger.debug(f"{cmd_}")
             if self.options.dry_run:
                 print(" ".join(cmd_list))
                 return
             proc = subprocess.run(cmd_list, **kwargs)
         else:
+            self.logger.debug(f"{cmd}")
             if self.options.dry_run:
                 print(cmd)
                 return
             proc = subprocess.run(cmd, **kwargs)
 
         cmd_str = cmd if cmd else " ".join(cmd_list)
-
         if proc.returncode != 0:
             raise RuntimeError(f"{cmd_str} failed.")
 
@@ -989,7 +1047,7 @@ class PbFlow:
 
         # Whether array partition has been successful.
         xln_ap_enabled = os.path.isfile(
-            os.path.join(os.path.basename(self.cur_file), "array_partition.txt")
+            os.path.join(os.path.dirname(self.cur_file), "array_partition.txt")
         )
 
         args = [
@@ -1008,7 +1066,7 @@ class PbFlow:
             "-xlnanno",
             '-xlntop="{}"'.format(get_top_func(src_file)),
             '-xlnnames="{}"'.format(",".join(xln_names)),
-            "-xlnunroll",
+            "-xlnunroll" if self.options.loop_transforms else "",
             "-xlnarraypartition" if self.options.array_partition else "",
             "-xln-ap-enabled" if xln_ap_enabled else "",
             "-strip-attr",
@@ -1126,6 +1184,10 @@ class PbFlow:
     def run_tbgen_csim(self):
         """Run the tbgen.tcl file. Assuming the Tcl file has been written."""
         if not self.options.cosim:
+            self.logger.debug("Cosim won't run due to the input setting.")
+            return self
+        if self.options.skip_csim:
+            self.logger.debug("CSim is set to be skipped.")
             return self
 
         src_file = self.cur_file
@@ -1151,14 +1213,29 @@ class PbFlow:
 
         return self
 
+    def backup_csim_results(self):
+        """Create a backup for the csim results."""
+        base_dir = os.path.dirname(self.cur_file)
+        tbgen_dir = os.path.join(base_dir, "tb")
+        assert os.path.isdir(
+            tbgen_dir
+        ), f"tbgen_dir={tbgen_dir} isn't there, please don't skip csim in this case."
+
+        csim_dir = os.path.join(base_dir, "tb.csim")
+        if os.path.isdir(csim_dir):
+            self.logger.debug(f"csim_dir={csim_dir} exists, deleting it ...")
+            shutil.rmtree(csim_dir)
+
+        # Backup the tbgen (csim) results.
+        shutil.copytree(tbgen_dir, csim_dir)
+
+        return self
+
     def copy_design_from_phism_to_tb(self):
         """Move design files from Phism output to the testbench directory."""
         src_file = self.cur_file
         base_dir = os.path.dirname(src_file)
         top_func = get_top_func(src_file)
-
-        # The place to store the csim results.
-        shutil.rmtree(os.path.join(base_dir, "tb.csim"), ignore_errors=True)
 
         # Check results
         phism_syn_verilog_dir = os.path.join(
@@ -1176,18 +1253,11 @@ class PbFlow:
         ), f"{tbgen_syn_verilog_dir} doens't exist."
 
         tbgen_sim_verilog_dir = os.path.join(
-            base_dir, "tb", "solution1", "sim", "verilog"
+            base_dir, "tb.csim", "solution1", "sim", "verilog"
         )
         assert os.path.isdir(
             tbgen_sim_verilog_dir
         ), f"{tbgen_sim_verilog_dir} doens't exist."
-
-        # Backup the tbgen (csim) results.
-        shutil.copytree(
-            os.path.join(base_dir, "tb"),
-            os.path.join(base_dir, "tb.csim"),
-            dirs_exist_ok=True,
-        )
 
         # Copy and paste the design files.
         design_files = glob.glob(os.path.join(phism_syn_verilog_dir, "*.*"))
@@ -1195,19 +1265,33 @@ class PbFlow:
         for f in design_files:
             shutil.copy(f, tbgen_syn_verilog_dir)
 
+        self.logger.debug(f"Design files found: \n" + "\n".join(design_files))
+
         # Fix the inconsistency between the testbench and the design top.
         phism_top = os.path.join(tbgen_syn_verilog_dir, f"{top_func}.v")
         assert os.path.isfile(phism_top), f"The top module {phism_top} should exist."
-        tbgen_top = os.path.join(tbgen_sim_verilog_dir, f"{top_func}.v")
-        assert os.path.isfile(tbgen_top), f"The top module {tbgen_top} should exist."
+        autotb = os.path.join(tbgen_sim_verilog_dir, f"{top_func}.autotb.v")
+        assert os.path.isfile(autotb), f"The autotb file {autotb} should exist."
 
         phism_params = get_module_parameters(phism_top, top_func)
-        tbgen_params = get_module_parameters(tbgen_top, top_func)
+        self.logger.debug(
+            f"Parameters parsed from {phism_top}:\n" + "\n".join(phism_params)
+        )
+        autotb_params = get_autotb_parameters(autotb)
+        self.logger.debug(
+            f"Parameters parsed from {autotb}:\n" + "\n".join(autotb_params)
+        )
 
         phism_mems = get_memory_interfaces(phism_params)
-        tbgen_mems = get_memory_interfaces(tbgen_params)
-        print(phism_mems)
-        print(tbgen_mems)
+        self.logger.debug(
+            f"Parsed memory interfaces from {phism_top}:\n"
+            + "\n".join([str(m) for m in phism_mems])
+        )
+        autotb_mems = get_memory_interfaces(autotb_params)
+        self.logger.debug(
+            f"Parsed memory interfaces from {autotb}:\n"
+            + "\n".join([str(m) for m in autotb_mems])
+        )
 
     def run_vitis(self, strategy: Optional[CosimFixStrategy] = None):
         """Run synthesize/testbench generation/co-simulation."""

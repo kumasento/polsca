@@ -67,6 +67,9 @@ def main():
         "--array-partition", action="store_true", help="Use array partition."
     )
     parser.add_argument("--skip-vitis", action="store_true", help="Don't run Vitis.")
+    parser.add_argument(
+        "--skip-csim", action="store_true", help="Don't run tbgen (csim)."
+    )
     args = parser.parse_args()
 
     options = pb_utils.PbFlowOptions(**vars(args))
