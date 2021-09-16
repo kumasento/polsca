@@ -1,6 +1,7 @@
 //===- LoopTransforms.cc - Loop transforms ----------------------------C++-===//
 
 #include "phism/mlir/Transforms/PhismTransforms.h"
+#include "phism/mlir/Transforms/Utils.h"
 
 #include "mlir/Analysis/AffineAnalysis.h"
 #include "mlir/Analysis/AffineStructures.h"
@@ -9,6 +10,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/IR/BlockAndValueMapping.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Dominance.h"
@@ -28,7 +30,7 @@
 
 #include <queue>
 
-#define DEBUG_TYPE "loop-extract"
+#define DEBUG_TYPE "loop-transforms"
 
 using namespace mlir;
 using namespace llvm;
@@ -46,7 +48,7 @@ struct LoopTransformsPipelineOptions
 
 /// -------------------------- Insert Scratchpad ---------------------------
 
-static FuncOp getTopFunction(Operation *op) {
+static FuncOp getRootFunction(Operation *op) {
   while (!op->getParentOfType<FuncOp>())
     op = op->getParentOp();
   return op->getParentOfType<FuncOp>();
@@ -62,7 +64,7 @@ struct InsertScratchpadPass
     DominanceInfo dom(storeOp->getParentOp());
     Value mem = storeOp.getMemRef();
     // TODO: we should further check the address being accessed.
-    FuncOp f = getTopFunction(storeOp);
+    FuncOp f = getRootFunction(storeOp);
     b.setInsertionPointToStart(&f.getBlocks().front());
 
     // New scratchpad memory
@@ -257,7 +259,6 @@ createPointLoopsCallee(mlir::AffineForOp forOp, int id, FuncOp f,
     mapping.map(arg, entry->addArgument(arg.getType()));
 
   callee.setType(b.getFunctionType(entry->getArgumentTypes(), llvm::None));
-  callee.setVisibility(SymbolTable::Visibility::Public);
 
   b.clone(*forOp.getOperation(), mapping);
 
@@ -478,11 +479,628 @@ struct AnnotatePointLoopsPass
 };
 } // namespace
 
+/// --------------------- Redistribute statements ---------------------------
+
+static void getAllScopStmts(FuncOp func, SetVector<FuncOp> &stmts, ModuleOp m) {
+  func.walk([&](mlir::CallOp caller) {
+    FuncOp callee = dyn_cast<FuncOp>(m.lookupSymbol(caller.getCallee()));
+    if (!callee)
+      return;
+    if (!callee->hasAttr("scop.stmt"))
+      return;
+
+    stmts.insert(callee);
+  });
+}
+
+static void detectScopPeWithMultipleStmts(ModuleOp m,
+                                          SetVector<mlir::FuncOp> &pes) {
+  FuncOp top = getTopFunction(m);
+  if (!top)
+    return;
+
+  top.walk([&](mlir::CallOp caller) {
+    if (!caller->hasAttr("scop.pe"))
+      return;
+
+    FuncOp callee = dyn_cast<FuncOp>(m.lookupSymbol(caller.getCallee()));
+    if (!callee)
+      return;
+
+    SetVector<FuncOp> stmts;
+    getAllScopStmts(callee, stmts, m);
+
+    if (stmts.size() >= 2)
+      pes.insert(callee);
+  });
+}
+
+static bool hasOnlyReadByScopStmts(FuncOp f, ModuleOp m, Value memref) {
+  SmallVector<std::pair<FuncOp, unsigned>> funcAndArgIdx;
+  f.walk([&](mlir::CallOp caller) {
+    FuncOp callee = dyn_cast<FuncOp>(m.lookupSymbol(caller.getCallee()));
+    if (!callee || !callee->hasAttr("scop.stmt"))
+      return;
+    auto it = find(caller.getArgOperands(), memref);
+    if (it == caller.arg_operand_end())
+      return;
+
+    funcAndArgIdx.push_back({callee, it - caller.arg_operand_begin()});
+  });
+
+  // Examine the accesses.
+  for (auto &it : funcAndArgIdx) {
+    FuncOp callee;
+    unsigned argIdx;
+    std::tie(callee, argIdx) = it;
+
+    assert(callee.getArgument(argIdx).getType().isa<MemRefType>());
+
+    bool hasWriteAccess = false;
+    callee.walk([&](mlir::AffineStoreOp storeOp) {
+      if (storeOp.getMemRef() == callee.getArgument(argIdx))
+        hasWriteAccess = true;
+    });
+
+    if (hasWriteAccess)
+      return false;
+  }
+
+  return true;
+}
+
+/// Assuming the memrefs at the top-level are not aliases.
+/// Also assuming each scop.stmt will have its accessed memrefs once in its
+/// interface.
+static bool areScopStmtsSeparable(FuncOp f, ModuleOp m) {
+  SetVector<Value> visited; // memrefs visited.
+  SetVector<Value> conflicted;
+  SetVector<FuncOp> visitedStmts;
+  f.walk([&](mlir::CallOp caller) {
+    FuncOp callee = dyn_cast<FuncOp>(m.lookupSymbol(caller.getCallee()));
+    if (!callee || !callee->hasAttr("scop.stmt"))
+      return;
+    if (visitedStmts.count(callee))
+      return;
+    visitedStmts.insert(callee);
+
+    for (Value arg : caller.getArgOperands())
+      if (arg.getType().isa<MemRefType>()) {
+        if (visited.count(arg))
+          conflicted.insert(arg);
+        visited.insert(arg);
+      }
+  });
+
+  unsigned bad = 0;
+  for (auto &memref : conflicted)
+    if (!hasOnlyReadByScopStmts(f, m, memref))
+      ++bad;
+
+  if (!bad)
+    return true;
+
+  LLVM_DEBUG({
+    llvm::errs()
+        << "\nConflicted memrefs that have not only read accesses:\n\n";
+    for (Value memref : conflicted)
+      if (!hasOnlyReadByScopStmts(f, m, memref))
+        memref.dump();
+  });
+
+  return false;
+}
+
+/// Erase those affine.for with empty blocks.
+static void eraseEmptyAffineFor(FuncOp f) {
+  SmallVector<Operation *> eraseOps;
+  while (true) {
+    eraseOps.clear();
+    f.walk([&](mlir::AffineForOp forOp) {
+      if (llvm::hasSingleElement(*forOp.getBody())) // the yield
+        eraseOps.push_back(forOp.getOperation());
+    });
+    for (Operation *op : eraseOps)
+      op->erase();
+
+    if (eraseOps.empty())
+      break;
+  }
+}
+
+static std::pair<FuncOp, SmallVector<unsigned>>
+distributeScopStmt(FuncOp stmt, FuncOp f, ModuleOp m, OpBuilder &b) {
+  OpBuilder::InsertionGuard g(b);
+  b.setInsertionPointAfter(f);
+  FuncOp newFunc = cast<FuncOp>(b.clone(*f.getOperation()));
+  newFunc.setName(std::string(f.getName()) + "__cloned_for__" +
+                  std::string(stmt.getName()));
+
+  SmallVector<Operation *> eraseOps;
+  newFunc.walk([&](mlir::CallOp caller) {
+    if (caller.getCallee() != stmt.getName())
+      eraseOps.push_back(caller.getOperation());
+  });
+
+  for (Operation *op : eraseOps)
+    op->erase();
+
+  eraseEmptyAffineFor(newFunc);
+
+  // Erase not used arguments.
+  SmallVector<unsigned> usedArgs;
+  for (unsigned i = 0; i < newFunc.getNumArguments(); ++i)
+    if (newFunc.getArgument(i).use_empty())
+      usedArgs.push_back(i);
+  newFunc.eraseArguments(usedArgs);
+
+  return {newFunc, usedArgs};
+}
+
+/// The input function will be altered in-place.
+static LogicalResult distributeScopStmts(
+    FuncOp f, SmallVectorImpl<std::pair<FuncOp, SmallVector<unsigned>>> &dist,
+    ModuleOp m, OpBuilder &b) {
+  SetVector<FuncOp> stmts;
+  getAllScopStmts(f, stmts, m);
+
+  // Need to duplicate the whole function for each statement. And within each
+  // duplication, remove the callers that don't belong there.
+  for (FuncOp stmt : stmts) {
+    auto res = distributeScopStmt(stmt, f, m, b);
+    if (res.first)
+      dist.push_back(res);
+    else {
+      LLVM_DEBUG(dbgs() << "Cannot distribute for: " << stmt.getName() << '\n');
+      return failure();
+    }
+  }
+
+  return success();
+}
+
+namespace {
+struct RedistributeScopStatementsPass
+    : public mlir::PassWrapper<RedistributeScopStatementsPass,
+                               OperationPass<ModuleOp>> {
+
+  void runOnOperation() override {
+    ModuleOp m = getOperation();
+    OpBuilder b(m.getContext());
+
+    // -------------------------------------------------------------------
+    // Step 1: detect the scop.pe callee that has more than one scop.stmt.
+    SetVector<FuncOp> pes;
+    detectScopPeWithMultipleStmts(m, pes);
+
+    if (pes.empty())
+      return;
+
+    LLVM_DEBUG({
+      llvm::errs() << "-------------------------------------------\n";
+      llvm::errs() << "Detected PEs with multiple SCoP statements:\n\n";
+      for (FuncOp pe : pes) {
+        pe.dump();
+        llvm::errs() << "\n------------------------\n\n";
+      }
+    });
+
+    // -------------------------------------------------------------------
+    // Step 2: check if the multiple scop.stmt can be fully separated.
+    // The condition is basically each caller refers to different memref.
+    /// TODO: carry out alias analysis (not an issue for polybench)
+    /// TODO: detailed dependence analysis to cover more cases.
+    SetVector<FuncOp> pesToProc;
+    for (FuncOp pe : pes) {
+      if (!areScopStmtsSeparable(pe, m)) {
+        LLVM_DEBUG({
+          llvm::errs() << "Discared " << pe.getName()
+                       << "since its scop.stmts are not separable.\n";
+        });
+        continue;
+      }
+
+      pesToProc.insert(pe);
+    }
+
+    // -------------------------------------------------------------------
+    // Step 3: Process each PE.
+    for (FuncOp pe : pesToProc) {
+      SmallVector<std::pair<FuncOp, SmallVector<unsigned>>> dists;
+      if (failed(distributeScopStmts(pe, dists, m, b))) {
+        LLVM_DEBUG({
+          llvm::errs() << "Failed to distribute scop.stmt: " << pe.getName()
+                       << "\n";
+        });
+        continue;
+      }
+
+      SmallVector<mlir::CallOp> callers;
+      m.walk([&](mlir::CallOp caller) {
+        if (caller.getCallee() == pe.getName())
+          callers.push_back(caller);
+      });
+
+      for (mlir::CallOp caller : callers) {
+        b.setInsertionPointAfter(caller);
+        for (auto dist : dists) {
+          FuncOp callee;
+          SmallVector<unsigned> erased;
+          std::tie(callee, erased) = dist;
+
+          SmallVector<Value> operands;
+          for (auto arg : enumerate(caller.getOperands()))
+            if (find(erased, arg.index()) == erased.end())
+              operands.push_back(arg.value());
+
+          mlir::CallOp newCaller =
+              b.create<CallOp>(caller.getLoc(), callee, operands);
+          newCaller->setAttr("scop.pe", b.getUnitAttr());
+        }
+      }
+
+      for (mlir::CallOp caller : callers)
+        caller.erase();
+      pe.erase();
+    }
+  }
+};
+} // namespace
+
+/// --------------------- Loop merge pass ---------------------------
+
+static LogicalResult loopMergeOnScopStmt(FuncOp f, ModuleOp m, OpBuilder &b) {
+  SetVector<FuncOp> stmts;
+  getAllScopStmts(f, stmts, m);
+
+  if (!llvm::hasSingleElement(stmts)) {
+    LLVM_DEBUG(
+        dbgs()
+        << "Being conservative not to merge loops with multiple scop.stmts.\n");
+    return failure();
+  }
+
+  FuncOp targetStmt = *stmts.begin();
+
+  // Get all the callers for the target scop.stmt
+  SmallVector<mlir::CallOp> callers;
+  f.walk([&](mlir::CallOp caller) {
+    if (caller.getCallee() == targetStmt.getName())
+      callers.push_back(caller);
+  });
+
+  if (hasSingleElement(callers)) {
+    LLVM_DEBUG(dbgs() << "There is only one caller instance for PE: "
+                      << f.getName() << ".\n");
+    return failure();
+  }
+
+  // ----------------------------------------------------------------------
+  // Step 1: make sure there are no empty sets in loop domains.
+  SetVector<Operation *> erased;
+  for (mlir::CallOp caller : callers) {
+    SmallVector<Operation *> ops;
+    getEnclosingAffineForAndIfOps(*caller.getOperation(), &ops);
+
+    FlatAffineConstraints cst;
+    getIndexSet(ops, &cst);
+
+    if (!cst.findIntegerSample().hasValue()) {
+      LLVM_DEBUG({
+        dbgs() << "Found a caller in an empty loop nest.\n";
+        caller.dump();
+      });
+      erased.insert(caller.getOperation());
+    };
+  }
+
+  callers.erase(remove_if(callers,
+                          [&](mlir::CallOp caller) {
+                            return erased.count(caller.getOperation());
+                          }),
+                callers.end());
+  for (Operation *op : erased)
+    op->erase();
+
+  eraseEmptyAffineFor(f);
+
+  if (hasSingleElement(callers)) {
+    LLVM_DEBUG(dbgs() << "There is only one caller instance for PE: "
+                      << f.getName() << " after empty loop removal.\n");
+    return failure();
+  }
+
+  // ----------------------------------------------------------------------
+  // Step 2: gather loop structure
+  // Make sure the callers have the same prefix, only the last forOp different.
+  SmallVector<mlir::AffineForOp> outerLoops;
+  SmallVector<mlir::AffineForOp> innermosts; // each corresponds to a caller.
+  for (mlir::CallOp caller : callers) {
+    SmallVector<Operation *> ops;
+    getEnclosingAffineForAndIfOps(*caller.getOperation(), &ops);
+
+    if (ops.empty()) {
+      LLVM_DEBUG(dbgs() << "Callers should be wrapped within loops.\n");
+      return failure();
+    }
+
+    if (any_of(ops, [&](Operation *op) { return isa<mlir::AffineIfOp>(op); })) {
+      LLVM_DEBUG(dbgs() << "Cannot deal with affine.if yet.\n");
+      return failure();
+    }
+
+    // Initialise
+    if (outerLoops.empty()) {
+      innermosts.push_back(cast<mlir::AffineForOp>(ops.back()));
+      ops.pop_back();
+
+      for (Operation *op : ops)
+        outerLoops.push_back(cast<mlir::AffineForOp>(op));
+    } else {
+      SmallVector<mlir::AffineForOp> tmpOuters;
+      mlir::AffineForOp innermost;
+
+      innermost = cast<mlir::AffineForOp>(ops.back());
+      ops.pop_back();
+
+      for (Operation *op : ops)
+        tmpOuters.push_back(cast<mlir::AffineForOp>(op));
+
+      if (tmpOuters != outerLoops) {
+        LLVM_DEBUG(dbgs() << "Outer loops are not the same among statements "
+                             "(given the last being different).\n");
+        return failure();
+      }
+
+      if (find(innermosts, innermost) != innermosts.end()) {
+        LLVM_DEBUG(dbgs() << "Weird to find the same loop structures between "
+                             "two caller instances.\n");
+        return failure();
+      }
+
+      innermosts.push_back(innermost);
+    }
+  }
+
+  LLVM_DEBUG({
+    dbgs() << "\n-----------------------------------\n";
+    dbgs() << "Merging PE: \n";
+    f.dump();
+  });
+
+  // ----------------------------------------------------------------------
+  // Step 3: Affine analysis
+  // Check if the innermost loops have no intersection.
+  SmallVector<FlatAffineConstraints, 4> csts;
+  transform(innermosts, std::back_inserter(csts), [&](mlir::AffineForOp forOp) {
+    FlatAffineConstraints cst;
+    cst.addInductionVarOrTerminalSymbol(forOp.getInductionVar());
+
+    LLVM_DEBUG(cst.dump());
+
+    return cst;
+  });
+
+  // Make every constraint has the same induction variable.
+  for (unsigned i = 1; i < csts.size(); ++i)
+    csts[i].setIdValue(0, csts[0].getIdValue(0));
+
+  // Check if all the constraints share the same number of columns.
+  for (unsigned i = 1; i < csts.size(); ++i) {
+    if (csts[i].getNumCols() != csts[0].getNumCols()) {
+      LLVM_DEBUG(dbgs() << "Number of columns don't match between two "
+                           "candidate constraints.\n");
+      return failure();
+    }
+  }
+
+  // Check if two loops have intersection.
+  for (unsigned i = 0; i < csts.size(); ++i)
+    for (unsigned j = i + 1; j < csts.size(); ++j) {
+      FlatAffineConstraints tmp{csts[i]};
+      tmp.append(csts[j]);
+
+      if (tmp.findIntegerSample().hasValue()) {
+        LLVM_DEBUG(dbgs() << "There is intersection between two innermost "
+                             "loops. Cannot merge them safely.\n");
+        return failure();
+      }
+    }
+
+  // Merge: check if one can be merged into another iteratively, until there is
+  // no chance of merging.
+  while (true) {
+    bool merged = false;
+
+    mlir::AffineForOp loopToErase;
+
+    for (unsigned i = 0; i < innermosts.size() && !merged; ++i)
+      for (unsigned j = 0; j < innermosts.size() && !merged; ++j) {
+        if (i == j)
+          continue;
+
+        mlir::AffineForOp loop1 = innermosts[i];
+        mlir::AffineForOp loop2 = innermosts[j];
+
+        AffineMap ubMap = loop1.getUpperBoundMap();
+
+        // Condition BEGIN -
+        if (loop2.getLowerBoundMap().isSingleConstant()) {
+          int64_t constLb = loop2.getLowerBoundMap().getSingleConstantResult();
+          for (AffineExpr ub : ubMap.getResults()) {
+            if (AffineConstantExpr constUbExpr =
+                    ub.dyn_cast<AffineConstantExpr>()) {
+              int64_t constUb = constUbExpr.getValue();
+              if (constLb == constUb) {
+                // Condition END -
+                LLVM_DEBUG(dbgs()
+                           << "Found loop2's single constant lower bound "
+                           << constLb
+                           << " equals to one of the upper bounds of loop1 "
+                           << constUb
+                           << ". We can merge them together since loop1 and "
+                              "loop2 don't intersect.\n");
+
+                merged = true;
+
+                // Set to erase;
+                loopToErase = loop2;
+
+                // Set the new upper bound;
+                SetVector<AffineExpr> results;
+                for (AffineExpr expr : ubMap.getResults())
+                  if (expr != ub)
+                    results.insert(expr);
+                for (AffineExpr expr : loop2.getUpperBoundMap().getResults())
+                  results.insert(expr);
+
+                AffineMap newUbMap =
+                    AffineMap::get(ubMap.getNumDims(), ubMap.getNumSymbols(),
+                                   results.takeVector(), ubMap.getContext());
+                LLVM_DEBUG({
+                  dbgs() << "New upper bound: \n";
+                  newUbMap.dump();
+                });
+                loop1.setUpperBoundMap(newUbMap);
+
+                break;
+              }
+            }
+          }
+        }
+      }
+
+    if (loopToErase) {
+      innermosts.erase(find(innermosts, loopToErase));
+      loopToErase.erase();
+    }
+
+    if (!merged)
+      break;
+  }
+
+  return success();
+}
+
+namespace {
+
+/// Will only work within scop.pe on scop.stmt to avoid side effects.
+struct LoopMergePass
+    : public mlir::PassWrapper<LoopMergePass, OperationPass<ModuleOp>> {
+
+  void runOnOperation() override {
+    ModuleOp m = getOperation();
+    OpBuilder b(m.getContext());
+
+    SmallVector<FuncOp> pes;
+    FuncOp f = getTopFunction(m);
+    if (!f)
+      return;
+
+    f.walk([&](mlir::CallOp caller) {
+      if (!caller->hasAttr("scop.pe"))
+        return;
+      FuncOp pe = dyn_cast<FuncOp>(m.lookupSymbol(caller.getCallee()));
+      if (!pe)
+        return;
+      pes.push_back(pe);
+    });
+
+    for (FuncOp pe : pes) {
+      if (failed(loopMergeOnScopStmt(pe, m, b))) {
+        LLVM_DEBUG(dbgs() << "Failed to merge loops in: " << pe.getName()
+                          << ".\n");
+      }
+    }
+  }
+};
+
+} // namespace
+
+/// -------------------------- Scop stmt inline -------------------------------
+
+static LogicalResult inlineScopStmtWithinFunction(FuncOp f, FuncOp stmt,
+                                                  OpBuilder &b) {
+  if (f->hasAttr("scop.stmt")) // skipped.
+    return success();
+
+  SmallVector<mlir::CallOp> callers;
+  f.walk([&](mlir::CallOp caller) {
+    if (caller.getCallee() == stmt.getName())
+      callers.push_back(caller);
+  });
+
+  // Replace each caller with the statement body.
+  for (mlir::CallOp caller : callers) {
+    b.setInsertionPointAfter(caller);
+
+    BlockAndValueMapping vmap;
+    vmap.map(stmt.getArguments(), caller.getArgOperands());
+
+    // We know that the body of the stmt is simply a list of operations without
+    // region.
+    for (Operation &op : stmt.getBlocks().begin()->getOperations())
+      if (!isa<mlir::ReturnOp>(op))
+        b.clone(op, vmap);
+  }
+
+  // Erase the callers.
+  for (mlir::CallOp caller : callers)
+    caller.erase();
+
+  return success();
+}
+
+namespace {
+
+/// Try to merge all the functions with attribute {scop.stmt}.
+struct ScopStmtInlinePass
+    : public mlir::PassWrapper<ScopStmtInlinePass, OperationPass<ModuleOp>> {
+
+  void runOnOperation() override {
+    ModuleOp m = getOperation();
+    OpBuilder b(m.getContext());
+
+    SmallVector<FuncOp> stmts;
+    SmallVector<FuncOp> funcs;
+
+    m.walk([&](FuncOp f) {
+      if (f->hasAttr("scop.stmt"))
+        stmts.push_back(f);
+      else
+        funcs.push_back(f);
+    });
+
+    // We know that a scop.stmt won't call another scop.stmt.
+    for (FuncOp stmt : stmts) {
+      bool hasCaller = false;
+      stmt.walk([&](mlir::CallOp caller) { hasCaller = true; });
+
+      assert(!hasCaller && "A scop.stmt cannot call another function.");
+    }
+
+    // Iterate every scop.stmt that should be inlined.
+    for (FuncOp stmt : stmts) {
+      for (FuncOp func : funcs)
+        if (failed(inlineScopStmtWithinFunction(func, stmt, b)))
+          return;
+      stmt.erase();
+    }
+  }
+};
+
+} // namespace
+
 void phism::registerLoopTransformPasses() {
   PassRegistration<AnnotatePointLoopsPass>(
       "annotate-point-loops", "Annotate loops with point/tile info.");
   PassRegistration<ExtractPointLoopsPass>(
       "extract-point-loops", "Extract point loop bands into functions");
+  PassRegistration<RedistributeScopStatementsPass>(
+      "redis-scop-stmts",
+      "Redistribute scop statements across extracted point loops.");
+  PassRegistration<LoopMergePass>("loop-merge",
+                                  "Merge loops by affine analysis.");
 
   PassPipelineRegistration<>(
       "improve-pipelining", "Improve the pipelining performance",
@@ -497,7 +1115,16 @@ void phism::registerLoopTransformPasses() {
         pm.addPass(std::make_unique<AnnotatePointLoopsPass>());
         pm.addPass(std::make_unique<ExtractPointLoopsPass>(pipelineOptions));
         pm.addPass(createCanonicalizerPass());
-        // only those private functions will be inlined.
-        pm.addPass(createInlinerPass());
+      });
+
+  PassPipelineRegistration<>(
+      "loop-redis-and-merge", "Redistribute stmts and merge loops.",
+      [](OpPassManager &pm) {
+        pm.addPass(std::make_unique<RedistributeScopStatementsPass>());
+        pm.addPass(createCanonicalizerPass());
+        pm.addPass(std::make_unique<LoopMergePass>());
+        pm.addPass(createCanonicalizerPass());
+        pm.addPass(std::make_unique<ScopStmtInlinePass>());
+        pm.addPass(createCanonicalizerPass());
       });
 }

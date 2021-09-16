@@ -18,8 +18,6 @@ from typing import List, Optional, Tuple
 
 import pandas as pd
 
-logger = logging.getLogger(__name__)
-
 POLYBENCH_DATASETS = ("MINI", "SMALL", "MEDIUM", "LARGE", "EXTRALARGE")
 POLYBENCH_EXAMPLES = (
     "2mm",
@@ -92,6 +90,8 @@ class PbFlowOptions:
     max_span: int = -1
     tile_sizes: Optional[List[int]] = None
     array_partition: bool = False
+    skip_vitis: bool = False
+    skip_csim: bool = False  # Given cosim = True, you can still turn down csim.
 
 
 # ----------------------- Utility functions ------------------------------------
@@ -375,19 +375,55 @@ def get_module_parameters(file: str, module_name: str) -> List[str]:
     end_line = next(i for i, l in enumerate(lines) if ");" in l)
 
     params = (" ".join(line for line in lines[start_line + 1 : end_line])).split(",")
-    return [param.strip() for param in params]
+    return [param.strip() for param in params if param.strip()]
+
+
+def get_autotb_parameters(file: str) -> List[str]:
+    """Read interface from autotb files."""
+    assert os.path.isfile(file)
+    assert file.endswith(".autotb.v")
+
+    with open(file, "r") as f:
+        lines = f.readlines()
+    lines = [line.strip() for line in lines]
+
+    start_line = next(
+        i for i, l in enumerate(lines) if f"`AUTOTB_DUT `AUTOTB_DUT_INST(" in l
+    )
+    assert start_line >= 0 and start_line < len(lines)
+
+    end_line = next(i for i, l in enumerate(lines) if ");" in l and i > start_line)
+    assert end_line >= 0 and end_line < len(lines)
+
+    # Deal with things like -
+    # .ap_clk(ap_clk),
+    # .ap_rst(ap_rst),
+
+    conns = (" ".join(line for line in lines[start_line + 1 : end_line + 1])).split(",")
+    conns = [conn.strip() for conn in conns]
+
+    params = []
+    for conn in conns:
+        if conn.endswith(");"):
+            conn = conn[:-2]
+        assert conn[0] == "." and "(" in conn and conn[-1] == ")"
+        param = conn.split("(")[0][1:]
+        assert param == conn.split("(")[1][:-1]
+        params.append(param)
+
+    return params
 
 
 def get_memory_interfaces(params: List[str]):
     """Parse memory interfaces from the module params."""
     interfaces = OrderedDict()
     for param in params:
-        prefix = param.split("_")[0]
+        prefix = "_".join(param.split("_")[:-1])
         if prefix not in interfaces:
             interfaces[prefix] = []
         if param.startswith("ap") or "_" not in param:
             continue
-        interfaces[prefix].append(param.split("_")[1])
+        interfaces[prefix].append(param.split("_")[-1])
 
     return [
         ApMemoryInterface(name, ports)
@@ -415,32 +451,26 @@ def is_read_write_conflict(
     )
 
 
-def fix_cosim_kernels(dir: str) -> CosimFixStrategy:
-    """Fix issues with co-simulation.
-    Returns directives for (source, destination).
-    """
+def is_cosim_interface_matched(
+    src_mems: List[ApMemoryInterface], dst_mems: List[ApMemoryInterface]
+) -> bool:
+    if len(src_mems) != len(dst_mems):
+        return False
 
-    dir = os.path.abspath(dir)  # canonicalize path
-    kernel_name = f"kernel_{os.path.basename(dir)}"
+    for src, dst in zip(src_mems, dst_mems):
+        if src.get_num_ports() != dst.get_num_ports():
+            return False
+        if set(src.ports) != set(dst.ports):
+            return False
 
-    src_proj_dir = os.path.join(dir, "proj", "solution1")
-    assert os.path.isdir(src_proj_dir)
+    return True
 
-    dst_proj_dir = os.path.join(dir, "tb.backup", "solution1")
-    assert os.path.isdir(dst_proj_dir)
 
-    src_kernel = os.path.join(src_proj_dir, "syn", "verilog", f"{kernel_name}.v")
-    assert os.path.isfile(src_kernel)
-
-    dst_kernel = os.path.join(dst_proj_dir, "syn", "verilog", f"{kernel_name}.v")
-    assert os.path.isfile(dst_kernel)
-
-    src_params = get_module_parameters(src_kernel, kernel_name)
-    dst_params = get_module_parameters(dst_kernel, kernel_name)
-
-    src_mems = get_memory_interfaces(src_params)
-    dst_mems = get_memory_interfaces(dst_params)
-
+def get_cosim_fix_strategy(
+    kernel_name: str,
+    src_mems: List[ApMemoryInterface],
+    dst_mems: List[ApMemoryInterface],
+) -> CosimFixStrategy:
     if len(src_mems) != len(dst_mems):
         raise RuntimeError("The number of ap_memory interfaces should be the same.")
     if [mem.name for mem in src_mems] != [mem.name for mem in dst_mems]:
@@ -494,6 +524,36 @@ def fix_cosim_kernels(dir: str) -> CosimFixStrategy:
                     )
 
     return strategy
+
+
+def fix_cosim_kernels(dir: str) -> CosimFixStrategy:
+    """Fix issues with co-simulation.
+    Returns directives for (source, destination).
+    """
+
+    dir = os.path.abspath(dir)  # canonicalize path
+    kernel_name = f"kernel_{os.path.basename(dir)}"
+
+    src_proj_dir = os.path.join(dir, "proj", "solution1")
+    assert os.path.isdir(src_proj_dir)
+
+    dst_proj_dir = os.path.join(dir, "tb.backup", "solution1")
+    assert os.path.isdir(dst_proj_dir)
+
+    src_kernel = os.path.join(src_proj_dir, "syn", "verilog", f"{kernel_name}.v")
+    assert os.path.isfile(src_kernel)
+
+    dst_kernel = os.path.join(dst_proj_dir, "syn", "verilog", f"{kernel_name}.v")
+    assert os.path.isfile(dst_kernel)
+
+    src_params = get_module_parameters(src_kernel, kernel_name)
+    dst_params = get_module_parameters(dst_kernel, kernel_name)
+
+    return get_cosim_fix_strategy(
+        kernel_name,
+        get_memory_interfaces(src_params),
+        get_memory_interfaces(dst_params),
+    )
 
 
 # ----------------------- Benchmark runners ---------------------------
@@ -609,6 +669,8 @@ csynth_design
 exit
 """
 
+TBGEN_VITIS_TCL_FILES = 'add_files {{{src_dir}/{src_base}.c}} -cflags "-I {src_dir} -I {work_dir}/utilities -D {pb_dataset}_DATASET" -csimflags "-I {src_dir} -I {work_dir}/utilities -D{pb_dataset}_DATASET"\\nadd_files -tb {{{src_dir}/{src_base}.c {work_dir}/utilities/polybench.c}} -cflags "-I {src_dir} -I {work_dir}/utilities -D{pb_dataset}_DATASET" -csimflags "-I {src_dir} -I {work_dir}/utilities -D{pb_dataset}_DATASET"\\n'
+
 TBGEN_VITIS_TCL = """
 open_project -reset tb
 add_files {{{src_dir}/{src_base}.c}} -cflags "-I {src_dir} -I {work_dir}/utilities -D {pb_dataset}_DATASET" -csimflags "-I {src_dir} -I {work_dir}/utilities -D{pb_dataset}_DATASET"
@@ -655,10 +717,29 @@ class PbFlow:
         self.status = 0
         self.errmsg = "No Error"
 
+        # Logger
+        self.logger = logging.getLogger("pb-flow")
+        self.logger.setLevel(logging.DEBUG)
+
     def run(self, src_file):
         """Run the whole pb-flow on the src_file (*.c)."""
         self.cur_file = src_file
         self.c_source = src_file  # Will be useful in some later stages
+
+        base_dir = os.path.dirname(src_file)
+
+        # Setup logging
+        log_file = os.path.join(base_dir, f"pb-flow.log")
+        if os.path.isfile(log_file):
+            os.remove(log_file)
+
+        formatter = logging.Formatter(
+            "[%(asctime)s][%(name)s][%(levelname)s] %(message)s"
+        )
+        fh = logging.FileHandler(log_file)
+        fh.setFormatter(formatter)
+        fh.setLevel(logging.DEBUG)
+        self.logger.addHandler(fh)
 
         # The whole flow
         try:
@@ -669,12 +750,17 @@ class PbFlow:
                 .split_statements()
                 .extract_top_func()
                 .polymer_opt()
-                .loop_transforms()
                 .constant_args()
+                .loop_transforms()
                 .array_partition()
                 .lower_llvm()
                 .vitis_opt()
-                .run_vitis()
+                .write_tb_tcl_by_llvm()
+                .run_vitis_on_phism()
+                .run_tbgen_csim()
+                .backup_csim_results()
+                .copy_design_from_phism_to_tb()
+                .run_cosim()
             )
         except Exception as e:
             self.status = 1
@@ -685,16 +771,26 @@ class PbFlow:
     ):
         """Single entry for running a command."""
         kwargs.update({"cwd": os.path.dirname(self.cur_file)})
+
         if cmd_list:
+            cmd_ = " \\\n\t".join(cmd_list)
+            self.logger.debug(f"{cmd_}")
             if self.options.dry_run:
                 print(" ".join(cmd_list))
                 return
-            return subprocess.run(cmd_list, **kwargs)
+            proc = subprocess.run(cmd_list, **kwargs)
         else:
+            self.logger.debug(f"{cmd}")
             if self.options.dry_run:
                 print(cmd)
                 return
-            return subprocess.run(cmd, **kwargs)
+            proc = subprocess.run(cmd, **kwargs)
+
+        cmd_str = cmd if cmd else " ".join(cmd_list)
+        if proc.returncode != 0:
+            raise RuntimeError(f"{cmd_str} failed.")
+
+        return proc
 
     def get_program_abspath(self, program: str) -> str:
         """Get the absolute path of a program."""
@@ -708,7 +804,8 @@ class PbFlow:
         tile_file = os.path.join(base_dir, "tile.sizes")
 
         if not self.options.tile_sizes:
-            shutil.rmtree(tile_file, ignore_errors=True)
+            if os.path.isfile(tile_file):
+                os.remove(tile_file)
             return self
 
         with open(tile_file, "w") as f:
@@ -865,6 +962,8 @@ class PbFlow:
             self.get_program_abspath("phism-opt"),
             src_file,
             f'-loop-transforms="max-span={self.options.max_span}"',
+            "-loop-redis-and-merge",
+            "-debug-only=loop-transforms",
         ]
 
         self.run_command(
@@ -887,10 +986,16 @@ class PbFlow:
         )
         log_file = self.cur_file.replace(".mlir", ".log")
 
+        array_partition_file = os.path.join(
+            os.path.dirname(self.cur_file), "array_partition.txt"
+        )
+        if os.path.isfile(array_partition_file):
+            os.remove(array_partition_file)
+
         args = [
             self.get_program_abspath("phism-opt"),
             src_file,
-            "-simple-array-partition",
+            "-simple-array-partition=dumpFile",
             "-debug-only=array-partition",
         ]
 
@@ -959,9 +1064,15 @@ class PbFlow:
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(
             ".llvm", ".vitis.llvm"
         )
+        log_file = self.cur_file.replace(".llvm", ".log")
 
         xln_names = get_top_func_param_names(
             self.c_source, self.work_dir, llvm_dir=os.path.join(self.root_dir, "llvm")
+        )
+
+        # Whether array partition has been successful.
+        xln_ap_enabled = os.path.isfile(
+            os.path.join(os.path.dirname(self.cur_file), "array_partition.txt")
         )
 
         args = [
@@ -980,15 +1091,260 @@ class PbFlow:
             "-xlnanno",
             '-xlntop="{}"'.format(get_top_func(src_file)),
             '-xlnnames="{}"'.format(",".join(xln_names)),
+            "-xlnunroll" if self.options.loop_transforms else "",
+            "-xlnarraypartition" if self.options.array_partition else "",
+            "-xln-ap-enabled" if xln_ap_enabled else "",
             "-strip-attr",
-            "-xlnunroll",
-            "-xlnarraypartition",
+            "-debug",
         ]
 
         self.run_command(
             cmd=" ".join(args),
             shell=True,
             stdout=open(self.cur_file, "w"),
+            stderr=open(log_file, "w"),
+            env=self.env,
+        )
+
+        return self
+
+    def write_tb_tcl_by_llvm(self):
+        """Generate the tbgen TCL file from LLVM passes."""
+        if self.options.skip_vitis:
+            return self
+
+        src_file = self.cur_file
+        base_dir = os.path.dirname(src_file)
+        top_func = get_top_func(src_file)
+
+        # Whether array partition has been successful.
+        xln_ap_enabled = os.path.isfile(os.path.join(base_dir, "array_partition.txt"))
+
+        tbgen_vitis_tcl = os.path.join(base_dir, "tbgen.tcl")
+
+        tb_tcl_log = "write_tb_tcl_by_llvm.log"
+
+        # Write the TCL for TBGEN.
+        args = [
+            os.path.join(self.root_dir, "llvm", "build", "bin", "opt"),
+            src_file,
+            "-S",
+            "-enable-new-pm=0",
+            '-load "{}"'.format(
+                os.path.join(self.root_dir, "build", "lib", "VhlsLLVMRewriter.so")
+            ),
+            f'-xlntop="{top_func}"',
+            "-xlntbgen",
+            "-xln-ap-enabled" if xln_ap_enabled else "",
+            "-xlntbfilesettings=$'{}'".format(
+                TBGEN_VITIS_TCL_FILES.format(
+                    src_dir=base_dir,
+                    src_base=os.path.basename(src_file).split(".")[0],
+                    work_dir=self.work_dir,
+                    pb_dataset=self.options.dataset,
+                )
+            ),
+            f'-xlntbtclnames="{tbgen_vitis_tcl}"',
+        ]
+
+        self.run_command(
+            cmd=" ".join(args),
+            shell=True,
+            stdout=open(tb_tcl_log, "w"),
+            env=self.env,
+        )
+
+        return self
+
+    def run_vitis_on_phism(self):
+        """Just run vitis_hls on the LLVM generated from Phism."""
+        if self.options.skip_vitis:
+            self.logger.warn("Vitis won't run since --skip-vitis has been set.")
+            return self
+
+        src_file = self.cur_file
+        base_dir = os.path.dirname(src_file)
+        top_func = get_top_func(src_file)
+
+        phism_vitis_tcl = os.path.join(base_dir, "phism.tcl")
+        run_config = "config_bind -effort high"
+        if self.options.debug:
+            run_config = ""
+
+        # Generate dummy C code as the interface for the top function.
+        dummy_src = src_file.replace(".llvm", ".dummy.c")
+        with open(dummy_src, "w") as f:
+            f.write("void {}() {{}}".format(top_func))
+
+        # Write the TCL for Phism.
+        with open(phism_vitis_tcl, "w") as f:
+            phism_run_config = [str(run_config)]
+            f.write(
+                PHISM_VITIS_TCL.format(
+                    src_file=src_file,
+                    dummy_src=dummy_src,
+                    top_func=top_func,
+                    config="\n".join(phism_run_config),
+                )
+            )
+
+        log_file = os.path.join(base_dir, "phism.vitis_hls.stdout.log")
+
+        # Clean up old results
+        shutil.rmtree(os.path.join(base_dir, "proj"), ignore_errors=True)
+        if os.path.isfile(log_file):
+            os.remove(log_file)
+
+        if self.options.dry_run:
+            return self
+
+        self.run_command(
+            cmd_list=["vitis_hls", phism_vitis_tcl],
+            stdout=open(log_file, "w"),
+            stderr=open(os.path.join(base_dir, "phism.vitis_hls.stderr.log"), "w"),
+            env=self.env,
+        )
+
+        return self
+
+    def run_tbgen_csim(self):
+        """Run the tbgen.tcl file. Assuming the Tcl file has been written."""
+        if not self.options.cosim:
+            self.logger.warn("Cosim won't run due to the input setting.")
+            return self
+        if self.options.skip_csim:
+            self.logger.warn("CSim is set to be skipped.")
+            return self
+
+        src_file = self.cur_file
+        base_dir = os.path.dirname(src_file)
+
+        tbgen_vitis_tcl = os.path.join(base_dir, "tbgen.tcl")
+        assert os.path.isfile(tbgen_vitis_tcl), f"{tbgen_vitis_tcl} should exist."
+
+        if self.options.dry_run:
+            return self
+
+        shutil.rmtree(os.path.join(base_dir, "tb"), ignore_errors=True)
+        log_file = os.path.join(base_dir, "tbgen.vitis_hls.stdout.log")
+        if os.path.isfile(log_file):
+            os.remove(log_file)
+
+        self.run_command(
+            cmd_list=["vitis_hls", tbgen_vitis_tcl],
+            stdout=open(log_file, "w"),
+            stderr=open(os.path.join(base_dir, "tbgen.vitis_hls.stderr.log"), "w"),
+            env=self.env,
+        )
+
+        return self
+
+    def backup_csim_results(self):
+        """Create a backup for the csim results."""
+        # TODO: make this --dry-run compatible
+        base_dir = os.path.dirname(self.cur_file)
+        tbgen_dir = os.path.join(base_dir, "tb")
+        assert os.path.isdir(
+            tbgen_dir
+        ), f"tbgen_dir={tbgen_dir} isn't there, please don't skip csim in this case."
+
+        csim_dir = os.path.join(base_dir, "tb.csim")
+        if os.path.isdir(csim_dir):
+            self.logger.debug(f"csim_dir={csim_dir} exists, deleting it ...")
+            shutil.rmtree(csim_dir)
+
+        # Backup the tbgen (csim) results.
+        shutil.copytree(tbgen_dir, csim_dir)
+
+        return self
+
+    def copy_design_from_phism_to_tb(self):
+        """Move design files from Phism output to the testbench directory."""
+        # TODO: make this --dry-run compatible
+        src_file = self.cur_file
+        base_dir = os.path.dirname(src_file)
+        top_func = get_top_func(src_file)
+
+        # Check results
+        phism_syn_verilog_dir = os.path.join(
+            base_dir, "proj", "solution1", "syn", "verilog"
+        )
+        assert os.path.isdir(
+            phism_syn_verilog_dir
+        ), f"{phism_syn_verilog_dir} doens't exist."
+
+        tbgen_syn_verilog_dir = os.path.join(
+            base_dir, "tb", "solution1", "syn", "verilog"
+        )
+        assert os.path.isdir(
+            tbgen_syn_verilog_dir
+        ), f"{tbgen_syn_verilog_dir} doens't exist."
+
+        tbgen_sim_verilog_dir = os.path.join(
+            base_dir, "tb", "solution1", "sim", "verilog"
+        )
+        assert os.path.isdir(
+            tbgen_sim_verilog_dir
+        ), f"{tbgen_sim_verilog_dir} doens't exist."
+
+        # Copy and paste the design files.
+        design_files = glob.glob(os.path.join(phism_syn_verilog_dir, "*.*"))
+        assert design_files, "There should exist design files."
+        for f in design_files:
+            shutil.copy(f, tbgen_syn_verilog_dir)
+
+        self.logger.debug(f"Design files found: \n" + "\n".join(design_files))
+
+        # Fix the inconsistency between the testbench and the design top.
+        phism_top = os.path.join(tbgen_syn_verilog_dir, f"{top_func}.v")
+        assert os.path.isfile(phism_top), f"The top module {phism_top} should exist."
+        autotb = os.path.join(tbgen_sim_verilog_dir, f"{top_func}.autotb.v")
+        assert os.path.isfile(autotb), f"The autotb file {autotb} should exist."
+
+        phism_params = get_module_parameters(phism_top, top_func)
+        self.logger.debug(
+            f"Parameters parsed from {phism_top}:\n" + "\n".join(phism_params)
+        )
+        autotb_params = get_autotb_parameters(autotb)
+        self.logger.debug(
+            f"Parameters parsed from {autotb}:\n" + "\n".join(autotb_params)
+        )
+
+        phism_mems = get_memory_interfaces(phism_params)
+        self.logger.debug(
+            f"Parsed memory interfaces from {phism_top}:\n"
+            + "\n".join([str(m) for m in phism_mems])
+        )
+        autotb_mems = get_memory_interfaces(autotb_params)
+        self.logger.debug(
+            f"Parsed memory interfaces from {autotb}:\n"
+            + "\n".join([str(m) for m in autotb_mems])
+        )
+
+        if not is_cosim_interface_matched(phism_mems, autotb_mems):
+            print(get_cosim_fix_strategy(top_func, phism_mems, autotb_mems))
+
+        return self
+
+    def run_cosim(self):
+        """Run cosim.tcl"""
+        if not self.options.cosim:
+            self.logger.debug("cosim is skipped since --cosim has not been set.")
+            return self
+
+        src_file = self.cur_file
+        base_dir = os.path.dirname(src_file)
+
+        cosim_vitis_tcl = os.path.join(base_dir, "cosim.tcl")
+        with open(cosim_vitis_tcl, "w") as f:
+            f.write(COSIM_VITIS_TCL)
+
+        log_file = os.path.join(base_dir, "cosim.vitis_hls.stdout.log")
+
+        self.run_command(
+            cmd_list=["vitis_hls", cosim_vitis_tcl],
+            stdout=open(log_file, "w"),
+            stderr=open(os.path.join(base_dir, "cosim.vitis_hls.stderr.log"), "w"),
             env=self.env,
         )
 
@@ -996,6 +1352,9 @@ class PbFlow:
 
     def run_vitis(self, strategy: Optional[CosimFixStrategy] = None):
         """Run synthesize/testbench generation/co-simulation."""
+        if self.options.skip_vitis:
+            return self
+
         src_file = self.cur_file
         base_dir = os.path.dirname(src_file)
         top_func = get_top_func(src_file)
@@ -1028,22 +1387,23 @@ class PbFlow:
                 )
             )
 
-        # Write the TCL for TBGEN.
-        with open(tbgen_vitis_tcl, "w") as f:
-            tbgen_run_config = [str(run_config)]
-            if strategy:
-                tbgen_run_config.extend(strategy.tbgen_directives)
+        # Keep it for now in case we need C baseline simulation?
+        # with open(tbgen_vitis_tcl, "w") as f:
+        #     tbgen_run_config = [str(run_config)]
+        #     if strategy:
+        #         tbgen_run_config.extend(strategy.tbgen_directives)
+        #     f.write(
+        #         TBGEN_VITIS_TCL.format(
+        #             src_dir=base_dir,
+        #             src_base=os.path.basename(src_file).split(".")[0],
+        #             top_func=top_func,
+        #             work_dir=self.work_dir,
+        #             config="\n".join(tbgen_run_config),
+        #             pb_dataset=self.options.dataset,
+        #         )
+        #     )
 
-            f.write(
-                TBGEN_VITIS_TCL.format(
-                    src_dir=base_dir,
-                    src_base=os.path.basename(src_file).split(".")[0],
-                    top_func=top_func,
-                    work_dir=self.work_dir,
-                    config="\n".join(tbgen_run_config),
-                    pb_dataset=self.options.dataset,
-                )
-            )
+        # Write the TCL for COSIM.
         with open(cosim_vitis_tcl, "w") as f:
             f.write(COSIM_VITIS_TCL)
 
@@ -1180,6 +1540,9 @@ def pb_flow_runner(options: PbFlowOptions):
     """Run pb-flow with the provided arguments."""
     assert os.path.isdir(options.pb_dir)
 
+    if not options.examples:
+        options.examples = POLYBENCH_EXAMPLES
+
     # Copy all the files from the source pb_dir to a target temporary directory.
     if not options.work_dir:
         options.work_dir = os.path.join(
@@ -1204,5 +1567,7 @@ def pb_flow_runner(options: PbFlowOptions):
     end = timer()
     print("Elapsed time: {:.6f} sec".format(end - start))
 
-    print(">>> Dumping report ... ")
-    pb_flow_dump_report(options)
+    # Will only dump report if Vitis has been run.
+    if not options.skip_vitis:
+        print(">>> Dumping report ... ")
+        pb_flow_dump_report(options)

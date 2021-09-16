@@ -16,10 +16,15 @@
 #include "llvm/IR/Value.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 
+#include <queue>
+
 using namespace llvm;
+
+#define DEBUG_TYPE "vhls_llvm"
 
 static cl::opt<std::string>
     XlnTop("xlntop", cl::desc("Specify the top function for Xilinx HLS."),
@@ -27,6 +32,41 @@ static cl::opt<std::string>
 static cl::opt<std::string>
     XlnNames("xlnnames", cl::desc("Specify the top function param names."),
              cl::value_desc("paramname"));
+static cl::opt<std::string> XlnTBTclNames(
+    "xlntbtclnames",
+    cl::desc(
+        "Specify the file name of the tcl script for test bench generation."),
+    cl::value_desc("tbname"));
+static cl::opt<std::string> XlnTBSources(
+    "xlntbfilesettings",
+    cl::desc(
+        "Specify the file settings for the test bench, e.g. \"add_files ...\""),
+    cl::value_desc("tbfiles"));
+static cl::opt<bool> XlnArrayPartitionEnabled(
+    "xln-ap-enabled", cl::desc("Whether array partition has been enabled"));
+
+/// Will abort if the Value is not a ConstantInt.
+static int64_t getI64Value(Value *value) {
+  assert(isa<ConstantInt>(value));
+
+  ConstantInt *CI = dyn_cast<ConstantInt>(value);
+  assert(CI->getBitWidth() == 64);
+
+  return CI->getSExtValue();
+}
+
+/// Get the dimensions from the provided array type.
+static SmallVector<int64_t> getDimsFromArrayType(ArrayType *type) {
+  SmallVector<int64_t> dims;
+  dims.push_back(type->getNumElements());
+
+  while (type && type->getArrayElementType()->isArrayTy()) {
+    type = dyn_cast<ArrayType>(type->getArrayElementType());
+    dims.push_back(type->getNumElements());
+  }
+
+  return dims;
+}
 
 namespace {
 
@@ -109,17 +149,6 @@ public:
 
     return true;
   }
-
-  /// Will abort if the Value is not a ConstantInt.
-  int64_t getI64Value(Value *value) {
-    assert(isa<ConstantInt>(value));
-
-    ConstantInt *CI = dyn_cast<ConstantInt>(value);
-    assert(CI->getBitWidth() == 64);
-
-    return CI->getSExtValue();
-  }
-
   /// From the scalar offset to a set of offset for each dim.
   /// There should be in total dimSize * 2 expressions.
   /// Dim size will be dims.size() * 2 since the dims in this Seq only has the
@@ -129,6 +158,12 @@ public:
     if (isa<ConstantInt>(offset))
       return;
 
+    LLVM_DEBUG({
+      dbgs() << "\n--------------------------------------\n";
+      dbgs() << "Processing offset for target pointer: \n";
+      ptr->dump();
+    });
+
     SmallVector<Value *> offsets;
     SmallVector<int64_t> strides;
 
@@ -137,7 +172,6 @@ public:
     unsigned dimSize = dims.size() * 2;
     for (unsigned i = 0; i < dimSize; ++i) {
       binOp = cast<BinaryOperator>(curr);
-      // binOp->dump();
       assert(binOp->getOpcode() == BinaryOperator::Add);
 
       Value *lhs = binOp->getOperand(0), *rhs = binOp->getOperand(1);
@@ -167,10 +201,29 @@ public:
     assert(offsets.size() == strides.size());
     assert(strides[0] == 1);
 
+    LLVM_DEBUG({
+      dbgs() << "Offsets: \n";
+      for (Value *offset : offsets)
+        offset->dump();
+      dbgs() << "Strides: ";
+      interleave(
+          strides, [&](const int64_t &stride) { dbgs() << stride; },
+          [&]() { dbgs() << ", "; });
+      dbgs() << "\n\n";
+    });
+
     SmallVector<int64_t> partialDims;
     for (unsigned i = 1; i < strides.size(); ++i)
       partialDims.push_back(strides[i] / strides[i - 1]);
     assert(partialDims.size() == dimSize - 1);
+
+    LLVM_DEBUG({
+      dbgs() << "Partial dims:\n";
+      interleave(
+          partialDims, [&](const int64_t &v) { dbgs() << v; },
+          [&]() { dbgs() << ", "; });
+      dbgs() << "\n";
+    });
 
     std::reverse(partialDims.begin(), partialDims.end());
     std::reverse(offsets.begin(), offsets.end());
@@ -191,11 +244,26 @@ public:
     LoadInst *load = new LoadInst(
         cast<PointerType>(restoredType)->getElementType(), bitCastInst,
         Twine(""), cast<Instruction>(bitCastInst->getNextNode()));
-    GetElementPtrInst *gep = GetElementPtrInst::Create(
-        rankedArrType, load, {offsets[0], offsets[1]}, Twine(""),
-        cast<Instruction>(load->getNextNode()));
+
+    SmallVector<Value *> gepInds;
+    for (unsigned i = 0; i < offsets.size() / 2; ++i)
+      gepInds.push_back(offsets[i]);
+    GetElementPtrInst *gep =
+        GetElementPtrInst::Create(rankedArrType, load, gepInds, Twine(""),
+                                  cast<Instruction>(load->getNextNode()));
     ptr = new BitCastInst(gep, ptr->getType(), Twine(""),
                           cast<Instruction>(gep)->getNextNode());
+
+    LLVM_DEBUG({
+      dbgs() << "Created the following instructions:\n";
+      bitCastInst->dump();
+      load->dump();
+      gep->dump();
+      ptr->dump();
+
+      dbgs() << "\nExpected result type:\n";
+      gep->getType()->dump();
+    });
   }
 
   /// Append insInst to the insertInsts list, and gather the value to be
@@ -629,6 +697,215 @@ static SmallVector<Function *> TopologicalSort(ArrayRef<Function *> funcs) {
   return sorted;
 }
 
+/// See the doc from rewriteModuloGepIndices.
+static Value *rewriteModulo(Value *value) {
+  SelectInst *selectInst = dyn_cast<SelectInst>(value);
+  if (!selectInst)
+    return nullptr;
+
+  ICmpInst *icmpInst = dyn_cast<ICmpInst>(selectInst->getCondition());
+  if (!icmpInst)
+    return nullptr;
+
+  BinaryOperator *addInst =
+      dyn_cast<BinaryOperator>(selectInst->getTrueValue());
+  if (!addInst || addInst->getOpcode() != BinaryOperator::Add)
+    return nullptr;
+
+  BinaryOperator *sremInst =
+      dyn_cast<BinaryOperator>(selectInst->getFalseValue());
+  if (!sremInst || sremInst->getOpcode() != BinaryOperator::SRem)
+    return nullptr;
+
+  // Now the pattern has been matched, do the rewrite.
+  selectInst->replaceAllUsesWith(sremInst);
+
+  // Clean up
+  selectInst->eraseFromParent();
+  addInst->eraseFromParent();
+  icmpInst->eraseFromParent();
+
+  return sremInst;
+}
+
+static bool isValidGepIndex(Value *value) {
+  return isa<SelectInst, PHINode, ConstantInt>(value);
+}
+
+/// We trace the address calculation (mul and add) chain for the GEP index.
+///
+/// It would looks like (from heat-3d) -
+///
+///     %val_9 = mul i64 %val_3, 400
+///     %val_10 = add i64 %val_9, 400 <-----  Add the offset value of 400
+///     %val_11 = mul i64 %val_5, 20
+///     %val_12 = add i64 %val_10, %val_11
+///     %val_13 = add i64 %val_12, %val_7
+///
+/// Without offset
+///
+///     %val_20 = mul i64 %val_3, 400
+///     %val_21 = mul i64 %val_5, 20
+///     %val_22 = add i64 %val_20, %val_21
+///     %val_23 = add i64 %val_22, %val_7
+///
+/// We cannot recover the indices when there is an offset at present.
+/// It will return all the found indices.
+/// The provided type argument is to verify the extracted information.
+static SmallVector<Value *> getGepIndices(GetElementPtrInst *inst, Type *type) {
+  LLVM_DEBUG({
+    dbgs() << "Recognizing GEP indices from ";
+    inst->dump();
+    dbgs() << "\n";
+    dbgs() << "Using type: ";
+    type->dump();
+    dbgs() << "\n\n";
+  });
+
+  if (inst->getNumIndices() != 1) {
+    LLVM_DEBUG(dbgs() << "Given GEP has 0 or more than 1 indices.");
+    return {};
+  }
+
+  SmallVector<Value *> operands;
+  // Will use this to check with the ranked array type.
+  SmallVector<int64_t> mulDims;
+
+  // First of all, all the adders will be connected by their LHS operator.
+  // If the input is already an index.
+  if (isValidGepIndex(*inst->idx_begin())) {
+    operands.push_back(*inst->idx_begin());
+  } else {
+    SmallVector<BinaryOperator *> addInsts;
+    BinaryOperator *addInst = dyn_cast<BinaryOperator>(*inst->idx_begin());
+    while (addInst && addInst->getOpcode() == BinaryOperator::Add) {
+      addInsts.push_back(addInst);
+      addInst = dyn_cast<BinaryOperator>(addInst->getOperand(0));
+    }
+
+    LLVM_DEBUG({
+      dbgs() << "Recognized adders:\n";
+      for (BinaryOperator *op : addInsts)
+        op->dump();
+      dbgs() << "\n\n";
+    });
+
+    for (unsigned i = 0; i < addInsts.size(); ++i) {
+      if (i == addInsts.size() - 1)
+        operands.push_back(addInsts[i]->getOperand(0));
+      operands.push_back(addInsts[i]->getOperand(1));
+    }
+
+    LLVM_DEBUG({
+      dbgs() << "Adder operands:\n";
+      for (Value *operand : operands)
+        operand->dump();
+      dbgs() << "\n\n";
+    });
+
+    // Replace operand with multipliers.
+    for (unsigned i = 0; i < operands.size(); ++i) {
+      BinaryOperator *mulInst = dyn_cast<BinaryOperator>(operands[i]);
+      if (!mulInst || mulInst->getOpcode() != BinaryOperator::Mul)
+        continue;
+      if (!isa<ConstantInt>(mulInst->getOperand(1))) {
+        LLVM_DEBUG({
+          dbgs() << "The RHS of a multiplied index is not a constant integer.";
+          mulInst->dump();
+        });
+        return {};
+      }
+
+      mulDims.push_back(getI64Value(mulInst->getOperand(1)));
+      operands[i] = mulInst->getOperand(0);
+    }
+  }
+
+  LLVM_DEBUG({
+    dbgs() << "Updated operands by mul:\n";
+    for (Value *operand : operands)
+      operand->dump();
+    dbgs() << "\n\n";
+  });
+
+  // Check if every operand can be a valid GEP index.
+  for (Value *operand : operands) {
+    if (!isValidGepIndex(operand)) {
+      LLVM_DEBUG({
+        dbgs() << "Found an invalid operand:";
+        operand->dump();
+      });
+      return {};
+    }
+  }
+
+  // Finally, check whether the type matches with the parsed results.
+  ArrayType *arrayType = cast<ArrayType>(type->getPointerElementType());
+  SmallVector<int64_t> dims = getDimsFromArrayType(arrayType);
+  if (dims.size() != operands.size()) {
+    LLVM_DEBUG({
+      dbgs() << "Number of dims from the type: " << dims.size()
+             << " doesn't match the number of operands: " << operands.size()
+             << "\n";
+    });
+    return {};
+  }
+
+  SmallVector<int64_t> parDims;
+  for (unsigned i = 1; i < dims.size(); ++i)
+    parDims.push_back(dims[i] * (parDims.empty() ? 1 : parDims.back()));
+
+  LLVM_DEBUG({
+    dbgs() << "Partial dims resolved from type: ";
+    interleaveComma(parDims, dbgs());
+    dbgs() << "\nPartial dims resolved from multipliers: ";
+    interleaveComma(mulDims, dbgs());
+    dbgs() << "\n";
+  });
+
+  if (parDims != mulDims) {
+    LLVM_DEBUG(dbgs() << "Partial dims don't match.\n");
+    return {};
+  }
+
+  std::reverse(operands.begin(), operands.end());
+
+  return operands;
+}
+
+/// Look at the indices passed to the given GEP and see if there is any chance
+/// we can make the modulo expressions simplier given that the address of GEP
+/// should be positive.
+///
+/// For example, transform:
+///      %0 = srem i64 %arg, 32
+///      %1 = icmp slt i64 %0, 0
+///      %2 = add i64 %0, 32
+///      %3 = select i1 %1, i64 %2, i64 %0
+///
+/// to:
+///      %0 = srem i64 %arg, 32
+///
+static void rewriteModuloGepIndices(SmallVectorImpl<Value *> &indices) {
+  for (unsigned i = 0; i < indices.size(); ++i)
+    if (isa<SelectInst>(indices[i])) {
+      Value *newInd = rewriteModulo(indices[i]);
+      if (!newInd) {
+        LLVM_DEBUG({
+          dbgs() << "Failed to rewrite index at " << i << " : ";
+          indices[i]->dump();
+        });
+        continue;
+      }
+
+      LLVM_DEBUG({
+        dbgs() << "Rewritten index at " << i << " to ";
+        newInd->dump();
+      });
+      indices[i] = newInd;
+    }
+}
+
 /// This helper function convert the MemRef value represented by an
 /// aggregated type to a ranked N-d array. The function interface, as well
 /// as the internal usage of GEP will be updated.
@@ -680,12 +957,24 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
   // same as the original one, just have additional arguments that are
   // ranked arrays.
   for (Function *F : Funcs) {
+    LLVM_DEBUG({
+      dbgs() << "\nTransforming function:  \n\n";
+      F->dump();
+    });
     ValueToValueMapTy RankedArrVMap;
     auto &Seqs = FuncToSeqs[F];
 
+    // -----------------------------------------------------------------
+    // Step 1: create a rank-duplicated interface.
     Function *NewFunc =
         duplicateFunctionsWithRankedArrays(F, Seqs, RankedArrVMap);
+    LLVM_DEBUG({
+      dbgs() << "\nDuplicated function:  \n\n";
+      NewFunc->dump();
+    });
 
+    // -----------------------------------------------------------------
+    // Step 2: update the GEP expressions.
     SmallVector<Instruction *, 4> GEPList;
     for (BasicBlock &BB : *NewFunc)
       for (Instruction &I : BB)
@@ -695,12 +984,53 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
     // Create new GEPs that use the ranked arrays and remove the old ones.
     unsigned NumNewGEP = 0;
     for (Instruction *I : GEPList) {
-      Instruction *NewGEP =
-          duplicateGEPWithRankedArray(I, RankedArrVMap, NumNewGEP);
+      // Simplify the address calculation expressions to make Vitis happy.
+      // It is easier to work on the original GEP.
+      SmallVector<Value *> indices =
+          getGepIndices(cast<GetElementPtrInst>(I),
+                        RankedArrVMap[I->getOperand(0)]->getType());
+
+      Instruction *NewGEP;
+      if (indices.empty()) {
+        NewGEP = duplicateGEPWithRankedArray(I, RankedArrVMap, NumNewGEP);
+      } else {
+        // We will directly use the resolved indices.
+        // Try to rewrite the modulo expressions.
+        rewriteModuloGepIndices(indices);
+
+        LLVM_DEBUG({
+          dbgs() << "Indices to use: \n";
+          for (Value *index : indices)
+            index->dump();
+        });
+
+        // We can directly use the indices from the rewrite to get the new GEP.
+        /// TODO: should be more careful.
+        Value *ptr = RankedArrVMap[I->getOperand(0)];
+        assert(ptr);
+
+        indices.push_back(ConstantInt::get(indices.front()->getType(), 0));
+        std::reverse(indices.begin(), indices.end());
+
+        NewGEP = GetElementPtrInst::CreateInBounds(ptr, indices, Twine(""),
+                                                   I->getNextNode());
+        LLVM_DEBUG({
+          dbgs() << "Newly generated GEP: ";
+          NewGEP->dump();
+        });
+      }
+
       I->replaceAllUsesWith(NewGEP);
       I->eraseFromParent();
     }
 
+    LLVM_DEBUG({
+      dbgs() << "\nGEP updated function: \n\n";
+      NewFunc->dump();
+    });
+
+    // -----------------------------------------------------------------
+    // Step 3: update callers within the new function.
     // If there is any caller.
     SmallVector<CallInst *> Callers;
     for (BasicBlock &BB : *NewFunc)
@@ -728,6 +1058,12 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
         if (RankedArrVMap.count(Arg))
           Args.push_back(RankedArrVMap[Arg]);
         else if (isa<BitCastInst>(Arg)) {
+          LLVM_DEBUG({
+            dbgs() << "Found ";
+            Arg->dump();
+            dbgs() << " as a result from bitcast. Need to transform it into "
+                      "the multi-dimensional type.\n";
+          });
           // Or it is a result from a bitcast expression chain.
           // This chain is based on the instructions generated by the
           // processOffset function.
@@ -764,6 +1100,25 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
           toErase.append({bitCastInst, gep, loadInst, src});
         }
       }
+
+      LLVM_DEBUG({
+        dbgs() << "Creating caller for " << FuncToNew[Callee]->getName()
+               << ", signature: ";
+        FuncToNew[Callee]->getFunctionType()->dump();
+        dbgs() << "-----------------------\n\n";
+        dbgs() << "Argument list:\n";
+        for (auto arg : enumerate(Args)) {
+          dbgs() << arg.index() << "\t-> ";
+          arg.value()->dump();
+        }
+        dbgs() << "\nArgument types:\n";
+        for (auto arg : enumerate(Args)) {
+          dbgs() << arg.index() << "\t-> ";
+          arg.value()->getType()->dump();
+          dbgs() << "\t-> ";
+          FuncToNew[Callee]->getArg(arg.index())->getType()->dump();
+        }
+      });
 
       // New caller.
       CallInst::Create(FuncToNew[Callee], Args, Twine(), Caller);
@@ -997,8 +1352,9 @@ struct XilinxUnrollPass : public ModulePass {
         auto DT = llvm::DominatorTree(F);
         LoopInfo LI(DT);
 
-        for (auto &loop : LI)
-          unrollLoop(loop);
+        if (!LI.empty())
+          for (auto &loop : LI)
+            unrollLoop(loop);
       }
 
     return false;
@@ -1022,7 +1378,8 @@ getPartitionInfo(ArrayType *arrayTy) {
   } while (arrayTy);
 
   // The dimension number of arrays after Polymer should be a even number
-  assert(d % 2 == 0);
+  if (d % 2 != 0)
+    return {};
 
   partitions.resize(d / 2);
   return partitions;
@@ -1039,6 +1396,8 @@ struct XilinxArrayPartitionPass : public ModulePass {
   XilinxArrayPartitionPass() : ModulePass(ID) {}
 
   bool runOnModule(Module &M) override {
+    if (!XlnArrayPartitionEnabled)
+      return true;
 
     // Declare array partition APIs in Vitis HLS LLVM frontend
     auto mod = &M;
@@ -1080,6 +1439,149 @@ struct XilinxArrayPartitionPass : public ModulePass {
 
 } // namespace
 
+namespace {
+
+/// Generate test bench tcl script for Xilinx Vitis. This pass parses the LLVM
+/// IR and generates compatible test bench for the design in LLVM IR.
+struct XilinxTBTclGenPass : public ModulePass {
+  static char ID;
+  XilinxTBTclGenPass() : ModulePass(ID) {}
+
+  bool runOnModule(Module &M) override {
+    std::error_code ec;
+    llvm::raw_fd_ostream XlnTBTcl(XlnTBTclNames, ec);
+
+    XlnTBTcl << "open_project -reset tb\n"
+             << XlnTBSources << "set_top " << XlnTop << "\n"
+             << "open_solution -reset solution1\n"
+             << "set_part \"zynq\"\n"
+             << "create_clock -period \"100MHz\"\n"
+             << "config_bind -effort high\n";
+
+    for (auto &F : M)
+      if (F.getName() == XlnTop) {
+        for (unsigned i = 0; i < F.arg_size(); i++) {
+          auto arg = F.getArg(i);
+          if (arg->getType()->isPointerTy() &&
+              arg->getType()->getPointerElementType()->isArrayTy()) {
+            auto arrayTy =
+                dyn_cast<ArrayType>(arg->getType()->getPointerElementType());
+            if (XlnArrayPartitionEnabled) {
+              auto partitions = getPartitionInfo(arrayTy);
+              for (auto partition : partitions)
+                XlnTBTcl << "set_directive_array_partition -dim "
+                         << partition.first << " -factor " << partition.second
+                         << " -type block \"" << XlnTop << "\" "
+                         << arg->getName() << "\n";
+            }
+          }
+        }
+      }
+
+    XlnTBTcl << "csim_design\n"
+             << "csynth_design\n"
+             << "cosim_design\n"
+             << "exit\n";
+    return false;
+  }
+};
+
+} // namespace
+
+static void nameLoop(Loop *loop, int &loopCounter) {
+  SmallVector<Metadata *, 4> Args;
+
+  // Reserve operand 0 for loop id self reference.
+  LLVMContext &Context = loop->getHeader()->getContext();
+  auto TempNode = MDNode::getTemporary(Context, None);
+  Args.push_back(TempNode.get());
+
+  // Loop name
+  Metadata *nameVals[] = {
+      MDString::get(Context, "llvm.loop.name"),
+      MDString::get(Context, "VITIS_LOOP_" + std::to_string(loopCounter))};
+  Args.push_back(MDNode::get(Context, nameVals));
+
+  // Set the first operand to itself.
+  MDNode *LoopID = MDNode::get(Context, Args);
+  LoopID->replaceOperandWith(0, LoopID);
+  loop->setLoopID(LoopID);
+  loopCounter++;
+
+  if (!loop->isInnermost())
+    for (auto &subloop : loop->getSubLoops())
+      nameLoop(subloop, loopCounter);
+}
+
+namespace {
+
+/// Assign a name to each loop and enable flattening for Xilinx Vitis.
+struct XilinxNameLoopPass : public ModulePass {
+  static char ID;
+  XilinxNameLoopPass() : ModulePass(ID) {}
+
+  bool runOnModule(Module &M) override {
+
+    int loopCounter = 0;
+    for (auto &F : M)
+      if (F.getName() != XlnTop && !F.empty()) {
+        auto DT = llvm::DominatorTree(F);
+        LoopInfo LI(DT);
+
+        if (!LI.empty())
+          for (auto &loop : LI)
+            nameLoop(loop, loopCounter);
+      }
+
+    return false;
+  }
+};
+
+} // namespace
+
+// -----------------------------------------------------------------------------------
+// Mark no inline for kernels'
+
+/// Check if the input function is a scop.stmt based on the pattern S[0-1]+
+static bool isScopStmt(Function &F) {
+  StringRef name = F.getName();
+  if (!name.startswith("S"))
+    return false;
+
+  StringRef suffix = name.drop_front();
+  if (any_of(suffix, [](const char &c) { return !isdigit(c); }))
+    return false;
+
+  return true;
+}
+
+namespace {
+
+struct AnnotateNoInlinePass : public ModulePass {
+  static char ID; // Pass identification, replacement for typeid
+  AnnotateNoInlinePass() : ModulePass(ID) {}
+
+  bool runOnModule(Module &M) override {
+    bool modified = false;
+    for (auto &F : M) {
+      if (!isScopStmt(F)) {
+        if (!F.hasFnAttribute(Attribute::NoInline)) {
+          modified = true;
+          F.addFnAttr(Attribute::NoInline);
+        }
+      } else {
+        modified = true;
+        // Should always inline scop.stmt.
+        F.addFnAttr(Attribute::AlwaysInline);
+      }
+    }
+
+    return modified;
+  }
+};
+
+} // namespace
+
 char ConvertMemRefToArray::ID = 0;
 static RegisterPass<ConvertMemRefToArray>
     X1("mem2ptr",
@@ -1116,3 +1618,15 @@ char XilinxArrayPartitionPass::ID = 7;
 static RegisterPass<XilinxArrayPartitionPass> X8(
     "xlnarraypartition",
     "Partition arrays in the top-level function arguments for Xilinx Vitis.");
+
+char XilinxTBTclGenPass::ID = 8;
+static RegisterPass<XilinxTBTclGenPass>
+    X9("xlntbgen", "Generate test bench tcl script for Xilinx Vitis.");
+
+char XilinxNameLoopPass::ID = 9;
+static RegisterPass<XilinxNameLoopPass> X10("xlnloopname",
+                                            "Name loops for Xilinx Vitis.");
+
+char AnnotateNoInlinePass::ID = 10;
+static RegisterPass<AnnotateNoInlinePass>
+    X11("anno-noinline", "Annotate noinline to the functions.");

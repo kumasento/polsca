@@ -1,6 +1,7 @@
 //===- ArrayPartitions.cc - Partitioning arrays ------------------ C++-===//
 
 #include "phism/mlir/Transforms/PhismTransforms.h"
+#include "phism/mlir/Transforms/Utils.h"
 
 #include "mlir/Analysis/AffineAnalysis.h"
 #include "mlir/Analysis/AffineStructures.h"
@@ -26,6 +27,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SetVector.h"
 
+#include <fstream>
 #include <queue>
 #include <set>
 
@@ -35,25 +37,15 @@ using namespace mlir;
 using namespace llvm;
 using namespace phism;
 
-static bool hasPeCaller(FuncOp f) {
-  bool ret = false;
-  f.walk([&](CallOp caller) {
-    if (caller->hasAttr("scop.pe"))
-      ret = true;
-  });
-  return ret;
-}
-
-static FuncOp getTopFunction(ModuleOp m) {
-  FuncOp top = nullptr;
-  m.walk([&](FuncOp f) {
-    if (hasPeCaller(f)) {
-      assert(!top && "There should be only one top function.");
-      top = f;
-    }
-  });
-  return top;
-}
+namespace {
+struct ArrayPartitionPipelineOptions
+    : public mlir::PassPipelineOptions<ArrayPartitionPipelineOptions> {
+  Option<bool> dumpFile{
+      *this, "dumpFile",
+      llvm::cl::desc("Enable dumping the tile info into a file."),
+      llvm::cl::init(false)};
+};
+} // namespace
 
 /// -------------------------- Dependence analysis ---------------------------
 
@@ -361,7 +353,6 @@ static void arrayPartition(FuncOp f, ModuleOp m, OpBuilder &b) {
     if (checkAccessOverlap(info, m, partitions))
       continue;
 
-    memref.dump();
     llvm::errs() << "Partitions: \n";
     for (auto it : partitions) {
       for (auto bound : enumerate(it)) {
@@ -484,13 +475,17 @@ static MapVector<Value, TileInfo> getTilingInfo(ArrayRef<Value> memrefs,
   MapVector<Value, TileInfo> tiling;
   // See if they have simple access patterns that can be directly extracted.
   for (Value memref : memrefs) {
+    LLVM_DEBUG({
+      dbgs() << "Trying to tile: ";
+      memref.dump();
+    });
     // Check if all the users of memref are scop.pe callers.
     if (any_of(memref.getUsers(), [&](Operation *op) {
           return !isa<CallOp>(op) || !op->hasAttr("scop.pe");
         })) {
       LLVM_DEBUG({
         memref.dump();
-        llvm::errs() << " has been skipped since it has non PE caller users.\n";
+        dbgs() << " has been skipped since it has non PE caller users.\n";
       });
       continue;
     }
@@ -520,10 +515,10 @@ static MapVector<Value, TileInfo> getTilingInfo(ArrayRef<Value> memrefs,
 
     // Debug the accesses.
     LLVM_DEBUG({
-      memref.dump();
-      for (MemRefAccess &access : accesses) {
+      dbgs() << "Found the following accesses:\n";
+      for (MemRefAccess &access : accesses)
         access.opInst->dump();
-      }
+      dbgs() << "---------------------------\n";
     });
 
     // Check if all accesses are idenity maps.
@@ -559,11 +554,22 @@ static MapVector<Value, TileInfo> getTilingInfo(ArrayRef<Value> memrefs,
       for (AffineForOp forOp : forOps) {
         // Filter out the result that are constants. We don't care about them.
         // ()[s0] -> (70, s0 * 32 + 32) will be ()[s0] -> (s0 * 32 + 32)
-        tmpLbMaps.push_back(
-            filterExtraConstantResults(forOp.getLowerBoundMap()));
-        tmpUbMaps.push_back(
-            filterExtraConstantResults(forOp.getUpperBoundMap()));
+        AffineMap lbMap = filterExtraConstantResults(forOp.getLowerBoundMap());
+        AffineMap ubMap = filterExtraConstantResults(forOp.getUpperBoundMap());
+
+        if (lbMap.isSingleConstant() && ubMap.isSingleConstant()) {
+          llvm::errs() << "There appears a pair of constant loop bounds. We "
+                          "cannot deal with this yet.\n";
+          isIdentical = false;
+          break;
+        }
+
+        tmpLbMaps.push_back(lbMap);
+        tmpUbMaps.push_back(ubMap);
       }
+
+      if (!isIdentical)
+        break;
 
       // Simply ignore those with constant lower upper bounds.
       // They won't cause much trouble (heuristically) if we don't partition
@@ -584,8 +590,10 @@ static MapVector<Value, TileInfo> getTilingInfo(ArrayRef<Value> memrefs,
         std::swap(tmpUbMaps, ubMaps);
       } else {
         isIdentical = tmpLbMaps == lbMaps && tmpUbMaps == ubMaps;
-        if (!isIdentical)
+        if (!isIdentical) {
+          LLVM_DEBUG(dbgs() << "Found not identical loop bound maps.\n");
           break;
+        }
       }
     }
 
@@ -625,11 +633,19 @@ static MapVector<Value, TileInfo> getTilingInfo(ArrayRef<Value> memrefs,
     // Abandon further processing if the tile size cannot match memref's type.
     if ((int64_t)tileSizes.size() !=
         memref.getType().cast<MemRefType>().getRank()) {
-      llvm::errs() << "Tile sizes are not equal to the rank of the memref.\n";
+      LLVM_DEBUG(
+          dbgs() << "Tile sizes are not equal to the rank of the memref.\n");
       continue;
     }
 
     // The resolved memref tiling.
+    LLVM_DEBUG({
+      dbgs() << "Memref ";
+      memref.dump();
+      dbgs() << " has been tiled into: ";
+      interleaveComma(tileSizes, dbgs());
+      dbgs() << "\n\n";
+    });
     tiling[memref] = TileInfo{tileSizes, memref};
   }
 
@@ -863,7 +879,8 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
               Value operand = op->getOperand(i);
 
               // The index for a tiled memref will be from an affine.apply op.
-              AffineApplyOp applyOp = operand.getDefiningOp<AffineApplyOp>();
+              mlir::AffineApplyOp applyOp =
+                  operand.getDefiningOp<mlir::AffineApplyOp>();
               if (!applyOp)
                 continue;
               assert(applyOp.getNumOperands() == 1);
@@ -871,9 +888,12 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
               Value indvar = applyOp.getOperand(0);
 
               mlir::AffineForOp forOp = getForInductionVarOwner(indvar);
-              // forOp.dump();
-              assert(forOp.getLowerBoundOperands().size() == 1 ||
-                     forOp.getUpperBoundOperands().size() == 1);
+
+              // At least one bound should have a single operand (for the loop
+              // indvar).
+              if (!(forOp.getLowerBoundOperands().size() == 1 ||
+                    forOp.getUpperBoundOperands().size() == 1))
+                continue;
 
               Value source = forOp.getUpperBoundOperands().size() == 1
                                  ? forOp.getUpperBoundOperands()[0]
@@ -887,6 +907,13 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
             if (indices.empty())
               std::swap(tmpIndices, indices);
             else {
+              LLVM_DEBUG({
+                op->dump();
+                if (tmpIndices != indices) {
+                  llvm::interleaveComma(tmpIndices, llvm::errs());
+                  llvm::interleaveComma(indices, llvm::errs());
+                }
+              });
               assert(tmpIndices == indices);
               std::swap(tmpIndices, indices);
             }
@@ -927,7 +954,6 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
           memref::SubViewOp subView =
               b.create<memref::SubViewOp>(caller.getLoc(), newTiledMemRefType,
                                           newMemRef, offsets, sizes, strides);
-          subView.dump();
 
           // Strip the affine map
           MemRefType castMemRefType =
@@ -955,8 +981,6 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
       tiling[vmap.lookup(worklist[j])] = tiling[worklist[j]];
       worklist[j] = vmap.lookup(worklist[j]);
     }
-
-    newFunc.dump();
 
     prevFunc = newFunc;
   }
@@ -1023,17 +1047,32 @@ static void renameTiledFunctions(ModuleOp m, OpBuilder &b) {
 
 struct SimpleArrayPartitionPass
     : public PassWrapper<SimpleArrayPartitionPass, OperationPass<ModuleOp>> {
+  bool dumpFile = false;
+
+  SimpleArrayPartitionPass() = default;
+  SimpleArrayPartitionPass(const SimpleArrayPartitionPass &pass) {}
+  SimpleArrayPartitionPass(const ArrayPartitionPipelineOptions &options)
+      : dumpFile(options.dumpFile) {}
+
   void runOnOperation() override {
     ModuleOp m = getOperation();
     OpBuilder b(m.getContext());
 
     FuncOp top = getTopFunction(m);
+    if (!top) {
+      m.emitRemark() << "No top function found for array partition. Have you "
+                        "forgot to annotate {scop.pe} to callers?\n";
+      return;
+    }
 
     SmallVector<CallOp> callers;
     top.walk([&](CallOp caller) {
       if (caller->hasAttr("scop.pe"))
         callers.push_back(caller);
     });
+
+    if (callers.empty())
+      return;
 
     // Get all the memrefs that can be partitioned.
     // TODO: consider scratchpad as well?
@@ -1044,6 +1083,18 @@ struct SimpleArrayPartitionPass
 
     // Get the tiling info.
     auto tiling = getTilingInfo(memrefs, m);
+    for (Value memref : memrefs)
+      if (!tiling.count(memref)) {
+        LLVM_DEBUG({
+          dbgs() << "There is at least one memref: ";
+          memref.dump();
+          dbgs() << " has not partitioned. We discard the whole case since the "
+                    "performance gain would be minor.\n";
+        });
+        return;
+      }
+
+    auto tilingCopy = tiling;
 
     // Tile the top function.
     FuncOp newTop = tileTopFunction(top, memrefs, tiling, m, b);
@@ -1053,15 +1104,33 @@ struct SimpleArrayPartitionPass
 
     // Reset names.
     renameTiledFunctions(m, b);
+
+    // If array partition has been succesful, dump a file that stores the
+    // corresponding information.
+    if (dumpFile) {
+      std::ofstream infoFile;
+      infoFile.open("array_partition.txt", std::ios::out);
+      if (infoFile.is_open()) {
+        for (auto &it : tilingCopy) {
+          interleave(
+              it.second.sizes,
+              [&](const int64_t &size) { infoFile << std::to_string(size); },
+              [&]() { infoFile << ", "; });
+          infoFile << '\n';
+        }
+      }
+    }
   }
 };
 } // namespace
 
 void phism::registerArrayPartitionPasses() {
   PassRegistration<ArrayPartitionPass>("array-partition", "Partition arrays");
-  PassPipelineRegistration<>(
-      "simple-array-partition", "Partition arrays", [&](OpPassManager &pm) {
-        pm.addPass(std::make_unique<SimpleArrayPartitionPass>());
+
+  PassPipelineRegistration<ArrayPartitionPipelineOptions>(
+      "simple-array-partition", "Partition arrays",
+      [&](OpPassManager &pm, const ArrayPartitionPipelineOptions &options) {
+        pm.addPass(std::make_unique<SimpleArrayPartitionPass>(options));
         pm.addPass(createCanonicalizerPass());
       });
 }

@@ -36,26 +36,27 @@ mkdir -p build
 cd build
 
 # Configure CMake
-export CC=gcc
-export CXX=g++ 
-cmake ../llvm \
-  -DLLVM_ENABLE_PROJECTS="mlir;llvm;clang" \
-  -DCMAKE_BUILD_TYPE=RELEASE \
-  -DLLVM_BUILD_EXAMPLES=OFF \
-  -DLLVM_TARGETS_TO_BUILD="host" \
-  -DLLVM_OPTIMIZED_TABLEGEN=ON \
-  -DLLVM_ENABLE_OCAMLDOC=OFF \
-  -DLLVM_ENABLE_BINDINGS=OFF \
-  -DLLVM_INSTALL_UTILS=ON \
-  -DLLVM_ENABLE_ASSERTIONS=ON \
-  -DBUILD_POLYMER=ON \
-  -DPLUTO_LIBCLANG_PREFIX="$(llvm-config --prefix)" \
-  -G "${CMAKE_GENERATOR}"
+if [ ! -f "CMakeCache.txt" ]; then
+  export CC=gcc
+  export CXX=g++ 
+  cmake ../llvm \
+    -DLLVM_ENABLE_PROJECTS="mlir;llvm;clang" \
+    -DCMAKE_BUILD_TYPE=RELEASE \
+    -DLLVM_BUILD_EXAMPLES=OFF \
+    -DLLVM_TARGETS_TO_BUILD="host" \
+    -DLLVM_OPTIMIZED_TABLEGEN=ON \
+    -DLLVM_ENABLE_OCAMLDOC=OFF \
+    -DLLVM_ENABLE_BINDINGS=OFF \
+    -DLLVM_INSTALL_UTILS=ON \
+    -DLLVM_ENABLE_ASSERTIONS=ON \
+    -DBUILD_POLYMER=ON \
+    -DPLUTO_LIBCLANG_PREFIX="$(llvm-config --prefix)" \
+    -G "${CMAKE_GENERATOR}"
+fi 
  
 # Run building
-cmake --build . --target all -- -j "$(nproc)"
-
-if [ "${TARGET}" == "ci" ]; then
-  # Run test
-  cmake --build . --target check-llvm -- -j "$(nproc)"
+if [ "${CMAKE_GENERATOR}" == "Ninja" ]; then
+  ninja
+else 
+  make -j "$(nproc)"
 fi
