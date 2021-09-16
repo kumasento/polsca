@@ -451,32 +451,26 @@ def is_read_write_conflict(
     )
 
 
-def fix_cosim_kernels(dir: str) -> CosimFixStrategy:
-    """Fix issues with co-simulation.
-    Returns directives for (source, destination).
-    """
+def is_cosim_interface_matched(
+    src_mems: List[ApMemoryInterface], dst_mems: List[ApMemoryInterface]
+) -> bool:
+    if len(src_mems) != len(dst_mems):
+        return False
 
-    dir = os.path.abspath(dir)  # canonicalize path
-    kernel_name = f"kernel_{os.path.basename(dir)}"
+    for src, dst in zip(src_mems, dst_mems):
+        if src.get_num_ports() != dst.get_num_ports():
+            return False
+        if set(src.ports) != set(dst.ports):
+            return False
 
-    src_proj_dir = os.path.join(dir, "proj", "solution1")
-    assert os.path.isdir(src_proj_dir)
+    return True
 
-    dst_proj_dir = os.path.join(dir, "tb.backup", "solution1")
-    assert os.path.isdir(dst_proj_dir)
 
-    src_kernel = os.path.join(src_proj_dir, "syn", "verilog", f"{kernel_name}.v")
-    assert os.path.isfile(src_kernel)
-
-    dst_kernel = os.path.join(dst_proj_dir, "syn", "verilog", f"{kernel_name}.v")
-    assert os.path.isfile(dst_kernel)
-
-    src_params = get_module_parameters(src_kernel, kernel_name)
-    dst_params = get_module_parameters(dst_kernel, kernel_name)
-
-    src_mems = get_memory_interfaces(src_params)
-    dst_mems = get_memory_interfaces(dst_params)
-
+def get_cosim_fix_strategy(
+    kernel_name: str,
+    src_mems: List[ApMemoryInterface],
+    dst_mems: List[ApMemoryInterface],
+) -> CosimFixStrategy:
     if len(src_mems) != len(dst_mems):
         raise RuntimeError("The number of ap_memory interfaces should be the same.")
     if [mem.name for mem in src_mems] != [mem.name for mem in dst_mems]:
@@ -530,6 +524,36 @@ def fix_cosim_kernels(dir: str) -> CosimFixStrategy:
                     )
 
     return strategy
+
+
+def fix_cosim_kernels(dir: str) -> CosimFixStrategy:
+    """Fix issues with co-simulation.
+    Returns directives for (source, destination).
+    """
+
+    dir = os.path.abspath(dir)  # canonicalize path
+    kernel_name = f"kernel_{os.path.basename(dir)}"
+
+    src_proj_dir = os.path.join(dir, "proj", "solution1")
+    assert os.path.isdir(src_proj_dir)
+
+    dst_proj_dir = os.path.join(dir, "tb.backup", "solution1")
+    assert os.path.isdir(dst_proj_dir)
+
+    src_kernel = os.path.join(src_proj_dir, "syn", "verilog", f"{kernel_name}.v")
+    assert os.path.isfile(src_kernel)
+
+    dst_kernel = os.path.join(dst_proj_dir, "syn", "verilog", f"{kernel_name}.v")
+    assert os.path.isfile(dst_kernel)
+
+    src_params = get_module_parameters(src_kernel, kernel_name)
+    dst_params = get_module_parameters(dst_kernel, kernel_name)
+
+    return get_cosim_fix_strategy(
+        kernel_name,
+        get_memory_interfaces(src_params),
+        get_memory_interfaces(dst_params),
+    )
 
 
 # ----------------------- Benchmark runners ---------------------------
@@ -1135,6 +1159,7 @@ class PbFlow:
     def run_vitis_on_phism(self):
         """Just run vitis_hls on the LLVM generated from Phism."""
         if self.options.skip_vitis:
+            self.logger.warn("Vitis won't run since --skip-vitis has been set.")
             return self
 
         src_file = self.cur_file
@@ -1185,10 +1210,10 @@ class PbFlow:
     def run_tbgen_csim(self):
         """Run the tbgen.tcl file. Assuming the Tcl file has been written."""
         if not self.options.cosim:
-            self.logger.debug("Cosim won't run due to the input setting.")
+            self.logger.warn("Cosim won't run due to the input setting.")
             return self
         if self.options.skip_csim:
-            self.logger.debug("CSim is set to be skipped.")
+            self.logger.warn("CSim is set to be skipped.")
             return self
 
         src_file = self.cur_file
@@ -1256,7 +1281,7 @@ class PbFlow:
         ), f"{tbgen_syn_verilog_dir} doens't exist."
 
         tbgen_sim_verilog_dir = os.path.join(
-            base_dir, "tb.csim", "solution1", "sim", "verilog"
+            base_dir, "tb", "solution1", "sim", "verilog"
         )
         assert os.path.isdir(
             tbgen_sim_verilog_dir
@@ -1295,6 +1320,9 @@ class PbFlow:
             f"Parsed memory interfaces from {autotb}:\n"
             + "\n".join([str(m) for m in autotb_mems])
         )
+
+        if not is_cosim_interface_matched(phism_mems, autotb_mems):
+            print(get_cosim_fix_strategy(top_func, phism_mems, autotb_mems))
 
         return self
 
