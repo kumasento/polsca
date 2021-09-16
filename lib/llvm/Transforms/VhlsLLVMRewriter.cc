@@ -1131,8 +1131,6 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
     FuncToNew[F] = replaceFunction(F, NewFunc);
     FuncToNew[F]->addFnAttr(Attribute::NoInline);
 
-    // FuncToNew[F]->dump();
-
     // Finally, delete the duplicate.
     NewFunc->eraseFromParent();
   }
