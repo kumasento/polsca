@@ -1,6 +1,6 @@
 # Phism: Polyhedral High-Level Synthesis in MLIR
 
-[![Self-hosted Build and Test](https://github.com/kumasento/phism/actions/workflows/self-hosted-build-and-test.yml/badge.svg)](https://github.com/kumasento/phism/actions/workflows/self-hosted-build-and-test.yml)
+[![Build and Test](https://github.com/kumasento/phism/actions/workflows/buildAndTest.yml/badge.svg)](https://github.com/kumasento/phism/actions/workflows/buildAndTest.yml)
 
 ## What is Phism?
 
