@@ -995,7 +995,7 @@ class PbFlow:
         args = [
             self.get_program_abspath("phism-opt"),
             src_file,
-            "-simple-array-partition=dumpFile",
+            '-simple-array-partition="dumpFile flatten"',
             "-debug-only=array-partition",
         ]
 
@@ -1093,6 +1093,7 @@ class PbFlow:
             '-xlnnames="{}"'.format(",".join(xln_names)),
             "-xlnunroll" if self.options.loop_transforms else "",
             "-xlnarraypartition" if self.options.array_partition else "",
+            "-xln-ap-flattened",
             "-xln-ap-enabled" if xln_ap_enabled else "",
             "-strip-attr",
             "-debug",
@@ -1135,6 +1136,7 @@ class PbFlow:
             ),
             f'-xlntop="{top_func}"',
             "-xlntbgen",
+            "-xln-ap-flattened",
             "-xln-ap-enabled" if xln_ap_enabled else "",
             "-xlntbfilesettings=$'{}'".format(
                 TBGEN_VITIS_TCL_FILES.format(

@@ -44,6 +44,8 @@ static cl::opt<std::string> XlnTBSources(
     cl::value_desc("tbfiles"));
 static cl::opt<bool> XlnArrayPartitionEnabled(
     "xln-ap-enabled", cl::desc("Whether array partition has been enabled"));
+static cl::opt<bool> XlnArrayPartitionFlattened(
+    "xln-ap-flattened", cl::desc("Whether array partition has been flattened"));
 
 /// Will abort if the Value is not a ConstantInt.
 static int64_t getI64Value(Value *value) {
@@ -169,7 +171,8 @@ public:
 
     Value *curr = offset;
     BinaryOperator *binOp;
-    unsigned dimSize = dims.size() * 2;
+    unsigned dimSize =
+        XlnArrayPartitionFlattened ? dims.size() + 1 : dims.size() * 2;
     for (unsigned i = 0; i < dimSize; ++i) {
       binOp = cast<BinaryOperator>(curr);
       assert(binOp->getOpcode() == BinaryOperator::Add);
@@ -246,7 +249,8 @@ public:
         Twine(""), cast<Instruction>(bitCastInst->getNextNode()));
 
     SmallVector<Value *> gepInds;
-    for (unsigned i = 0; i < offsets.size() / 2; ++i)
+    for (unsigned i = 0;
+         i < (XlnArrayPartitionFlattened ? 1 : offsets.size() / 2); ++i)
       gepInds.push_back(offsets[i]);
     GetElementPtrInst *gep =
         GetElementPtrInst::Create(rankedArrType, load, gepInds, Twine(""),
@@ -766,6 +770,8 @@ static SmallVector<Value *> getGepIndices(GetElementPtrInst *inst, Type *type) {
     LLVM_DEBUG(dbgs() << "Given GEP has 0 or more than 1 indices.");
     return {};
   }
+  ArrayType *arrayType = cast<ArrayType>(type->getPointerElementType());
+  SmallVector<int64_t> dims = getDimsFromArrayType(arrayType);
 
   SmallVector<Value *> operands;
   // Will use this to check with the ranked array type.
@@ -781,6 +787,8 @@ static SmallVector<Value *> getGepIndices(GetElementPtrInst *inst, Type *type) {
     while (addInst && addInst->getOpcode() == BinaryOperator::Add) {
       addInsts.push_back(addInst);
       addInst = dyn_cast<BinaryOperator>(addInst->getOperand(0));
+      if (addInsts.size() == dims.size())
+        break;
     }
 
     LLVM_DEBUG({
@@ -840,8 +848,6 @@ static SmallVector<Value *> getGepIndices(GetElementPtrInst *inst, Type *type) {
   }
 
   // Finally, check whether the type matches with the parsed results.
-  ArrayType *arrayType = cast<ArrayType>(type->getPointerElementType());
-  SmallVector<int64_t> dims = getDimsFromArrayType(arrayType);
   if (dims.size() != operands.size()) {
     LLVM_DEBUG({
       dbgs() << "Number of dims from the type: " << dims.size()
@@ -1364,22 +1370,22 @@ struct XilinxUnrollPass : public ModulePass {
 /// Return a set of <dimension, size> as the partition information for the
 /// current array type. The function only extacts the first half dimensions as
 /// the others are the dimensions for the tilied units
-std::vector<std::pair<unsigned, unsigned>>
-getPartitionInfo(ArrayType *arrayTy) {
-  std::vector<std::pair<unsigned, unsigned>> partitions;
+static SmallVector<std::pair<unsigned, unsigned>>
+getPartitionInfo(ArrayType *arrayTy, bool flatten) {
+  SmallVector<std::pair<unsigned, unsigned>> partitions;
   unsigned d = 0;
   do {
     partitions.push_back(
         std::pair<unsigned, unsigned>(d + 1, arrayTy->getNumElements()));
     arrayTy = dyn_cast<ArrayType>(arrayTy->getElementType());
-    d++;
+    ++d;
   } while (arrayTy);
 
-  // The dimension number of arrays after Polymer should be a even number
-  if (d % 2 != 0)
-    return {};
+  if (flatten)
+    partitions.pop_back_n(partitions.size() - 1);
+  else
+    partitions.pop_back_n(partitions.size() / 2);
 
-  partitions.resize(d / 2);
   return partitions;
 }
 
@@ -1416,7 +1422,8 @@ struct XilinxArrayPartitionPass : public ModulePass {
               arg->getType()->getPointerElementType()->isArrayTy()) {
             auto arrayTy =
                 dyn_cast<ArrayType>(arg->getType()->getPointerElementType());
-            auto partitions = getPartitionInfo(arrayTy);
+            auto partitions =
+                getPartitionInfo(arrayTy, XlnArrayPartitionFlattened);
             for (auto partition : partitions) {
               auto int32ty = Type::getInt32Ty(mod->getContext());
               OperandBundleDef bd = OperandBundleDef(
@@ -1465,7 +1472,8 @@ struct XilinxTBTclGenPass : public ModulePass {
             auto arrayTy =
                 dyn_cast<ArrayType>(arg->getType()->getPointerElementType());
             if (XlnArrayPartitionEnabled) {
-              auto partitions = getPartitionInfo(arrayTy);
+              auto partitions =
+                  getPartitionInfo(arrayTy, XlnArrayPartitionFlattened);
               for (auto partition : partitions)
                 XlnTBTcl << "set_directive_array_partition -dim "
                          << partition.first << " -factor " << partition.second
