@@ -44,6 +44,9 @@ struct ArrayPartitionPipelineOptions
       *this, "dumpFile",
       llvm::cl::desc("Enable dumping the tile info into a file."),
       llvm::cl::init(false)};
+  Option<bool> flatten{*this, "flatten",
+                       llvm::cl::desc("Enable flattening the partition dims."),
+                       llvm::cl::init(false)};
 };
 } // namespace
 
@@ -442,26 +445,48 @@ namespace {
 struct TileInfo {
   SmallVector<int64_t> sizes;
   Value memref;
+  SmallVector<int64_t> shape;
 
   TileInfo() {}
   TileInfo(SmallVector<int64_t> tileSizes, Value memref)
-      : sizes{tileSizes.begin(), tileSizes.end()}, memref{memref} {}
+      : sizes{tileSizes.begin(), tileSizes.end()}, memref{memref}, shape{} {
+    auto memShape = memref.getType().cast<MemRefType>().getShape();
+    shape = {memShape.begin(), memShape.end()};
+  }
+
+  SmallVector<int64_t> getTileDims() const {
+    SmallVector<int64_t> tileDims(sizes.size());
+    for (unsigned i = 0; i < tileDims.size(); ++i)
+      tileDims[i] = (int64_t)ceil((double)shape[i] / sizes[i]);
+    return tileDims;
+  }
 };
 } // namespace
 
 /// Tile the input MemRefType statically.
+/// If passed tileOnly = true, we won't include the partition dims.
 static MemRefType getTiledMemRefType(const TileInfo &tileInfo,
-                                     bool tileOnly = false) {
+                                     bool tileOnly = false,
+                                     bool flatten = false) {
   MemRefType src = tileInfo.memref.getType().cast<MemRefType>();
   assert(src.getAffineMaps().empty() &&
          "We don't support memref with affine maps.");
 
   SmallVector<int64_t> dstShape;
   auto srcShape = src.getShape();
-  if (!tileOnly)
-    for (unsigned i = 0; i < srcShape.size(); ++i)
-      dstShape.push_back(
-          (int64_t)ceil((double)srcShape[i] / tileInfo.sizes[i]));
+  if (!tileOnly) {
+    if (!flatten)
+      for (unsigned i = 0; i < srcShape.size(); ++i)
+        dstShape.push_back(
+            (int64_t)ceil((double)srcShape[i] / tileInfo.sizes[i]));
+    else {
+      int64_t dim = 1;
+      for (unsigned i = 0; i < srcShape.size(); ++i)
+        dim *= (int64_t)ceil((double)srcShape[i] / tileInfo.sizes[i]);
+      dstShape.push_back(dim);
+    }
+  }
+
   for (unsigned i = 0; i < srcShape.size(); ++i)
     dstShape.push_back(tileInfo.sizes[i]);
 
@@ -652,9 +677,369 @@ static MapVector<Value, TileInfo> getTilingInfo(ArrayRef<Value> memrefs,
   return tiling;
 }
 
+static FuncOp createTiledCallee(Value memref, mlir::FuncOp callee,
+                                mlir::CallOp caller, const TileInfo &tileInfo,
+                                bool flatten, unsigned stage, OpBuilder &b) {
+  // Get the type of a MemRef tile.
+  MemRefType newMemRefType =
+      getTiledMemRefType(tileInfo, /*tileOnly=*/true, /*flatten=*/flatten);
+
+  LLVM_DEBUG({
+    dbgs() << " * New memref type: ";
+    newMemRefType.dump();
+    dbgs() << "\n";
+  });
+
+  // New callee argument types.
+  SmallVector<Type> newArgTypes;
+  for (auto arg : caller.getArgOperands()) {
+    if (arg == memref)
+      newArgTypes.push_back(newMemRefType);
+    else
+      newArgTypes.push_back(arg.getType());
+  }
+
+  unsigned memId =
+      find(caller.getArgOperands(), memref) - caller.arg_operand_begin();
+  assert(memId < caller.getNumOperands());
+
+  // New callee function type.
+  FunctionType newFuncType =
+      b.getFunctionType(newArgTypes, callee->getResultTypes());
+  b.setInsertionPointAfter(callee);
+  FuncOp newCallee = b.create<FuncOp>(
+      callee.getLoc(),
+      std::string(callee.getName()) + "_" + std::to_string(stage), newFuncType);
+  Block *entry = newCallee.addEntryBlock();
+  b.setInsertionPointToEnd(entry);
+  b.create<mlir::ReturnOp>(callee.getLoc());
+  LLVM_DEBUG({
+    dbgs() << " * New callee created (body empty):\n";
+    newCallee.dump();
+  });
+
+  // Argument map.
+  BlockAndValueMapping vmap;
+  vmap.map(callee.getArguments(), newCallee.getArguments());
+
+  // Iterate every operation in the original callee and clone it to the
+  // new one.
+  b.setInsertionPointToStart(entry);
+  for (Operation &op : callee.getBlocks().begin()->getOperations()) {
+    if (isa<mlir::ReturnOp>(op))
+      continue;
+    b.clone(op, vmap);
+  }
+
+  LLVM_DEBUG(dbgs() << "------> Rewriting the body of the new callee.\n");
+  // Rewrite the loop iterators for memory accesses.
+  // For now I think the new iterator should be %i mod tile_size.
+  // So we would simply create the corresponding new iterators, and use
+  // them to replace the old ones applied to the tiled memref.
+  newCallee.walk([&](Operation *op) {
+    if (!isa<AffineLoadOp, AffineStoreOp>(op))
+      return;
+
+    LLVM_DEBUG({
+      dbgs() << "---> Working on: ";
+      op->dump();
+    });
+    // This affine.load/store op should have accessed the target memref.
+    if (find(op->getOperands(), newCallee.getArgument(memId)) ==
+        op->operand_end())
+      return;
+
+    b.setInsertionPoint(op);
+    unsigned dim = 0; // the current memref dim.
+    for (auto operand : enumerate(op->getOperands())) {
+      if (!isForInductionVar(operand.value()))
+        continue;
+
+      // The affine map that does the modulo operation.
+      AffineExpr modExpr =
+          b.getAffineDimExpr(0) % b.getAffineConstantExpr(tileInfo.sizes[dim]);
+      AffineMap affMap = AffineMap::get(1, 0, modExpr);
+      AffineApplyOp newInd =
+          b.create<AffineApplyOp>(op->getLoc(), affMap, operand.value());
+
+      op->setOperand(operand.index(), newInd);
+      ++dim;
+    }
+  });
+
+  return newCallee;
+}
+
+static bool isAffineLoadOrStoreOnTargetMemRef(Operation *op, Value memref) {
+  if (!isa<mlir::AffineLoadOp, AffineStoreOp>(op))
+    return false;
+  if (mlir::AffineLoadOp loadOp = dyn_cast<mlir::AffineLoadOp>(op))
+    if (loadOp.getMemRef() != memref)
+      return false;
+  if (mlir::AffineStoreOp storeOp = dyn_cast<mlir::AffineStoreOp>(op))
+    if (storeOp.getMemRef() != memref)
+      return false;
+  return true;
+}
+
+static SmallVector<Value> resolveTileIndices(Operation *op, Value memref) {
+  if (!isAffineLoadOrStoreOnTargetMemRef(op, memref)) {
+    LLVM_DEBUG(
+        dbgs()
+        << "-> Skipped operation of type " << op->getName()
+        << " since it is not an affine.load/store on the target memref.\n");
+    return {};
+  }
+
+  LLVM_DEBUG({
+    dbgs() << " * Found affine.load/store operation: ";
+    op->dump();
+  });
+
+  SmallVector<Value> indices;
+  // The first operand for affine.store would be the value to be stored.
+  unsigned addrStartIdx = isa<mlir::AffineLoadOp>(op) ? 1 : 2;
+
+  for (unsigned i = addrStartIdx; i < op->getNumOperands(); ++i) {
+    Value operand = op->getOperand(i);
+
+    // The index for a tiled memref will be from an affine.apply op.
+    mlir::AffineApplyOp applyOp = operand.getDefiningOp<mlir::AffineApplyOp>();
+    if (!applyOp) {
+      LLVM_DEBUG({
+        dbgs() << " * The " << i
+               << "-th operand is not from an affine.apply op: ";
+        operand.dump();
+      });
+      continue;
+    }
+    LLVM_DEBUG({
+      dbgs() << " * Got affine.apply op for index " << i << ": ";
+      operand.dump();
+    });
+
+    // Constraints on the apply operation.
+    assert(applyOp.getNumOperands() == 1);
+    assert(applyOp.getAffineMap().getNumResults() == 1);
+    assert(applyOp.getAffineMap().getResult(0).getKind() ==
+           AffineExprKind::Mod);
+
+    Value indvar = applyOp.getOperand(0);
+    // At least one bound should have a single operand (for the loop
+    // indvar).
+    mlir::AffineForOp forOp = getForInductionVarOwner(indvar);
+    LLVM_DEBUG(dbgs() << "   * Lower bound: " << forOp.getLowerBoundMap()
+                      << "\n");
+    LLVM_DEBUG(dbgs() << "   * Upper bound: " << forOp.getUpperBoundMap()
+                      << "\n");
+
+    if (!(forOp.getLowerBoundOperands().size() == 1 ||
+          forOp.getUpperBoundOperands().size() == 1))
+      continue;
+
+    Value source = forOp.getUpperBoundOperands().size() == 1
+                       ? forOp.getUpperBoundOperands()[0]
+                       : forOp.getLowerBoundOperands()[0];
+    assert(forOp.getLowerBoundOperands().size() < 1 ||
+           source == forOp.getLowerBoundOperands()[0]);
+
+    LLVM_DEBUG(dbgs() << "   * Top-level index: " << source);
+    indices.push_back(source);
+  }
+
+  return indices;
+}
+
+static Value createSubViewOfTiledMemRefWithFullRank(
+    ArrayRef<Value> indices, Value tiledMemRef, unsigned rank,
+    const BlockAndValueMapping &vmap, OpBuilder &b) {
+  assert(indices.size() == rank / 2 &&
+         "The size of the tile indices should be the same as rank / 2.");
+  SmallVector<OpFoldResult> offsets, sizes, strides;
+
+  auto memRefType = tiledMemRef.getType().cast<MemRefType>();
+
+  // Figure out the offsets.
+  // Need to know which tile loop has used by the accessed memref.
+  for (unsigned i = 0; i < rank / 2; ++i)
+    offsets.push_back(vmap.lookup(indices[i]));
+  for (unsigned i = 0; i < rank / 2; ++i)
+    offsets.push_back(b.getIndexAttr(0));
+
+  // Figure out sizes.
+  for (unsigned i = 0; i < rank / 2; ++i)
+    sizes.push_back(b.getIndexAttr(1));
+  for (unsigned i = 0; i < rank / 2; ++i)
+    sizes.push_back(b.getIndexAttr(memRefType.getShape()[i + rank / 2]));
+
+  // Figure out strides.
+  for (unsigned i = 0; i < rank; ++i)
+    strides.push_back(b.getIndexAttr(1));
+
+  // Get the resulting type for the subview. Otherwise, it won't
+  // match.
+  MemRefType newTiledMemRefType =
+      memref::SubViewOp::inferRankReducedResultType(
+          rank / 2, memRefType.cast<MemRefType>(), offsets, sizes, strides)
+          .cast<MemRefType>();
+
+  // The final subview operaion.
+  memref::SubViewOp subView =
+      b.create<memref::SubViewOp>(tiledMemRef.getLoc(), newTiledMemRefType,
+                                  tiledMemRef, offsets, sizes, strides);
+
+  // Strip the affine map
+  MemRefType castMemRefType = MemRefType::get(newTiledMemRefType.getShape(),
+                                              memRefType.getElementType());
+  memref::CastOp cast =
+      b.create<memref::CastOp>(tiledMemRef.getLoc(), subView, castMemRefType);
+
+  return cast;
+}
+
+static Value createSubViewOfTiledMemRefWithFlattenedRank(
+    ArrayRef<Value> indices, Value tiledMemRef, unsigned rank,
+    const BlockAndValueMapping &vmap, const TileInfo &tileInfo, OpBuilder &b) {
+  assert(indices.size() == rank - 1 &&
+         "The size of the tile indices should be the same as rank - 1.");
+  SmallVector<OpFoldResult> offsets, sizes, strides;
+
+  auto memRefType = tiledMemRef.getType().cast<MemRefType>();
+
+  // Create the flattened tile dims.
+  auto tileDims = tileInfo.getTileDims();
+
+  SmallVector<int64_t> parDims(tileDims.size());
+  parDims[tileDims.size() - 1] = 1;
+  for (unsigned i = 1; i < tileDims.size(); ++i)
+    parDims[tileDims.size() - i - 1] =
+        parDims[tileDims.size() - i] * tileDims[tileDims.size() - i];
+
+  AffineExpr indexExpr = b.getAffineConstantExpr(0);
+  for (unsigned i = 0; i < parDims.size(); ++i)
+    indexExpr =
+        indexExpr + b.getAffineConstantExpr(parDims[i]) * b.getAffineDimExpr(i);
+  SmallVector<Value> mappedIndices;
+  for (Value idx : indices)
+    mappedIndices.push_back(vmap.lookup(idx));
+  Value index = b.create<AffineApplyOp>(
+      tiledMemRef.getLoc(), AffineMap::get(parDims.size(), 0, indexExpr),
+      mappedIndices);
+
+  // Figure out the offsets.
+  // Need to know which tile loop has used by the accessed memref.
+  offsets.push_back(index);
+  for (unsigned i = 0; i < rank - 1; ++i)
+    offsets.push_back(b.getIndexAttr(0));
+
+  // Figure out sizes.
+  sizes.push_back(b.getIndexAttr(1));
+  for (unsigned i = 0; i < rank - 1; ++i)
+    sizes.push_back(b.getIndexAttr(memRefType.getShape()[i + 1]));
+
+  // Figure out strides.
+  for (unsigned i = 0; i < rank; ++i)
+    strides.push_back(b.getIndexAttr(1));
+
+  // Get the resulting type for the subview. Otherwise, it won't
+  // match.
+  MemRefType newTiledMemRefType =
+      memref::SubViewOp::inferRankReducedResultType(
+          rank - 1, memRefType.cast<MemRefType>(), offsets, sizes, strides)
+          .cast<MemRefType>();
+
+  // The final subview operaion.
+  memref::SubViewOp subView =
+      b.create<memref::SubViewOp>(tiledMemRef.getLoc(), newTiledMemRefType,
+                                  tiledMemRef, offsets, sizes, strides);
+
+  // Strip the affine map
+  MemRefType castMemRefType = MemRefType::get(newTiledMemRefType.getShape(),
+                                              memRefType.getElementType());
+  memref::CastOp cast =
+      b.create<memref::CastOp>(tiledMemRef.getLoc(), subView, castMemRefType);
+
+  return cast;
+}
+
+static Value buildSubViewForTiledMemRef(FuncOp tiledCallee, mlir::CallOp caller,
+                                        Value tiledMemRef, unsigned argIdx,
+                                        bool flatten, const TileInfo &tileInfo,
+                                        OpBuilder &b) {
+  LLVM_DEBUG({
+    dbgs() << "\n---> Building memref.subview of ";
+    tiledMemRef.dump();
+  });
+
+  // Get the static rank.
+  MemRefType tiledMemRefType = tiledMemRef.getType().cast<MemRefType>();
+  unsigned rank = tiledMemRefType.getRank();
+
+  LLVM_DEBUG(dbgs() << "-> Iterate every op in the tiled callee to find the "
+                       "correct subview indices for memref type "
+                    << tiledMemRefType << ".\n");
+  // Look into the callee to find which tile loop has been used to
+  // access the corresponding tiled memory dimensions.
+  SmallVector<Value> indices;
+  tiledCallee.walk([&](Operation *op) {
+    auto indices_ = resolveTileIndices(op, tiledCallee.getArgument(argIdx));
+    if (indices_.empty())
+      return;
+
+    LLVM_DEBUG({
+      dbgs() << " * Resolved indices:\n";
+      for (auto ind : enumerate(indices_))
+        dbgs() << '\t' << ind.index() << ": " << ind.value();
+      dbgs() << '\n';
+    });
+
+    if (indices.empty()) {
+      LLVM_DEBUG(
+          dbgs() << "-> Initialise the final indices by the current ones.\n");
+      std::swap(indices_, indices);
+    } else {
+      LLVM_DEBUG({
+        if (indices_ != indices) {
+          dbgs() << "-> Currently resolved indices don't match the aggregated "
+                    "ones.\n";
+          dbgs() << "Currently resolved:\n";
+          for (auto ind : enumerate(indices_))
+            dbgs() << '\t' << ind.index() << ": " << ind.value();
+          dbgs() << '\n';
+          dbgs() << "Aggregated:\n";
+          for (auto ind : enumerate(indices))
+            dbgs() << '\t' << ind.index() << ": " << ind.value();
+          dbgs() << '\n';
+        } else {
+          dbgs() << " * Matches previously resolved indices.\n";
+        }
+      });
+      assert(indices_ == indices &&
+             "Currently resolved indices should match the aggregated ones.");
+
+      std::swap(indices_, indices);
+    }
+  });
+
+  BlockAndValueMapping vmap;
+  vmap.map(tiledCallee.getArguments(), caller.getArgOperands());
+
+  b.setInsertionPoint(caller);
+  if (flatten)
+    return createSubViewOfTiledMemRefWithFlattenedRank(indices, tiledMemRef,
+                                                       rank, vmap, tileInfo, b);
+  return createSubViewOfTiledMemRefWithFullRank(indices, tiledMemRef, rank,
+                                                vmap, b);
+}
+
 static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
-                              MapVector<Value, TileInfo> &tiling, ModuleOp m,
-                              OpBuilder &b) {
+                              MapVector<Value, TileInfo> &tiling, bool flatten,
+                              ModuleOp m, OpBuilder &b) {
+  LLVM_DEBUG(
+      dbgs() << "\n===================================================\n\n"
+             << " * Tiling the top function: " << top.getName()
+             << " with flatten set to " << flatten << ".\n\n");
+
   // Things to process.
   SmallVector<Value> worklist;
   for (auto &it : tiling)
@@ -664,7 +1049,7 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
   FuncOp prevFunc = top;
 
   for (unsigned stage = 0; stage < worklist.size(); ++stage) {
-    LLVM_DEBUG({ llvm::errs() << ">>> Processing stage: " << stage << '\n'; });
+    LLVM_DEBUG(dbgs() << "\n------> Processing stage: " << stage << "\n\n");
 
     // Rebuild the caller list.
     SmallVector<mlir::CallOp> callers;
@@ -677,19 +1062,19 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
     TileInfo tileInfo = tiling[memref];
 
     LLVM_DEBUG({
-      llvm::errs() << "Tiling memref: ";
+      dbgs() << " * Tiling memref:\n";
       memref.dump();
-      llvm::errs() << " into [ ";
-      for (auto size : tileInfo.sizes)
-        llvm::errs() << size << " ";
-      llvm::errs() << "]\n";
+      dbgs() << " * Resulting tile sizes: [";
+      interleaveComma(tileInfo.sizes, dbgs());
+      dbgs() << "]\n";
     });
 
     // -------------------------------------------------------------------
     // Step 1: create a function of with an interface of the tiled input.
-    MemRefType newMemRefType = getTiledMemRefType(tileInfo);
+    MemRefType newMemRefType =
+        getTiledMemRefType(tileInfo, /*tileOnly=*/false, /*flatten=*/flatten);
     LLVM_DEBUG({
-      llvm::errs() << "New MemRef type: ";
+      llvm::errs() << " * New MemRef type: ";
       newMemRefType.dump();
       llvm::errs() << '\n';
     });
@@ -707,7 +1092,7 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
     FunctionType newFuncType =
         b.getFunctionType(newArgTypes, prevFunc->getResultTypes());
     LLVM_DEBUG({
-      llvm::errs() << "New function type: ";
+      llvm::errs() << " * New function type: ";
       newFuncType.dump();
       llvm::errs() << '\n';
     });
@@ -725,103 +1110,76 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
     b.setInsertionPointToEnd(entry);
     b.create<mlir::ReturnOp>(prevFunc.getLoc());
 
+    LLVM_DEBUG({
+      dbgs() << " * New function created (body empty):\n";
+      newFunc.dump();
+    });
+
     // Map from the old callee to the new one.
     SmallDenseMap<FuncOp, FuncOp> calleeMap;
+
+    LLVM_DEBUG(dbgs() << "------> Creating new caller/callees.\n");
 
     // Create the __tiled version for each PE that has been affected by the
     // tiling, i.e., uses the memref.
     for (mlir::CallOp caller : callers) {
       // This caller should use the target memref.
-      if (find(caller.getArgOperands(), memref) == caller.arg_operand_end())
+      if (find(caller.getArgOperands(), memref) == caller.arg_operand_end()) {
+        LLVM_DEBUG({
+          dbgs() << "------> Skipped caller: ";
+          caller.dump();
+          dbgs() << " since it doesn't use the target memref.\n";
+        });
         continue;
+      }
+
+      LLVM_DEBUG({
+        dbgs() << "------> Working on caller: ";
+        caller.dump();
+      });
 
       FuncOp callee = cast<FuncOp>(m.lookupSymbol(caller.getCallee()));
-
-      // Get the type of a MemRef tile.
-      MemRefType newMemRefType =
-          getTiledMemRefType(tileInfo, /*tileOnly=*/true);
-
-      // New callee argument types.
-      SmallVector<Type> newArgTypes;
-      for (auto arg : caller.getArgOperands()) {
-        if (arg == memref)
-          newArgTypes.push_back(newMemRefType);
-        else
-          newArgTypes.push_back(arg.getType());
-      }
-
-      unsigned memId =
-          find(caller.getArgOperands(), memref) - caller.arg_operand_begin();
-
-      // New callee function type.
-      FunctionType newFuncType =
-          b.getFunctionType(newArgTypes, callee->getResultTypes());
-      b.setInsertionPointAfter(callee);
-      FuncOp newCallee = b.create<FuncOp>(callee.getLoc(),
-                                          std::string(callee.getName()) + "_" +
-                                              std::to_string(stage),
-                                          newFuncType);
-      Block *entry = newCallee.addEntryBlock();
-      b.setInsertionPointToEnd(entry);
-      b.create<mlir::ReturnOp>(callee.getLoc());
-
-      // Argument map.
-      BlockAndValueMapping vmap;
-      vmap.map(callee.getArguments(), newCallee.getArguments());
-
-      // Iterate every operation in the original callee and clone it to the
-      // new one.
-      b.setInsertionPointToStart(entry);
-      for (Operation &op : callee.getBlocks().begin()->getOperations()) {
-        if (isa<mlir::ReturnOp>(op))
-          continue;
-        b.clone(op, vmap);
-      }
-
-      // Rewrite the loop iterators for memory accesses.
-      // For now I think the new iterator should be %i mod tile_size.
-      // So we would simply create the corresponding new iterators, and use
-      // them to replace the old ones applied to the tiled memref.
-      newCallee.walk([&](Operation *op) {
-        if (!isa<AffineLoadOp, AffineStoreOp>(op))
-          return;
-        // This affine.load/store op should have accessed the target memref.
-        if (find(op->getOperands(), newCallee.getArgument(memId)) ==
-            op->operand_end())
-          return;
-
-        b.setInsertionPoint(op);
-        unsigned dim = 0; // the current memref dim.
-        for (auto operand : enumerate(op->getOperands())) {
-          if (!isForInductionVar(operand.value()))
-            continue;
-
-          // The affine map that does the modulo operation.
-          AffineExpr modExpr = b.getAffineDimExpr(0) %
-                               b.getAffineConstantExpr(tileInfo.sizes[dim]);
-          AffineMap affMap = AffineMap::get(1, 0, modExpr);
-          AffineApplyOp newInd =
-              b.create<AffineApplyOp>(op->getLoc(), affMap, operand.value());
-
-          op->setOperand(operand.index(), newInd);
-          ++dim;
-        }
+      LLVM_DEBUG({
+        dbgs() << " * Found old callee: \n";
+        callee.dump();
       });
 
       // Finalise the result to the map.
+      FuncOp newCallee = createTiledCallee(memref, callee, caller, tileInfo,
+                                           flatten, stage, b);
+
+      LLVM_DEBUG({
+        dbgs() << " * Created new callee: \n";
+        newCallee.dump();
+      });
+
       calleeMap.insert({callee, newCallee});
     }
 
     LLVM_DEBUG({
-      for (auto &it : calleeMap) {
-        llvm::errs() << it.first.getName() << " mapped to "
-                     << it.second.getName() << "\n";
-      }
+      dbgs() << "\n\n";
+      dbgs() << " * Callee mapping results:\n";
+      for (auto &it : calleeMap)
+        dbgs() << "\t" << it.first.getName() << "\t==> " << it.second.getName()
+               << "\n";
+    });
+
+    LLVM_DEBUG({
+      dbgs() << "\n\n";
+      dbgs() << "------> Filling function body ...\n\n";
     });
 
     // Argument map.
     BlockAndValueMapping vmap;
     vmap.map(prevFunc.getArguments(), newFunc.getArguments());
+
+    LLVM_DEBUG({
+      dbgs() << "* Argument mappings:\n";
+      for (Value &arg : prevFunc.getArguments())
+        dbgs() << "\t" << arg.getType() << "\t==> "
+               << vmap.lookup(arg).getType() << "\n";
+      dbgs() << "\n";
+    });
 
     // Iterate every operation in the original callee and clone it to the
     // new one.
@@ -834,6 +1192,7 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
 
     SmallVector<mlir::CallOp> toRemove;
 
+    LLVM_DEBUG(dbgs() << "------> Replacing memref ARGS in cloned callers.\n");
     // Replace the callers in the cloned function.
     newFunc.walk([&](mlir::CallOp caller) {
       // Try to see if the caller reaches to the tiled version.
@@ -841,10 +1200,16 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
       if (!calleeMap.count(callee)) // not affected by tiling
         return;
 
+      LLVM_DEBUG({
+        dbgs() << "---> Replacing caller: ";
+        caller.dump();
+      });
+
       // Now we replace the original caller to call the new callee, with the
       // memref argument replaced.
       FuncOp newCallee = calleeMap[callee];
 
+      // The new memref should be found.
       Value newMemRef = vmap.lookup(memref);
 
       SmallVector<Value> args;
@@ -852,116 +1217,13 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
         if (arg.value() != newMemRef)
           args.push_back(arg.value());
         else {
-          // Create the caller that use a SUBVIEW of the original memref.
-          b.setInsertionPoint(caller);
-          SmallVector<OpFoldResult> offsets, sizes, strides;
-
-          // Get the static rank.
-          MemRefType newMemRefType = newMemRef.getType().cast<MemRefType>();
-          unsigned rank = newMemRefType.getRank();
-
-          // Look into the callee to find which tile loop has been used to
-          // access the corresponding tiled memory dimensions.
-          SmallVector<Value> indices;
-          newCallee.walk([&](Operation *op) {
-            if (!isa<mlir::AffineLoadOp, AffineStoreOp>(op))
-              return;
-            if (mlir::AffineLoadOp loadOp = dyn_cast<mlir::AffineLoadOp>(op))
-              if (loadOp.getMemRef() != newCallee.getArgument(arg.index()))
-                return;
-            if (mlir::AffineStoreOp storeOp = dyn_cast<mlir::AffineStoreOp>(op))
-              if (storeOp.getMemRef() != newCallee.getArgument(arg.index()))
-                return;
-
-            SmallVector<Value> tmpIndices;
-
-            for (unsigned i = 1; i < op->getNumOperands(); ++i) {
-              Value operand = op->getOperand(i);
-
-              // The index for a tiled memref will be from an affine.apply op.
-              mlir::AffineApplyOp applyOp =
-                  operand.getDefiningOp<mlir::AffineApplyOp>();
-              if (!applyOp)
-                continue;
-              assert(applyOp.getNumOperands() == 1);
-
-              Value indvar = applyOp.getOperand(0);
-
-              mlir::AffineForOp forOp = getForInductionVarOwner(indvar);
-
-              // At least one bound should have a single operand (for the loop
-              // indvar).
-              if (!(forOp.getLowerBoundOperands().size() == 1 ||
-                    forOp.getUpperBoundOperands().size() == 1))
-                continue;
-
-              Value source = forOp.getUpperBoundOperands().size() == 1
-                                 ? forOp.getUpperBoundOperands()[0]
-                                 : forOp.getLowerBoundOperands()[0];
-              assert(forOp.getLowerBoundOperands().size() < 1 ||
-                     source == forOp.getLowerBoundOperands()[0]);
-
-              tmpIndices.push_back(source);
-            }
-
-            if (indices.empty())
-              std::swap(tmpIndices, indices);
-            else {
-              LLVM_DEBUG({
-                op->dump();
-                if (tmpIndices != indices) {
-                  llvm::interleaveComma(tmpIndices, llvm::errs());
-                  llvm::interleaveComma(indices, llvm::errs());
-                }
-              });
-              assert(tmpIndices == indices);
-              std::swap(tmpIndices, indices);
-            }
-          });
-          assert(indices.size() == rank / 2);
-
-          // Figure out the offsets.
-          // Need to know which tile loop has used by the accessed memref.
-          for (unsigned i = 0; i < rank / 2; ++i) {
-            unsigned pos = find(newCallee.getArguments(), indices[i]) -
-                           newCallee.args_begin();
-            assert(pos < newCallee.getNumArguments());
-            offsets.push_back(caller.getOperand(pos));
-          }
-          for (unsigned i = 0; i < rank / 2; ++i)
-            offsets.push_back(b.getIndexAttr(0));
-
-          // Figure out sizes.
-          for (unsigned i = 0; i < rank / 2; ++i)
-            sizes.push_back(b.getIndexAttr(1));
-          for (unsigned i = 0; i < rank / 2; ++i)
-            sizes.push_back(
-                b.getIndexAttr(newMemRefType.getShape()[i + rank / 2]));
-
-          // Figure out strides.
-          for (unsigned i = 0; i < rank; ++i)
-            strides.push_back(b.getIndexAttr(1));
-
-          // Get the resulting type for the subview. Otherwise, it won't
-          // match.
-          MemRefType newTiledMemRefType =
-              memref::SubViewOp::inferRankReducedResultType(
-                  rank / 2, newMemRef.getType().cast<MemRefType>(), offsets,
-                  sizes, strides)
-                  .cast<MemRefType>();
-
-          // The final subview operaion.
-          memref::SubViewOp subView =
-              b.create<memref::SubViewOp>(caller.getLoc(), newTiledMemRefType,
-                                          newMemRef, offsets, sizes, strides);
-
-          // Strip the affine map
-          MemRefType castMemRefType =
-              newCallee.getArgument(arg.index()).getType().cast<MemRefType>();
-          memref::CastOp cast = b.create<memref::CastOp>(
-              caller.getLoc(), subView, castMemRefType);
-
-          args.push_back(cast);
+          b.setInsertionPointAfter(caller);
+          Value subView = buildSubViewForTiledMemRef(
+              newCallee, caller, newMemRef, arg.index(), flatten, tileInfo, b);
+          LLVM_DEBUG(dbgs() << " * Created subview: "
+                            << subView.getDefiningOp()->getOperand(0) << '\n');
+          LLVM_DEBUG(dbgs() << " * Created cast: " << subView << '\n');
+          args.push_back(subView);
         }
       }
 
@@ -969,6 +1231,9 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
       mlir::CallOp newCaller =
           b.create<mlir::CallOp>(caller.getLoc(), newCallee, args);
       newCaller->setAttr("scop.pe", b.getUnitAttr());
+
+      LLVM_DEBUG(dbgs() << " * New caller: " << newCaller << '\n');
+
       toRemove.push_back(caller);
     });
 
@@ -983,6 +1248,10 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
     }
 
     prevFunc = newFunc;
+
+    LLVM_DEBUG(dbgs() << "------> Finished stage: " << stage
+                      << ", created: \n\n"
+                      << newFunc << "\n\n");
   }
 
   return prevFunc;
@@ -1048,11 +1317,12 @@ static void renameTiledFunctions(ModuleOp m, OpBuilder &b) {
 struct SimpleArrayPartitionPass
     : public PassWrapper<SimpleArrayPartitionPass, OperationPass<ModuleOp>> {
   bool dumpFile = false;
+  bool flatten = false; // whether to flatten the partition dims.
 
   SimpleArrayPartitionPass() = default;
   SimpleArrayPartitionPass(const SimpleArrayPartitionPass &pass) {}
   SimpleArrayPartitionPass(const ArrayPartitionPipelineOptions &options)
-      : dumpFile(options.dumpFile) {}
+      : dumpFile(options.dumpFile), flatten(options.flatten) {}
 
   void runOnOperation() override {
     ModuleOp m = getOperation();
@@ -1097,7 +1367,9 @@ struct SimpleArrayPartitionPass
     auto tilingCopy = tiling;
 
     // Tile the top function.
-    FuncOp newTop = tileTopFunction(top, memrefs, tiling, m, b);
+    FuncOp newTop = tileTopFunction(top, memrefs, tiling, flatten, m, b);
+
+    LLVM_DEBUG(dbgs() << "------> Clean up created auxilliary functions.\n");
 
     // Clean up.
     sweepUncalledFunctions(m, markCalledFunctions(newTop, m));
@@ -1108,6 +1380,7 @@ struct SimpleArrayPartitionPass
     // If array partition has been succesful, dump a file that stores the
     // corresponding information.
     if (dumpFile) {
+      LLVM_DEBUG(dbgs() << "------> Dump file to array_partition.txt.\n");
       std::ofstream infoFile;
       infoFile.open("array_partition.txt", std::ios::out);
       if (infoFile.is_open()) {
