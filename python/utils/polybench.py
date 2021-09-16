@@ -736,6 +736,7 @@ class PbFlow:
                 .run_tbgen_csim()
                 .backup_csim_results()
                 .copy_design_from_phism_to_tb()
+                .run_cosim()
             )
         except Exception as e:
             self.status = 1
@@ -1215,6 +1216,7 @@ class PbFlow:
 
     def backup_csim_results(self):
         """Create a backup for the csim results."""
+        # TODO: make this --dry-run compatible
         base_dir = os.path.dirname(self.cur_file)
         tbgen_dir = os.path.join(base_dir, "tb")
         assert os.path.isdir(
@@ -1233,6 +1235,7 @@ class PbFlow:
 
     def copy_design_from_phism_to_tb(self):
         """Move design files from Phism output to the testbench directory."""
+        # TODO: make this --dry-run compatible
         src_file = self.cur_file
         base_dir = os.path.dirname(src_file)
         top_func = get_top_func(src_file)
@@ -1292,6 +1295,32 @@ class PbFlow:
             f"Parsed memory interfaces from {autotb}:\n"
             + "\n".join([str(m) for m in autotb_mems])
         )
+
+        return self
+
+    def run_cosim(self):
+        """Run cosim.tcl"""
+        if not self.options.cosim:
+            self.logger.debug("cosim is skipped since --cosim has not been set.")
+            return self
+
+        src_file = self.cur_file
+        base_dir = os.path.dirname(src_file)
+
+        cosim_vitis_tcl = os.path.join(base_dir, "cosim.tcl")
+        with open(cosim_vitis_tcl, "w") as f:
+            f.write(COSIM_VITIS_TCL)
+
+        log_file = os.path.join(base_dir, "cosim.vitis_hls.stdout.log")
+
+        self.run_command(
+            cmd_list=["vitis_hls", cosim_vitis_tcl],
+            stdout=open(log_file, "w"),
+            stderr=open(os.path.join(base_dir, "cosim.vitis_hls.stderr.log"), "w"),
+            env=self.env,
+        )
+
+        return self
 
     def run_vitis(self, strategy: Optional[CosimFixStrategy] = None):
         """Run synthesize/testbench generation/co-simulation."""
