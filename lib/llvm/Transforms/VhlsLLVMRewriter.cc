@@ -1456,10 +1456,12 @@ static std::string interpretArgumentType(Type *type) {
     if (!elementTy->isArrayTy())
       return interpretArgumentType(elementTy) + "*";
     else {
-      auto arrayTy = dyn_cast<ArrayType>(type);
+      auto arrayTy = dyn_cast<ArrayType>(elementTy);
+      auto nextTy = arrayTy;
       do {
-        arrayTy = dyn_cast<ArrayType>(arrayTy->getElementType());
-      } while (arrayTy);
+        arrayTy = nextTy;
+        nextTy = dyn_cast<ArrayType>(arrayTy->getElementType());
+      } while (nextTy);
       return interpretArgumentType(arrayTy);
     }
   } else
