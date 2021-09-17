@@ -199,8 +199,11 @@ def fetch_latency(d):
     if not latency:
         return None
 
-    # Will raise error if latency is not an integer.
-    return int(latency)
+    try:
+        # Will raise error if latency is not an integer.
+        return int(latency)
+    except:
+        return None
 
 
 def fetch_syn_latency(d):
@@ -499,11 +502,11 @@ def get_cosim_fix_strategy(
         # we will modify the TCL for Phism.
         if src_mem.get_num_ports() == 1 and dst_mem.get_num_ports() == 2:
             strategy.tbgen_directives.append(
-                f"set_directive_interface {kernel_name} {dst_mem_name} -mode ap_memory -storage_type ram_1p"
+                f"set_directive_interface -mode ap_memory -storage_type ram_1p {kernel_name} {dst_mem_name}"
             )
         elif src_mem.get_num_ports() == 2 and dst_mem.get_num_ports() == 1:
             strategy.tbgen_directives.append(
-                f"set_directive_interface {kernel_name} {dst_mem_name} -mode ap_memory -storage_type ram_2p"
+                f"set_directive_interface -mode ap_memory -storage_type ram_2p {kernel_name} {dst_mem_name}"
             )
         elif src_mem.get_num_ports() == dst_mem.get_num_ports():
             num_ports = src_mem.get_num_ports()
@@ -512,7 +515,7 @@ def get_cosim_fix_strategy(
                 # TODO: is this condition enough for detection?
                 if src_mem.is_read_only(1) and dst_mem.is_read_write(1):
                     strategy.tbgen_directives.append(
-                        f"set_directive_interface {kernel_name} {dst_mem_name} -mode ap_memory -storage_type ram_1wnr"
+                        f"set_directive_interface -mode ap_memory -storage_type ram_1wnr {kernel_name} {dst_mem_name}"
                     )
                 elif (
                     src_mem.is_read_write(0)
@@ -522,13 +525,13 @@ def get_cosim_fix_strategy(
                     )  # tbgen is not
                 ):
                     strategy.tbgen_directives.append(
-                        f"set_directive_interface {kernel_name} {dst_mem_name} -mode ap_memory -storage_type ram_t2p"
+                        f"set_directive_interface -mode ap_memory -storage_type ram_t2p {kernel_name} {dst_mem_name}"
                     )
                 elif is_read_write_conflict(
                     src_mem, dst_mem, 0
                 ) and is_read_write_conflict(src_mem, dst_mem, 1):
                     strategy.tbgen_directives.append(
-                        f"set_directive_interface {kernel_name} {dst_mem_name} -mode ap_memory -storage_type ram_1wnr"
+                        f"set_directive_interface -mode ap_memory -storage_type ram_1wnr {kernel_name} {dst_mem_name}"
                     )
 
     strategy.tbgen_directives = list(set(strategy.tbgen_directives))
@@ -1290,7 +1293,7 @@ class PbFlow:
 
         return self
 
-    def run_tbgen_csim(self, no_skip=False):
+    def run_tbgen_csim(self, force_skip=False):
         """Run the tbgen.tcl file. Assuming the Tcl file has been written."""
         if not self.options.cosim:
             self.logger.warn("Cosim won't run due to the input setting.")
@@ -1302,7 +1305,7 @@ class PbFlow:
         tbgen_vitis_tcl = os.path.join(base_dir, "tbgen.tcl")
         assert os.path.isfile(tbgen_vitis_tcl), f"{tbgen_vitis_tcl} should exist."
 
-        if self.options.skip_csim and not no_skip:
+        if self.options.skip_csim or force_skip:
             self.logger.warn("CSim is set to be skipped.")
             if not is_cosim_setup(tbgen_vitis_tcl):
                 self.logger.debug("Toggled -setup to cosim_design.")
@@ -1311,7 +1314,10 @@ class PbFlow:
         if self.options.dry_run:
             return self
 
-        shutil.rmtree(os.path.join(base_dir, "tb"), ignore_errors=True)
+        tb_dir = os.path.join(base_dir, "tb")
+        if os.path.isdir(tb_dir):
+            shutil.rmtree(tb_dir)
+            self.logger.debug(f"Removed old {tb_dir}")
         log_file = os.path.join(base_dir, "tbgen.vitis_hls.stdout.log")
         if os.path.isfile(log_file):
             os.remove(log_file)
@@ -1327,6 +1333,8 @@ class PbFlow:
 
     def backup_csim_results(self):
         """Create a backup for the csim results."""
+        if not self.options.cosim:
+            return self
         # TODO: make this --dry-run compatible
         base_dir = os.path.dirname(self.cur_file)
         tbgen_dir = os.path.join(base_dir, "tb")
@@ -1346,6 +1354,8 @@ class PbFlow:
 
     def copy_design_from_phism_to_tb(self, try_fix=True):
         """Move design files from Phism output to the testbench directory."""
+        if not self.options.cosim:
+            return self
         # TODO: make this --dry-run compatible
         src_file = self.cur_file
         base_dir = os.path.dirname(src_file)
@@ -1434,7 +1444,7 @@ class PbFlow:
                 )
                 self.logger.debug("Re-run csim on the updated tbgen.tcl file.")
                 self = (
-                    self.run_tbgen_csim()
+                    self.run_tbgen_csim(force_skip=True)
                     .backup_csim_results()
                     .copy_design_from_phism_to_tb(try_fix=False)
                 )
