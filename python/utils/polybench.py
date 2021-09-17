@@ -1479,11 +1479,18 @@ class PbFlow:
 
         # Check results
         phism_syn_verilog_dir = os.path.join(
-            base_dir, "proj", "solution1", "syn", "verilog"
+            base_dir, "proj", "solution1", "impl", "ip", "hdl", "verilog"
         )
         assert os.path.isdir(
             phism_syn_verilog_dir
         ), f"{phism_syn_verilog_dir} doens't exist."
+
+        phism_syn_ip_dir = os.path.join(
+            base_dir, "proj", "solution1", "impl", "ip", "hdl", "ip"
+        )
+        assert os.path.isdir(
+            phism_syn_ip_dir
+        ), f"{phism_syn_ip_dir} doens't exist."
 
         tbgen_syn_verilog_dir = os.path.join(
             base_dir, "tb", "solution1", "syn", "verilog"
@@ -1503,6 +1510,12 @@ class PbFlow:
         design_files = glob.glob(os.path.join(phism_syn_verilog_dir, "*.*"))
         assert design_files, "There should exist design files."
         for f in design_files:
+            shutil.copy(f, tbgen_syn_verilog_dir)
+        design_files = glob.glob(os.path.join(phism_syn_ip_dir, "*.*"))
+        assert design_files, "There should exist design files."
+        for f in design_files:
+            # TODO: insert timescale. to write in a proper way?
+            os.system("sed -i '1i `timescale 1ns/1ps' "+f+";")
             shutil.copy(f, tbgen_syn_verilog_dir)
 
         self.logger.debug(f"Design files found: \n" + "\n".join(design_files))
@@ -1565,6 +1578,21 @@ class PbFlow:
                     .copy_design_from_phism_to_tb(try_fix=False)
                 )
 
+        # Overwrite the project file list to include files from Phism
+        prjFile = open(os.path.join(tbgen_syn_verilog_dir, "top_func.prj"))
+        prjFile.write("vhdl ieee_proposed \"ieee_FP_pkg/fixed_float_types_c.vhd\"\n")
+        prjFile.write("vhdl ieee_proposed \"ieee_FP_pkg/fixed_pkg_c.vhd\"\n")
+        prjFile.write("vhdl ieee_proposed \"ieee_FP_pkg/float_pkg_c.vhd\"\n")
+        prjFile.write("vhdl ieee_proposed \"ieee_FP_pkg/aesl_fp_wrapper.vhd\"\n")
+        design_files = glob.glob(os.path.join(tbgen_syn_verilog_dir, "*.v")) + \
+                       glob.glob(os.path.join(tbgen_syn_verilog_dir, "*.sv")) + \
+                       glob.glob(os.path.join(tbgen_syn_verilog_dir, "ip", "xil_defaultlib", "*.v"))
+        for f in design_files:
+            if "glbl.v" in f:
+                prjFile.write("sv work \"glbl.v\"")
+            else:
+                prjFile.write("sv xil_defaultlib \"" +f+ "\"\n")
+        prjFile.close()
         return self
 
     def run_cosim(self):
