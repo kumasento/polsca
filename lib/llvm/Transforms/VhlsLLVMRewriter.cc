@@ -1457,12 +1457,12 @@ static std::string interpretArgumentType(Type *type) {
       return interpretArgumentType(elementTy) + "*";
     else {
       auto arrayTy = dyn_cast<ArrayType>(elementTy);
-      auto nextTy = arrayTy;
+      Type *nextTy;
       do {
-        arrayTy = nextTy;
-        nextTy = dyn_cast<ArrayType>(arrayTy->getElementType());
-      } while (nextTy);
-      return interpretArgumentType(arrayTy);
+        nextTy = arrayTy->getElementType();
+        arrayTy = dyn_cast<ArrayType>(nextTy);
+      } while (arrayTy);
+      return interpretArgumentType(nextTy);
     }
   } else
     return "undefined_type";
@@ -1517,7 +1517,7 @@ struct XilinxTBTclGenPass : public ModulePass {
             auto dimensions = getArrayDimensionInfo(dyn_cast<ArrayType>(
                 dyn_cast<PointerType>(argType)->getPointerElementType()));
             for (auto dim : dimensions)
-              argDeclList + "[" + std::to_string(dim.second) + "]";
+              argDeclList += "[" + std::to_string(dim.second) + "]";
 
             // The function body does some meaningless array assignments just to
             // make sure that Vitis generates proper RAM interface. Add memory
