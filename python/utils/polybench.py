@@ -352,6 +352,9 @@ class ApMemoryInterface:
     name: str
     ports: List[str]
 
+    def get_name_without_partition(self) -> str:
+        return self.name.split("_")[0]
+
     def get_num_ports(self) -> int:
         return len(set([port[-1] for port in self.ports]))
 
@@ -470,6 +473,7 @@ def get_cosim_fix_strategy(
     kernel_name: str,
     src_mems: List[ApMemoryInterface],
     dst_mems: List[ApMemoryInterface],
+    before_partition: bool = True,
 ) -> CosimFixStrategy:
     if len(src_mems) != len(dst_mems):
         raise RuntimeError("The number of ap_memory interfaces should be the same.")
@@ -486,17 +490,21 @@ def get_cosim_fix_strategy(
 
     # Iterate every memory interface to see if there is any chance for fixing them.
     for src_mem, dst_mem in zip(src_mems, dst_mems):
+        dst_mem_name = (
+            dst_mem.name
+            if not before_partition
+            else dst_mem.get_name_without_partition()
+        )
         # If any memory interface from the source uses single port, while the target uses dual ports,
         # we will modify the TCL for Phism.
         if src_mem.get_num_ports() == 1 and dst_mem.get_num_ports() == 2:
             strategy.tbgen_directives.append(
-                f"set_directive_interface {kernel_name} {dst_mem.name} -mode ap_memory -storage_type ram_1p"
+                f"set_directive_interface {kernel_name} {dst_mem_name} -mode ap_memory -storage_type ram_1p"
             )
         elif src_mem.get_num_ports() == 2 and dst_mem.get_num_ports() == 1:
-            if src_mem.is_read_only(1):
-                strategy.tbgen_directives.append(
-                    f"set_directive_interface {kernel_name} {dst_mem.name} -mode ap_memory -storage_type ram_2p"
-                )
+            strategy.tbgen_directives.append(
+                f"set_directive_interface {kernel_name} {dst_mem_name} -mode ap_memory -storage_type ram_2p"
+            )
         elif src_mem.get_num_ports() == dst_mem.get_num_ports():
             num_ports = src_mem.get_num_ports()
             if num_ports == 2:
@@ -504,7 +512,7 @@ def get_cosim_fix_strategy(
                 # TODO: is this condition enough for detection?
                 if src_mem.is_read_only(1) and dst_mem.is_read_write(1):
                     strategy.tbgen_directives.append(
-                        f"set_directive_interface {kernel_name} {dst_mem.name} -mode ap_memory -storage_type ram_1wnr"
+                        f"set_directive_interface {kernel_name} {dst_mem_name} -mode ap_memory -storage_type ram_1wnr"
                     )
                 elif (
                     src_mem.is_read_write(0)
@@ -514,14 +522,17 @@ def get_cosim_fix_strategy(
                     )  # tbgen is not
                 ):
                     strategy.tbgen_directives.append(
-                        f"set_directive_interface {kernel_name} {dst_mem.name} -mode ap_memory -storage_type ram_t2p"
+                        f"set_directive_interface {kernel_name} {dst_mem_name} -mode ap_memory -storage_type ram_t2p"
                     )
                 elif is_read_write_conflict(
                     src_mem, dst_mem, 0
                 ) and is_read_write_conflict(src_mem, dst_mem, 1):
                     strategy.tbgen_directives.append(
-                        f"set_directive_interface {kernel_name} {dst_mem.name} -mode ap_memory -storage_type ram_1wnr"
+                        f"set_directive_interface {kernel_name} {dst_mem_name} -mode ap_memory -storage_type ram_1wnr"
                     )
+
+    strategy.tbgen_directives = list(set(strategy.tbgen_directives))
+    strategy.phism_directives = list(set(strategy.phism_directives))
 
     return strategy
 
@@ -554,6 +565,48 @@ def fix_cosim_kernels(dir: str) -> CosimFixStrategy:
         get_memory_interfaces(src_params),
         get_memory_interfaces(dst_params),
     )
+
+
+def insert_directives(directives: List[str], file: str, insertion_point: str):
+    """Insert directives within the target file before the insertion point."""
+    with open(file, "r") as f:
+        lines = f.readlines()
+    assert lines
+
+    lines = [l.strip() for l in lines]
+
+    pos = next(i for i, l in enumerate(lines) if insertion_point in l)
+    assert pos >= 0 and pos < len(lines)
+
+    lines = lines[:pos] + directives + lines[pos:]
+    with open(file, "w") as f:
+        f.write("\n".join(lines))
+
+
+def is_cosim_setup(file: str):
+    with open(file, "r") as f:
+        lines = f.readlines()
+
+    return any(("cosim_design" in line and "setup" in line) for line in lines)
+
+
+def toggle_cosim_setup(file: str):
+    """Toggle the -setup option for cosim_design."""
+    with open(file, "r") as f:
+        lines = f.readlines()
+    assert lines
+
+    lines = [l.strip() for l in lines]
+    pos = next(i for i, l in enumerate(lines) if "cosim_design" in l)
+    assert pos >= 0 and pos < len(lines)
+
+    if "-setup" in lines[pos]:
+        lines[pos] = lines[pos].replace("-setup", "")
+    else:
+        lines[pos] += " -setup"
+
+    with open(file, "w") as f:
+        f.write("\n".join(lines))
 
 
 # ----------------------- Benchmark runners ---------------------------
@@ -1111,9 +1164,6 @@ class PbFlow:
 
     def write_tb_tcl_by_llvm(self):
         """Generate the tbgen TCL file from LLVM passes."""
-        if self.options.skip_vitis:
-            return self
-
         src_file = self.cur_file
         base_dir = os.path.dirname(src_file)
         top_func = get_top_func(src_file)
@@ -1209,13 +1259,10 @@ class PbFlow:
 
         return self
 
-    def run_tbgen_csim(self):
+    def run_tbgen_csim(self, no_skip=False):
         """Run the tbgen.tcl file. Assuming the Tcl file has been written."""
         if not self.options.cosim:
             self.logger.warn("Cosim won't run due to the input setting.")
-            return self
-        if self.options.skip_csim:
-            self.logger.warn("CSim is set to be skipped.")
             return self
 
         src_file = self.cur_file
@@ -1223,6 +1270,12 @@ class PbFlow:
 
         tbgen_vitis_tcl = os.path.join(base_dir, "tbgen.tcl")
         assert os.path.isfile(tbgen_vitis_tcl), f"{tbgen_vitis_tcl} should exist."
+
+        if self.options.skip_csim and not no_skip:
+            self.logger.warn("CSim is set to be skipped.")
+            if not is_cosim_setup(tbgen_vitis_tcl):
+                self.logger.debug("Toggled -setup to cosim_design.")
+                toggle_cosim_setup(tbgen_vitis_tcl)
 
         if self.options.dry_run:
             return self
@@ -1260,7 +1313,7 @@ class PbFlow:
 
         return self
 
-    def copy_design_from_phism_to_tb(self):
+    def copy_design_from_phism_to_tb(self, try_fix=True):
         """Move design files from Phism output to the testbench directory."""
         # TODO: make this --dry-run compatible
         src_file = self.cur_file
@@ -1324,7 +1377,36 @@ class PbFlow:
         )
 
         if not is_cosim_interface_matched(phism_mems, autotb_mems):
-            print(get_cosim_fix_strategy(top_func, phism_mems, autotb_mems))
+            self.logger.debug(
+                f"Cosim interface is not matched between {phism_top} and {autotb}. Trying to fix."
+            )
+
+            assert try_fix, "Won't fix the mismatched interfaces."
+
+            strategy = get_cosim_fix_strategy(top_func, phism_mems, autotb_mems)
+            self.logger.debug(
+                "\n\t".join(
+                    [
+                        "Cosim fix strategy:",
+                        f"Phism directives: {strategy.phism_directives}",
+                        f"Tbgen directives: {strategy.tbgen_directives}",
+                    ]
+                )
+            )
+
+            if strategy.tbgen_directives:
+                # Update the tbgen file by the specified directives.
+                insert_directives(
+                    strategy.tbgen_directives,
+                    os.path.join(base_dir, "tbgen.tcl"),
+                    "csim_design",
+                )
+                self.logger.debug("Re-run csim on the updated tbgen.tcl file.")
+                self = (
+                    self.run_tbgen_csim()
+                    .backup_csim_results()
+                    .copy_design_from_phism_to_tb(try_fix=False)
+                )
 
         return self
 
