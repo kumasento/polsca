@@ -737,8 +737,6 @@ export_design -flow syn -rtl verilog -format ip_catalog
 exit
 """
 
-TBGEN_VITIS_TCL_FILES = 'add_files {{{src_dir}/{src_base}.c}} -cflags "-I {src_dir} -I {work_dir}/utilities -D {pb_dataset}_DATASET" -csimflags "-I {src_dir} -I {work_dir}/utilities -D{pb_dataset}_DATASET"\\nadd_files -tb {{{src_dir}/{src_base}.c {work_dir}/utilities/polybench.c}} -cflags "-I {src_dir} -I {work_dir}/utilities -D{pb_dataset}_DATASET" -csimflags "-I {src_dir} -I {work_dir}/utilities -D{pb_dataset}_DATASET"\\n'
-
 TBGEN_VITIS_TCL = """
 open_project -reset tb
 add_files {{{src_dir}/{src_base}.c}} -cflags "-I {src_dir} -I {work_dir}/utilities -D {pb_dataset}_DATASET" -csimflags "-I {src_dir} -I {work_dir}/utilities -D{pb_dataset}_DATASET"
@@ -1347,14 +1345,7 @@ class PbFlow:
             "-xlntbgen",
             "-xln-ap-flattened",
             "-xln-ap-enabled" if xln_ap_enabled else "",
-            "-xlntbfilesettings=$'{}'".format(
-                TBGEN_VITIS_TCL_FILES.format(
-                    src_dir=base_dir,
-                    src_base=os.path.basename(src_file).split(".")[0],
-                    work_dir=self.work_dir,
-                    pb_dataset=self.options.dataset,
-                )
-            ),
+            "-xlntbdummynames="+base_dir+"/dummy.cpp",
             f'-xlntbtclnames="{tbgen_vitis_tcl}"',
         ]
 
