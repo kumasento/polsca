@@ -1568,6 +1568,9 @@ struct XilinxTBTclGenPass : public ModulePass {
                          << partition.first << " -factor " << partition.second
                          << " -type block \"" << XlnTop << "\" "
                          << arg->getName() << "\n";
+              XlnTBTcl << "set_directive_interface " << F.getName() << " "
+                       << arg->getName()
+                       << " -mode ap_memory -storage_type ram_2p\n";
             }
           }
         }
