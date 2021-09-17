@@ -1679,6 +1679,48 @@ struct AnnotateNoInlinePass : public ModulePass {
 
 } // namespace
 
+namespace {
+
+struct ConfigMemoryInterfacePass : public ModulePass {
+  static char ID; // Pass identification, replacement for typeid
+  ConfigMemoryInterfacePass() : ModulePass(ID) {}
+
+  bool runOnModule(Module &M) override {
+
+    for (auto &F : M)
+      if (F.getName() == XlnTop) {
+        auto attributeList = F.getAttributes();
+        for (unsigned i = 0; i < F.arg_size(); i++) {
+          auto arg = F.getArg(i);
+          if (arg->getType()->isPointerTy() &&
+              arg->getType()->getPointerElementType()->isArrayTy()) {
+            auto arrayName = arg->getName().str();
+            attributeList = attributeList.addAttribute(
+                F.getContext(), i + 1, "fpga.address.interface",
+                "ap_memory." + arrayName);
+            auto &C = F.getContext();
+            SmallVector<Metadata *, 32> ops;
+            ops.push_back(llvm::MDString::get(C, arrayName));
+            ops.push_back(llvm::MDString::get(C, "ap_memory"));
+            ops.push_back(llvm::ConstantAsMetadata::get(
+                ConstantInt::get(IntegerType::get(C, 32), 666)));
+            ops.push_back(llvm::ConstantAsMetadata::get(
+                ConstantInt::get(IntegerType::get(C, 32), 208 /*ram2p*/)));
+            ops.push_back(llvm::ConstantAsMetadata::get(
+                ConstantInt::get(IntegerType::get(C, 32), -1)));
+            auto *N = MDTuple::get(C, ops);
+            F.setMetadata("fpga.adaptor.bram." + arrayName, N);
+          }
+        }
+        F.setAttributes(attributeList);
+      }
+
+    return false;
+  }
+};
+
+} // namespace
+
 char ConvertMemRefToArray::ID = 0;
 static RegisterPass<ConvertMemRefToArray>
     X1("mem2ptr",
@@ -1728,3 +1770,8 @@ static RegisterPass<XilinxNameLoopPass> X10("xlnloopname",
 char AnnotateNoInlinePass::ID = 10;
 static RegisterPass<AnnotateNoInlinePass>
     X11("anno-noinline", "Annotate noinline to the functions.");
+
+char ConfigMemoryInterfacePass::ID = 11;
+static RegisterPass<ConfigMemoryInterfacePass>
+    X12("xlnram2p",
+        "Config all the arrays to have ram2p interface for Xilinx Vitis.");
