@@ -718,7 +718,7 @@ config_compile -pipeline_loops 1
 set ::LLVM_CUSTOM_CMD {{$LLVM_CUSTOM_OPT -no-warn {src_file} -o $LLVM_CUSTOM_OUTPUT}}
 
 csynth_design
-
+export_design -flow syn -rtl verilog -format ip_catalog
 exit
 """
 
