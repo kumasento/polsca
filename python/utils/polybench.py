@@ -1600,7 +1600,10 @@ class PbFlow:
 
         return self
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> e12fd74... Deleted run_vitis
 def pb_flow_process(d: str, work_dir: str, options: PbFlowOptions):
     """Process a single example."""
     # Make sure the example directory and the work directory are both absolute paths.
