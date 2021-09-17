@@ -1108,6 +1108,12 @@ void phism::registerLoopTransformPasses() {
         pm.addPass(std::make_unique<InsertScratchpadPass>());
       });
 
+  PassPipelineRegistration<>(
+      "scop-stmt-inline", "Inline scop.stmt", [](OpPassManager &pm) {
+        pm.addPass(std::make_unique<ScopStmtInlinePass>());
+        pm.addPass(createCanonicalizerPass());
+      });
+
   PassPipelineRegistration<LoopTransformsPipelineOptions>(
       "loop-transforms", "Phism loop transforms.",
       [](OpPassManager &pm,
