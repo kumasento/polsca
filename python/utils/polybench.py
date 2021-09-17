@@ -806,6 +806,7 @@ class PbFlow:
                 .constant_args()
                 .loop_transforms()
                 .array_partition()
+                .scop_stmt_inline()
                 .lower_llvm()
                 .vitis_opt()
                 .write_tb_tcl_by_llvm()
@@ -994,6 +995,36 @@ class PbFlow:
                 ]
                 + passes
             ),
+            stderr=open(log_file, "w"),
+            stdout=open(self.cur_file, "w"),
+            env=self.env,
+        )
+
+        return self
+
+    def scop_stmt_inline(self):
+        """Inline scop.stmt."""
+        if self.options.loop_transforms:
+            self.logger.debug(
+                "Skipped scop.stmt inline since there're completed already in loop transforms."
+            )
+            return self
+
+        src_file, self.cur_file = self.cur_file, self.cur_file.replace(
+            ".mlir", ".si.mlir"
+        )
+        log_file = self.cur_file.replace(".mlir", ".log")
+
+        args = [
+            self.get_program_abspath("phism-opt"),
+            src_file,
+            "-scop-stmt-inline",
+            "-debug-only=loop-transforms",
+        ]
+
+        self.run_command(
+            cmd=" ".join(args),
+            shell=True,
             stderr=open(log_file, "w"),
             stdout=open(self.cur_file, "w"),
             env=self.env,
