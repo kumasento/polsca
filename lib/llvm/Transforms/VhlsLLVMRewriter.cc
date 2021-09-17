@@ -21,6 +21,7 @@
 #include "llvm/Transforms/Utils/Cloning.h"
 
 #include <queue>
+#include <regex>
 
 using namespace llvm;
 
@@ -37,11 +38,10 @@ static cl::opt<std::string> XlnTBTclNames(
     cl::desc(
         "Specify the file name of the tcl script for test bench generation."),
     cl::value_desc("tbname"));
-static cl::opt<std::string> XlnTBSources(
-    "xlntbfilesettings",
-    cl::desc(
-        "Specify the file settings for the test bench, e.g. \"add_files ...\""),
-    cl::value_desc("tbfiles"));
+static cl::opt<std::string> XlnTBDummyNames(
+    "xlntbdummynames",
+    cl::desc("Specify the file name of the C dummy for test bench generation."),
+    cl::value_desc("dummyname"));
 static cl::opt<bool> XlnArrayPartitionEnabled(
     "xln-ap-enabled", cl::desc("Whether array partition has been enabled"));
 static cl::opt<bool> XlnArrayPartitionFlattened(
@@ -209,9 +209,8 @@ public:
       for (Value *offset : offsets)
         offset->dump();
       dbgs() << "Strides: ";
-      interleave(
-          strides, [&](const int64_t &stride) { dbgs() << stride; },
-          [&]() { dbgs() << ", "; });
+      interleave(strides, [&](const int64_t &stride) { dbgs() << stride; },
+                 [&]() { dbgs() << ", "; });
       dbgs() << "\n\n";
     });
 
@@ -222,9 +221,8 @@ public:
 
     LLVM_DEBUG({
       dbgs() << "Partial dims:\n";
-      interleave(
-          partialDims, [&](const int64_t &v) { dbgs() << v; },
-          [&]() { dbgs() << ", "; });
+      interleave(partialDims, [&](const int64_t &v) { dbgs() << v; },
+                 [&]() { dbgs() << ", "; });
       dbgs() << "\n";
     });
 
@@ -1367,11 +1365,10 @@ struct XilinxUnrollPass : public ModulePass {
 
 } // namespace
 
-/// Return a set of <dimension, size> as the partition information for the
-/// current array type. The function only extacts the first half dimensions as
-/// the others are the dimensions for the tilied units
+/// Return a set of <dimension, size> as the dimension information for the
+/// current array type.
 static SmallVector<std::pair<unsigned, unsigned>>
-getPartitionInfo(ArrayType *arrayTy, bool flatten) {
+getArrayDimensionInfo(ArrayType *arrayTy) {
   SmallVector<std::pair<unsigned, unsigned>> partitions;
   unsigned d = 0;
   do {
@@ -1380,11 +1377,6 @@ getPartitionInfo(ArrayType *arrayTy, bool flatten) {
     arrayTy = dyn_cast<ArrayType>(arrayTy->getElementType());
     ++d;
   } while (arrayTy);
-
-  if (flatten)
-    partitions.pop_back_n(partitions.size() - 1);
-  else
-    partitions.pop_back_n(partitions.size() / 2);
 
   return partitions;
 }
@@ -1422,8 +1414,11 @@ struct XilinxArrayPartitionPass : public ModulePass {
               arg->getType()->getPointerElementType()->isArrayTy()) {
             auto arrayTy =
                 dyn_cast<ArrayType>(arg->getType()->getPointerElementType());
-            auto partitions =
-                getPartitionInfo(arrayTy, XlnArrayPartitionFlattened);
+            auto partitions = getArrayDimensionInfo(arrayTy);
+            if (XlnArrayPartitionFlattened)
+              partitions.pop_back_n(partitions.size() - 1);
+            else
+              partitions.pop_back_n(partitions.size() / 2);
             for (auto partition : partitions) {
               auto int32ty = Type::getInt32Ty(mod->getContext());
               OperandBundleDef bd = OperandBundleDef(
@@ -1444,27 +1439,116 @@ struct XilinxArrayPartitionPass : public ModulePass {
 
 } // namespace
 
+static std::string interpretArgumentType(Type *type) {
+  if (type->isVoidTy())
+    return "void";
+  else if (type->isIntegerTy(1))
+    return "bool";
+  else if (type->isIntegerTy())
+    return "int";
+  else if (type->isDoubleTy())
+    return "double";
+  else if (type->isFloatTy())
+    return "float";
+  else if (type->isPointerTy()) {
+    auto pointerTy = dyn_cast<PointerType>(type);
+    auto elementTy = pointerTy->getElementType();
+    if (!elementTy->isArrayTy())
+      return interpretArgumentType(elementTy) + "*";
+    else {
+      auto arrayTy = dyn_cast<ArrayType>(type);
+      do {
+        arrayTy = dyn_cast<ArrayType>(arrayTy->getElementType());
+      } while (arrayTy);
+      return interpretArgumentType(arrayTy);
+    }
+  } else
+    return "undefined_type";
+}
+
 namespace {
 
-/// Generate test bench tcl script for Xilinx Vitis. This pass parses the LLVM
-/// IR and generates compatible test bench for the design in LLVM IR.
+/// Generate test bench tcl script and C dummy for Xilinx Vitis. This pass
+/// parses the LLVM IR and generates compatible test bench for the design in
+/// LLVM IR.
 struct XilinxTBTclGenPass : public ModulePass {
   static char ID;
   XilinxTBTclGenPass() : ModulePass(ID) {}
 
   bool runOnModule(Module &M) override {
-    std::error_code ec;
-    llvm::raw_fd_ostream XlnTBTcl(XlnTBTclNames, ec);
-
-    XlnTBTcl << "open_project -reset tb\n"
-             << XlnTBSources << "set_top " << XlnTop << "\n"
-             << "open_solution -reset solution1\n"
-             << "set_part \"zynq\"\n"
-             << "create_clock -period \"100MHz\"\n"
-             << "config_bind -effort high\n";
 
     for (auto &F : M)
       if (F.getName() == XlnTop) {
+        std::error_code ec;
+        llvm::raw_fd_ostream XlnTBTcl(XlnTBTclNames, ec),
+            XlnTBDummy(XlnTBDummyNames, ec);
+
+        // Generate dummy file
+        XlnTBDummy << interpretArgumentType(F.getReturnType()) << " "
+                   << F.getName() << "(";
+        // Find an integer argument to use as indices which results in
+        // unpredictable memory acccesses. This forces Vitis to generate generic
+        // RAM ports for all the arrays.
+        std::string intVarName;
+        for (unsigned i = 0; i < F.arg_size(); i++) {
+          auto arg = F.getArg(i);
+          if (arg->getType()->isIntegerTy()) {
+            intVarName = arg->getName().str();
+            break;
+          }
+        }
+        assert(!intVarName.empty());
+
+        std::string funcBody, argDeclList, argList;
+        for (unsigned i = 0; i < F.arg_size(); i++) {
+          auto arg = F.getArg(i);
+          auto argType = arg->getType();
+          auto argName = arg->getName().str();
+          argList += argName;
+          argDeclList += interpretArgumentType(argType) + " " + argName;
+
+          // If it is an array, then append the dimension information
+          if (argType->isPointerTy() &&
+              dyn_cast<PointerType>(argType)
+                  ->getPointerElementType()
+                  ->isArrayTy()) {
+            auto dimensions = getArrayDimensionInfo(dyn_cast<ArrayType>(
+                dyn_cast<PointerType>(argType)->getPointerElementType()));
+            for (auto dim : dimensions)
+              argDeclList + "[" + std::to_string(dim.second) + "]";
+
+            // The function body does some meaningless array assignments just to
+            // make sure that Vitis generates proper RAM interface. Add memory
+            // accesses to the function body to ensure the RAM ports are
+            // properly generated.
+            std::string readVar = argName, storeVar = argName;
+            for (auto dim : dimensions) {
+              readVar += "[" + intVarName + "]";
+              storeVar += "[" + intVarName + " + 1]";
+            }
+            funcBody += storeVar + " += " + readVar + ";\n";
+          }
+
+          if (i != F.arg_size() - 1) {
+            argDeclList += ", ";
+            argList += ", ";
+          }
+        }
+        XlnTBDummy << argDeclList << ") {\n"
+                   << funcBody << "}\nint main(){\n"
+                   << std::regex_replace(argDeclList + ", ", std::regex(", "),
+                                         ";\n")
+                   << F.getName() << "(" << argList << ");\nreturn 0;\n}\n";
+
+        // Generate tcl file
+        XlnTBTcl << "open_project -reset tb\n"
+                 << "add_files " << XlnTBDummyNames << "\n"
+                 << "add_files -tb " << XlnTBDummyNames << "\n"
+                 << "set_top " << XlnTop << "\n"
+                 << "open_solution -reset solution1\n"
+                 << "set_part \"zynq\"\n"
+                 << "create_clock -period \"100MHz\"\n";
+
         for (unsigned i = 0; i < F.arg_size(); i++) {
           auto arg = F.getArg(i);
           if (arg->getType()->isPointerTy() &&
@@ -1472,8 +1556,11 @@ struct XilinxTBTclGenPass : public ModulePass {
             auto arrayTy =
                 dyn_cast<ArrayType>(arg->getType()->getPointerElementType());
             if (XlnArrayPartitionEnabled) {
-              auto partitions =
-                  getPartitionInfo(arrayTy, XlnArrayPartitionFlattened);
+              auto partitions = getArrayDimensionInfo(arrayTy);
+              if (XlnArrayPartitionFlattened)
+                partitions.pop_back_n(partitions.size() - 1);
+              else
+                partitions.pop_back_n(partitions.size() / 2);
               for (auto partition : partitions)
                 XlnTBTcl << "set_directive_array_partition -dim "
                          << partition.first << " -factor " << partition.second
@@ -1482,12 +1569,11 @@ struct XilinxTBTclGenPass : public ModulePass {
             }
           }
         }
+        XlnTBTcl << "csim_design\n"
+                 << "csynth_design\n"
+                 << "cosim_design\n"
+                 << "exit\n";
       }
-
-    XlnTBTcl << "csim_design\n"
-             << "csynth_design\n"
-             << "cosim_design\n"
-             << "exit\n";
     return false;
   }
 };
@@ -1627,7 +1713,8 @@ static RegisterPass<XilinxArrayPartitionPass> X8(
 
 char XilinxTBTclGenPass::ID = 8;
 static RegisterPass<XilinxTBTclGenPass>
-    X9("xlntbgen", "Generate test bench tcl script for Xilinx Vitis.");
+    X9("xlntbgen",
+       "Generate test bench tcl script and dummy C code for Xilinx Vitis.");
 
 char XilinxNameLoopPass::ID = 9;
 static RegisterPass<XilinxNameLoopPass> X10("xlnloopname",
