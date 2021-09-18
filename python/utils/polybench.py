@@ -56,6 +56,7 @@ RECORD_FIELDS = (
     "name",
     "run_status",
     "latency",
+    "csim_latency",
     "syn_latency",
     "res_usage",
     "res_avail",
@@ -74,12 +75,12 @@ class PbFlowOptions:
     """An interface for the CLI options."""
 
     pb_dir: str
-    job: int
-    polymer: bool
-    cosim: bool
-    debug: bool
-    dataset: str
-    cleanup: bool
+    job: int = 1
+    polymer: bool = False
+    cosim: bool = False
+    dataset: str = "MINI"
+    cleanup: bool = False
+    debug: bool = False
     work_dir: str = ""
     dry_run: bool = False
     examples: List[str] = POLYBENCH_EXAMPLES
@@ -169,9 +170,11 @@ def fetch_resource_usage(d, avail=False):
     )
 
 
-def fetch_latency(d):
+def fetch_latency(d: str, csim: bool = False):
     """Fetch the simulated latency, measured in cycles."""
-    tb_sim_report_dir = os.path.join(d, "tb", "solution1", "sim", "report")
+    tb_sim_report_dir = os.path.join(
+        d, "tb" if not csim else "tb.csim", "solution1", "sim", "report"
+    )
     if not os.path.isdir(tb_sim_report_dir):
         return None
 
@@ -272,6 +275,7 @@ def process_directory(d):
         example_name,
         fetch_run_status(d),
         fetch_latency(d),
+        fetch_latency(d, csim=True),
         fetch_syn_latency(d),
         fetch_resource_usage(d),
         fetch_resource_usage(d, avail=True),
@@ -1543,3 +1547,6 @@ def pb_flow_runner(options: PbFlowOptions):
     if not options.skip_vitis:
         print(">>> Dumping report ... ")
         pb_flow_dump_report(options)
+
+
+# ------------------------------ Plotting -------------------------------
