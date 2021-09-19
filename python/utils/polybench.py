@@ -1065,20 +1065,17 @@ class PbFlow:
 
     def extract_top_func(self):
         """Extract the top function and all the stuff it calls."""
-        if self.options.sanity_check:
-            self.logger.debug(
-                "Won't extract top function since it's the sanity check mode."
-            )
-            return self
-
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(
             ".mlir", ".kern.mlir"
         )
+
+        keepall = "keepall" if self.options.sanity_check else ""
+
         log_file = self.cur_file.replace(".mlir", ".log")
         args = [
             self.get_program_abspath("phism-opt"),
             src_file,
-            f'-extract-top-func="name={get_top_func(src_file)}"',
+            f'-extract-top-func="name={get_top_func(src_file)} {keepall}"',
         ]
         self.run_command(
             cmd=" ".join(args),
@@ -1229,7 +1226,7 @@ class PbFlow:
         args = [
             self.get_program_abspath("phism-opt"),
             src_file,
-            "-replace-constant-arguments",
+            f'-replace-constant-arguments="name={get_top_func(src_file)}"',
             "-canonicalize",
         ]
 
