@@ -70,6 +70,7 @@ def main():
     parser.add_argument(
         "--skip-csim", action="store_true", help="Don't run tbgen (csim)."
     )
+    parser.add_argument("--sanity-check", action="store_true", help="Run sanity check.")
     args = parser.parse_args()
 
     options = pb_utils.PbFlowOptions(**vars(args))
