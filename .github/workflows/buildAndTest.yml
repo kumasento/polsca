@@ -68,6 +68,9 @@ jobs:
           source env/bin/activate
           which python3
           python3 -m pip install -r requirements.txt
+          python3 ./scripts/pb-flow.py ./example/polybench --dataset MINI --sanity-check
+          python3 ./scripts/pb-flow.py ./example/polybench --dataset MINI --polymer --sanity-check
+          python3 ./scripts/pb-flow.py ./example/polybench --dataset MINI --polymer --loop-transforms --sanity-check
           python3 ./scripts/pb-flow.py ./example/polybench --dataset SMALL --skip-vitis
           python3 ./scripts/pb-flow.py ./example/polybench --dataset SMALL --polymer --skip-vitis
           python3 ./scripts/pb-flow.py ./example/polybench --dataset SMALL --polymer --loop-transforms --skip-vitis
