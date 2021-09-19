@@ -733,7 +733,7 @@ config_compile -pipeline_loops 1
 set ::LLVM_CUSTOM_CMD {{$LLVM_CUSTOM_OPT -no-warn {src_file} -o $LLVM_CUSTOM_OUTPUT}}
 
 csynth_design
-export_design -flow syn -rtl verilog -format ip_catalog
+export_design -flow syn -rtl vhdl -format ip_catalog
 exit
 """
 
@@ -750,7 +750,7 @@ create_clock -period "100MHz"
 
 csim_design
 csynth_design
-cosim_design
+cosim_design -rtl vhdl 
 
 exit
 """
@@ -760,7 +760,7 @@ open_project tb
 
 open_solution solution1
 
-cosim_design
+cosim_design -rtl vhdl 
 
 exit
 """
@@ -1479,12 +1479,12 @@ class PbFlow:
         top_func = get_top_func(src_file)
 
         # Check results
-        phism_syn_verilog_dir = os.path.join(
-            base_dir, "proj", "solution1", "impl", "ip", "hdl", "verilog"
+        phism_syn_vhdl_dir = os.path.join(
+            base_dir, "proj", "solution1", "impl", "ip", "hdl", "vhdl"
         )
         assert os.path.isdir(
-            phism_syn_verilog_dir
-        ), f"{phism_syn_verilog_dir} doens't exist."
+            phism_syn_vhdl_dir
+        ), f"{phism_syn_vhdl_dir} doens't exist."
 
         phism_syn_ip_dir = os.path.join(
             base_dir, "proj", "solution1", "impl", "ip", "hdl", "ip"
@@ -1493,106 +1493,111 @@ class PbFlow:
             phism_syn_ip_dir
         ), f"{phism_syn_ip_dir} doens't exist."
 
-        tbgen_syn_verilog_dir = os.path.join(
-            base_dir, "tb", "solution1", "syn", "verilog"
+        tbgen_syn_vhdl_dir = os.path.join(
+            base_dir, "tb", "solution1", "syn", "vhdl"
         )
         assert os.path.isdir(
-            tbgen_syn_verilog_dir
-        ), f"{tbgen_syn_verilog_dir} doens't exist."
+            tbgen_syn_vhdl_dir
+        ), f"{tbgen_syn_vhdl_dir} doens't exist."
 
-        tbgen_sim_verilog_dir = os.path.join(
-            base_dir, "tb", "solution1", "sim", "verilog"
+        tbgen_sim_vhdl_dir = os.path.join(
+            base_dir, "tb", "solution1", "sim", "vhdl"
         )
         assert os.path.isdir(
-            tbgen_sim_verilog_dir
-        ), f"{tbgen_sim_verilog_dir} doens't exist."
+            tbgen_sim_vhdl_dir
+        ), f"{tbgen_sim_vhdl_dir} doens't exist."
 
         # Copy and paste the design files.
-        design_files = glob.glob(os.path.join(phism_syn_verilog_dir, "*.*"))
+        design_files = glob.glob(os.path.join(phism_syn_vhdl_dir, "*.*"))
         assert design_files, "There should exist design files."
         for f in design_files:
-            shutil.copy(f, tbgen_syn_verilog_dir)
-        design_files = glob.glob(os.path.join(phism_syn_ip_dir, "*.*"))
+            shutil.copy(f, tbgen_syn_vhdl_dir)
+        design_files = glob.glob(os.path.join(phism_syn_ip_dir, "*.v"))
         assert design_files, "There should exist design files."
         for f in design_files:
             # TODO: insert timescale. to write in a proper way?
             os.system("sed -i '1i `timescale 1ns/1ps' "+f+";")
-            shutil.copy(f, tbgen_syn_verilog_dir)
+            shutil.copy(f, tbgen_syn_vhdl_dir)
 
         self.logger.debug(f"Design files found: \n" + "\n".join(design_files))
 
         # Fix the inconsistency between the testbench and the design top.
-        phism_top = os.path.join(tbgen_syn_verilog_dir, f"{top_func}.v")
-        assert os.path.isfile(phism_top), f"The top module {phism_top} should exist."
-        autotb = os.path.join(tbgen_sim_verilog_dir, f"{top_func}.autotb.v")
-        assert os.path.isfile(autotb), f"The autotb file {autotb} should exist."
+        
+        # phism_top = os.path.join(tbgen_syn_vhdl_dir, f"{top_func}.vhd")
+        # assert os.path.isfile(phism_top), f"The top module {phism_top} should exist."
+        # autotb = os.path.join(tbgen_sim_vhdl_dir, f"{top_func}.autotb.vhd")
+        # assert os.path.isfile(autotb), f"The autotb file {autotb} should exist."
 
-        phism_params = get_module_parameters(phism_top, top_func)
-        self.logger.debug(
-            f"Parameters parsed from {phism_top}:\n" + "\n".join(phism_params)
-        )
-        autotb_params = get_autotb_parameters(autotb)
-        self.logger.debug(
-            f"Parameters parsed from {autotb}:\n" + "\n".join(autotb_params)
-        )
+        # phism_params = get_module_parameters(phism_top, top_func)
+        # self.logger.debug(
+        #     f"Parameters parsed from {phism_top}:\n" + "\n".join(phism_params)
+        # )
+        # autotb_params = get_autotb_parameters(autotb)
+        # self.logger.debug(
+        #     f"Parameters parsed from {autotb}:\n" + "\n".join(autotb_params)
+        # )
 
-        phism_mems = get_memory_interfaces(phism_params)
-        self.logger.debug(
-            f"Parsed memory interfaces from {phism_top}:\n"
-            + "\n".join([str(m) for m in phism_mems])
-        )
-        autotb_mems = get_memory_interfaces(autotb_params)
-        self.logger.debug(
-            f"Parsed memory interfaces from {autotb}:\n"
-            + "\n".join([str(m) for m in autotb_mems])
-        )
+        # phism_mems = get_memory_interfaces(phism_params)
+        # self.logger.debug(
+        #     f"Parsed memory interfaces from {phism_top}:\n"
+        #     + "\n".join([str(m) for m in phism_mems])
+        # )
+        # autotb_mems = get_memory_interfaces(autotb_params)
+        # self.logger.debug(
+        #     f"Parsed memory interfaces from {autotb}:\n"
+        #     + "\n".join([str(m) for m in autotb_mems])
+        # )
 
-        if not is_cosim_interface_matched(phism_mems, autotb_mems):
-            self.logger.debug(
-                f"Cosim interface is not matched between {phism_top} and {autotb}. Trying to fix."
-            )
+        # if not is_cosim_interface_matched(phism_mems, autotb_mems):
+        #     self.logger.debug(
+        #         f"Cosim interface is not matched between {phism_top} and {autotb}. Trying to fix."
+        #     )
 
-            assert try_fix, "Won't fix the mismatched interfaces."
+        #     assert try_fix, "Won't fix the mismatched interfaces."
 
-            strategy = get_cosim_fix_strategy(top_func, phism_mems, autotb_mems)
-            self.logger.debug(
-                "\n\t".join(
-                    [
-                        "Cosim fix strategy:",
-                        f"Phism directives: {strategy.phism_directives}",
-                        f"Tbgen directives: {strategy.tbgen_directives}",
-                    ]
-                )
-            )
+        #     strategy = get_cosim_fix_strategy(top_func, phism_mems, autotb_mems)
+        #     self.logger.debug(
+        #         "\n\t".join(
+        #             [
+        #                 "Cosim fix strategy:",
+        #                 f"Phism directives: {strategy.phism_directives}",
+        #                 f"Tbgen directives: {strategy.tbgen_directives}",
+        #             ]
+        #         )
+        #     )
 
-            if strategy.tbgen_directives:
-                # Update the tbgen file by the specified directives.
-                insert_directives(
-                    strategy.tbgen_directives,
-                    os.path.join(base_dir, "tbgen.tcl"),
-                    "csim_design",
-                )
-                self.logger.debug("Re-run csim on the updated tbgen.tcl file.")
-                self = (
-                    self.run_tbgen_csim(force_skip=True)
-                    .backup_csim_results()
-                    .copy_design_from_phism_to_tb(try_fix=False)
-                )
+        #     if strategy.tbgen_directives:
+        #         # Update the tbgen file by the specified directives.
+        #         insert_directives(
+        #             strategy.tbgen_directives,
+        #             os.path.join(base_dir, "tbgen.tcl"),
+        #             "csim_design",
+        #         )
+        #         self.logger.debug("Re-run csim on the updated tbgen.tcl file.")
+        #         self = (
+        #             self.run_tbgen_csim(force_skip=True)
+        #             .backup_csim_results()
+        #             .copy_design_from_phism_to_tb(try_fix=False)
+        #         )
 
         # Overwrite the project file list to include files from Phism
-        prjFile = open(os.path.join(tbgen_syn_verilog_dir, "top_func.prj"))
+        prjFile = open(os.path.join(tbgen_syn_vhdl_dir, "top_func.prj"))
         prjFile.write("vhdl ieee_proposed \"ieee_FP_pkg/fixed_float_types_c.vhd\"\n")
         prjFile.write("vhdl ieee_proposed \"ieee_FP_pkg/fixed_pkg_c.vhd\"\n")
         prjFile.write("vhdl ieee_proposed \"ieee_FP_pkg/float_pkg_c.vhd\"\n")
         prjFile.write("vhdl ieee_proposed \"ieee_FP_pkg/aesl_fp_wrapper.vhd\"\n")
-        design_files = glob.glob(os.path.join(tbgen_syn_verilog_dir, "*.v")) + \
-                       glob.glob(os.path.join(tbgen_syn_verilog_dir, "*.sv")) + \
-                       glob.glob(os.path.join(tbgen_syn_verilog_dir, "ip", "xil_defaultlib", "*.v"))
+        design_files = glob.glob(os.path.join(tbgen_syn_vhdl_dir, "*.v")) + \
+                       glob.glob(os.path.join(tbgen_syn_vhdl_dir, "*.sv")) + \
+                       glob.glob(os.path.join(tbgen_syn_vhdl_dir, "ip", "xil_defaultlib", "*.v"))
         for f in design_files:
             if "glbl.v" in f:
-                prjFile.write("sv work \"glbl.v\"")
+                prjFile.write("sv work \"glbl.v\"\n")
             else:
                 prjFile.write("sv xil_defaultlib \"" +f+ "\"\n")
+        design_files = glob.glob(os.path.join(tbgen_syn_vhdl_dir, "*.vhd")) + \
+                       glob.glob(os.path.join(tbgen_syn_vhdl_dir, "ip", "xil_defaultlib", "*.vhd"))
+        for f in design_files:
+                prjFile.write("vhdl xil_defaultlib \"" +f+ "\"\n")
         prjFile.close()
         return self
 
