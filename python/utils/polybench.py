@@ -77,7 +77,6 @@ class PbFlowOptions:
     pb_dir: str
     job: int = 1
     polymer: bool = False
-    cosim: bool = False
     dataset: str = "MINI"
     cleanup: bool = False
     debug: bool = False
@@ -91,8 +90,17 @@ class PbFlowOptions:
     max_span: int = -1
     tile_sizes: Optional[List[int]] = None
     array_partition: bool = False
+    cosim: bool = False
     skip_vitis: bool = False
     skip_csim: bool = False  # Given cosim = True, you can still turn down csim.
+    sanity_check: bool = False  # Run pb-flow in sanity check mode
+
+    def __post_init__(self):
+        if self.sanity_check:
+            # Disable the Vitis steps.
+            self.cosim = False
+            self.skip_vitis = True
+            self.skip_csim = True
 
 
 # ----------------------- Utility functions ------------------------------------
@@ -805,15 +813,22 @@ class PbFlow:
         try:
             (
                 self.generate_tile_sizes()
+                .dump_test_data()
                 .compile_c()
                 .preprocess()
+                .sanity_check()
                 .split_statements()
                 .extract_top_func()
                 .polymer_opt()
+                .sanity_check()
                 .constant_args()
+                .sanity_check()
                 .loop_transforms()
+                .sanity_check()
                 .array_partition()
+                .sanity_check()
                 .scop_stmt_inline()
+                .sanity_check()
                 .lower_llvm()
                 .vitis_opt()
                 .write_tb_tcl_by_llvm()
@@ -834,6 +849,7 @@ class PbFlow:
         kwargs.update({"cwd": os.path.dirname(self.cur_file)})
 
         if cmd_list:
+            cmd_list = [cmd for cmd in cmd_list if cmd]
             cmd_ = " \\\n\t".join(cmd_list)
             self.logger.debug(f"{cmd_}")
             if self.options.dry_run:
@@ -858,6 +874,54 @@ class PbFlow:
         return str(
             subprocess.check_output(["which", program], env=self.env), "utf-8"
         ).strip()
+
+    def get_golden_out_file(self) -> str:
+        path = os.path.basename(self.cur_file)
+        return os.path.join(
+            os.path.dirname(self.cur_file), path.split(".")[0] + ".golden.out"
+        )
+
+    def dump_test_data(self):
+        """Compile and dump test data for sanity check."""
+        if not self.options.sanity_check:
+            return self
+
+        out_file = self.get_golden_out_file()
+        exe_file = self.cur_file.replace(".c", ".exe")
+        self.run_command(
+            cmd_list=[
+                self.get_program_abspath("clang"),
+                "-D",
+                f"{self.options.dataset}_DATASET",
+                "-D",
+                "POLYBENCH_DUMP_ARRAYS",
+                "-I",
+                os.path.join(self.work_dir, "utilities"),
+                "-I",
+                os.path.join(
+                    self.root_dir,
+                    "llvm",
+                    "build",
+                    "lib",
+                    "clang",
+                    "13.0.0",
+                    "include",
+                ),
+                "-lm",
+                self.cur_file,
+                os.path.join(self.work_dir, "utilities", "polybench.c"),
+                "-o",
+                exe_file,
+            ],
+            env=self.env,
+        )
+        self.run_command(
+            cmd=exe_file,
+            stderr=open(out_file, "w"),
+            env=self.env,
+        )
+
+        return self
 
     def generate_tile_sizes(self):
         """Generate the tile.sizes file that Pluto will read."""
@@ -887,6 +951,8 @@ class PbFlow:
                 "-memref-fullrank",
                 "-D",
                 f"{self.options.dataset}_DATASET",
+                "-D",
+                "POLYBENCH_DUMP_ARRAYS",
                 "-I={}".format(
                     os.path.join(
                         self.root_dir,
@@ -905,6 +971,44 @@ class PbFlow:
         )
         return self
 
+    def sanity_check(self):
+        """Sanity check the current file."""
+        if not self.options.sanity_check:
+            return self
+
+        assert self.cur_file.endswith(".mlir"), "Should be an MLIR file."
+
+        out_file = self.cur_file.replace(".mlir", ".out")
+        self.run_command(
+            cmd=" ".join(
+                [
+                    self.get_program_abspath("mlir-opt"),
+                    "-lower-affine",
+                    "-convert-scf-to-std",
+                    "-convert-std-to-llvm",
+                    self.cur_file,
+                    "|",
+                    self.get_program_abspath("mlir-translate"),
+                    "-mlir-to-llvmir",
+                    "|",
+                    self.get_program_abspath("opt"),
+                    "-O3",
+                    "|",
+                    self.get_program_abspath("lli"),
+                ]
+            ),
+            shell=True,
+            env=self.env,
+            stderr=open(out_file, "w"),
+        )
+
+        self.run_command(
+            cmd_list=["diff", self.get_golden_out_file(), out_file],
+            stdout=open(out_file.replace(".out", ".diff"), "w"),
+        )
+
+        return self
+
     def preprocess(self):
         """Do some preprocessing before extracting the top function."""
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(
@@ -913,10 +1017,17 @@ class PbFlow:
         self.run_command(
             cmd_list=[
                 self.get_program_abspath("mlir-opt"),
-                src_file,
-                "-sccp",
+                "-sccp" if not self.options.sanity_check else "",
                 "-canonicalize",
+                src_file,
             ],
+            stderr=open(
+                os.path.join(
+                    os.path.dirname(self.cur_file),
+                    self.cur_file.replace(".mlir", ".log"),
+                ),
+                "w",
+            ),
             stdout=open(self.cur_file, "w"),
             env=self.env,
         )
@@ -954,6 +1065,12 @@ class PbFlow:
 
     def extract_top_func(self):
         """Extract the top function and all the stuff it calls."""
+        if self.options.sanity_check:
+            self.logger.debug(
+                "Won't extract top function since it's the sanity check mode."
+            )
+            return self
+
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(
             ".mlir", ".kern.mlir"
         )
@@ -962,7 +1079,6 @@ class PbFlow:
             self.get_program_abspath("phism-opt"),
             src_file,
             f'-extract-top-func="name={get_top_func(src_file)}"',
-            "-improve-pipelining" if self.options.improve_pipelining else "",
         ]
         self.run_command(
             cmd=" ".join(args),
@@ -1131,13 +1247,18 @@ class PbFlow:
         """Lower from MLIR to LLVM."""
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(".mlir", ".llvm")
 
+        memref_option = (
+            f"use-bare-ptr-memref-call-conv={0 if self.options.sanity_check else 1}"
+        )
+        convert_std_to_llvm = f'-convert-std-to-llvm="{memref_option}"'
+
         args = [
             self.get_program_abspath("mlir-opt"),
             src_file,
             "-lower-affine",
             "-convert-scf-to-std",
             "-canonicalize",
-            '-convert-std-to-llvm="use-bare-ptr-memref-call-conv=1"',
+            convert_std_to_llvm,
             f"| {self.get_program_abspath('mlir-translate')} -mlir-to-llvmir",
         ]
 
@@ -1152,6 +1273,9 @@ class PbFlow:
 
     def vitis_opt(self):
         """Optimize LLVM IR for Vitis."""
+        if self.options.sanity_check:
+            self.logger.debug("Skipped --vitis-opt since in --sanity-check.")
+            return self
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(
             ".llvm", ".vitis.llvm"
         )
