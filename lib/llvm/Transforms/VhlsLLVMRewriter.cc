@@ -1576,7 +1576,7 @@ struct XilinxTBTclGenPass : public ModulePass {
         }
         XlnTBTcl << "csim_design\n"
                  << "csynth_design\n"
-                 << "cosim_design\n"
+                 << "cosim_design -rtl vhdl\n"
                  << "exit\n";
       }
     return false;
