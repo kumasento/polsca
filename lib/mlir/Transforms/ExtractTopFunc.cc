@@ -99,6 +99,8 @@ struct ExtractTopFuncPass
   Option<std::string> topFuncName{
       *this, "name",
       llvm::cl::desc("Name of the top function to be extracted.")};
+  Option<bool> keepAll{*this, "keepall",
+                       llvm::cl::desc("Keep all the functions.")};
 
   void runOnOperation() override {
     ModuleOp m = getOperation();
@@ -115,7 +117,7 @@ struct ExtractTopFuncPass
     unionCallee(f, m, keep);
 
     m.walk([&](FuncOp g) {
-      if (!keep.contains(g))
+      if (!keep.contains(g) && !keepAll)
         g.erase();
       else // Enforce every extracted function to be public
         g.setVisibility(SymbolTable::Visibility::Public);
@@ -124,6 +126,12 @@ struct ExtractTopFuncPass
 };
 
 } // namespace
+
+struct ConstArgsPipelineOptions
+    : public mlir::PassPipelineOptions<ConstArgsPipelineOptions> {
+  Option<std::string> topFuncName{*this, "name",
+                                  llvm::cl::desc("Top function name")};
+};
 
 /// --------------------------- ReplaceConstantArguments ----------------------
 
@@ -195,24 +203,54 @@ namespace {
 /// Replace the arguments of the PEs by constants if they are passed that way.
 struct PropagateConstantsPass
     : public PassWrapper<PropagateConstantsPass, OperationPass<ModuleOp>> {
+
+  std::string topName;
+
+  PropagateConstantsPass() = default;
+  PropagateConstantsPass(const PropagateConstantsPass &pass) {}
+  PropagateConstantsPass(const ConstArgsPipelineOptions &options)
+      : topName(options.topFuncName) {}
+
   void runOnOperation() override {
     ModuleOp m = getOperation();
     OpBuilder b(m.getContext());
 
+    // Map from caller to its mapped constant values.
     llvm::DenseMap<Operation *, llvm::DenseMap<unsigned, Value>> constArgs;
-    m.walk([&](CallOp caller) {
+
+    // Look within the top function, go through each caller, and if there is any
+    // argument is defined by a constant integer, put that as a record in the
+    // dictionary.
+    FuncOp top = cast<FuncOp>(m.lookupSymbol(topName));
+    top.walk([&](CallOp caller) {
       for (auto arg : enumerate(caller.getArgOperands()))
-        if (arg.value().getDefiningOp<ConstantOp>())
-          constArgs[caller].insert({arg.index(), arg.value()});
+        if (arg.value().getDefiningOp<ConstantIntOp>()) {
+          if (!constArgs[caller].count(arg.index())) {
+            constArgs[caller].insert({arg.index(), arg.value()});
+          } else {
+            // If an argument can be called by different constants, then it
+            // cannot be propagated.
+            /// TODO: should we better duplicate the PE instances?
+            constArgs[caller][arg.index()] = nullptr; // invalid.
+          }
+        }
     });
 
+    // Replace -
     for (auto &it : constArgs) {
       FuncOp callee =
           cast<FuncOp>(m.lookupSymbol(cast<CallOp>(it.first).getCallee()));
       b.setInsertionPointToStart(&callee.getBlocks().front());
       for (auto &it2 : it.second) {
-        Operation *op = b.clone(*it2.second.getDefiningOp());
-        callee.getArgument(it2.first).replaceAllUsesWith(op->getResult(0));
+        unsigned idx;
+        Value arg;
+        std::tie(idx, arg) = it2;
+
+        if (!arg)
+          continue;
+
+        Operation *op = b.clone(*arg.getDefiningOp());
+        callee.getArgument(idx).replaceAllUsesWith(op->getResult(0));
       }
     }
   }
@@ -222,13 +260,13 @@ struct PropagateConstantsPass
 void phism::registerExtractTopFuncPass() {
   PassRegistration<ExtractTopFuncPass>(
       "extract-top-func", "Extract the top function out of its module.");
-  PassPipelineRegistration<>(
+  PassPipelineRegistration<ConstArgsPipelineOptions>(
       "replace-constant-arguments", "Replace the annotated constant arguments.",
-      [](OpPassManager &pm) {
+      [](OpPassManager &pm, const ConstArgsPipelineOptions &options) {
         pm.addPass(std::make_unique<ReplaceConstantArgumentsPass>());
         pm.addPass(createCanonicalizerPass());
         pm.addPass(std::make_unique<RemoveEmptyAffineIfPass>());
-        pm.addPass(std::make_unique<PropagateConstantsPass>());
+        pm.addPass(std::make_unique<PropagateConstantsPass>(options));
         pm.addPass(createCanonicalizerPass());
       });
 }
