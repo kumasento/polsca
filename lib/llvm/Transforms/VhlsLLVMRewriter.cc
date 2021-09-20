@@ -70,6 +70,10 @@ static SmallVector<int64_t> getDimsFromArrayType(ArrayType *type) {
   return dims;
 }
 
+static bool isPointerToArray(Type *type) {
+  return type->isPointerTy() && type->getPointerElementType()->isArrayTy();
+}
+
 namespace {
 
 /// InsExtSequence holds a sequence of `insertvalue` and `extractvalue`
@@ -1517,8 +1521,7 @@ static void generateXlnTBDummy(Function &F, StringRef fileName) {
 
     // If it is an array, then append the dimension information
     // e.g. (in LLVM), [32 x f64]* %0
-    if (argType->isPointerTy() &&
-        argType->getPointerElementType()->isArrayTy()) {
+    if (isPointerToArray(argType)) {
       auto dims = getArrayDimensionInfo(
           dyn_cast<ArrayType>(argType->getPointerElementType()));
       for (auto dim : dims)
@@ -1597,8 +1600,7 @@ static void generateXlnTBTcl(Function &F, StringRef fileName,
 
   for (unsigned i = 0; i < F.arg_size(); i++) {
     auto arg = F.getArg(i);
-    if (arg->getType()->isPointerTy() &&
-        arg->getType()->getPointerElementType()->isArrayTy()) {
+    if (isPointerToArray(arg->getType())) {
       auto arrayTy =
           dyn_cast<ArrayType>(arg->getType()->getPointerElementType());
       if (arrayPartitionEnabled) {
@@ -1751,39 +1753,46 @@ struct AnnotateNoInlinePass : public ModulePass {
 
 namespace {
 
+/// Add attributes related to memory interfaces to each of the array arguments
+/// of a function.
 struct ConfigMemoryInterfacePass : public ModulePass {
   static char ID; // Pass identification, replacement for typeid
   ConfigMemoryInterfacePass() : ModulePass(ID) {}
 
   bool runOnModule(Module &M) override {
+    assert(!XlnTop.empty() && "Top function name should be set.");
 
-    for (auto &F : M)
-      if (F.getName() == XlnTop) {
-        auto attributeList = F.getAttributes();
-        for (unsigned i = 0; i < F.arg_size(); i++) {
-          auto arg = F.getArg(i);
-          if (arg->getType()->isPointerTy() &&
-              arg->getType()->getPointerElementType()->isArrayTy()) {
-            auto arrayName = arg->getName().str();
-            attributeList = attributeList.addAttribute(
-                F.getContext(), i + 1, "fpga.address.interface",
-                "ap_memory." + arrayName);
-            auto &C = F.getContext();
-            SmallVector<Metadata *, 32> ops;
-            ops.push_back(llvm::MDString::get(C, arrayName));
-            ops.push_back(llvm::MDString::get(C, "ap_memory"));
-            ops.push_back(llvm::ConstantAsMetadata::get(
-                ConstantInt::get(IntegerType::get(C, 32), 666)));
-            ops.push_back(llvm::ConstantAsMetadata::get(
-                ConstantInt::get(IntegerType::get(C, 32), 208 /*ram2p*/)));
-            ops.push_back(llvm::ConstantAsMetadata::get(
-                ConstantInt::get(IntegerType::get(C, 32), -1)));
-            auto *N = MDTuple::get(C, ops);
-            F.setMetadata("fpga.adaptor.bram." + arrayName, N);
-          }
-        }
-        F.setAttributes(attributeList);
+    Function *F = findFunc(&M, XlnTop);
+    assert(F && "Top function should be found.");
+
+    auto attributeList = F->getAttributes();
+    for (unsigned i = 0; i < F->arg_size(); i++) {
+      Value *arg = F->getArg(i);
+      if (isPointerToArray(arg->getType())) {
+        // Set ap_memory interface to array arguments.
+        auto arrayName = arg->getName().str();
+        attributeList = attributeList.addAttribute(F->getContext(), i + 1,
+                                                   "fpga.address.interface",
+                                                   "ap_memory." + arrayName);
+
+        // Set bram configuration to function metadata.
+        auto &C = F->getContext();
+        // A list of aggregated metadata
+        SmallVector<Metadata *, 32> ops;
+        ops.push_back(MDString::get(C, arrayName));
+        ops.push_back(MDString::get(C, "ap_memory"));
+        ops.push_back(ConstantAsMetadata::get(
+            ConstantInt::get(IntegerType::get(C, 32), 666)));
+        ops.push_back(ConstantAsMetadata::get(
+            ConstantInt::get(IntegerType::get(C, 32), 208 /*ram2p*/)));
+        ops.push_back(ConstantAsMetadata::get(
+            ConstantInt::get(IntegerType::get(C, 32), -1)));
+        // One additional metadata annotating the adaptor type.
+        auto *N = MDTuple::get(C, ops);
+        F->setMetadata("fpga.adaptor.bram." + arrayName, N);
       }
+    }
+    F->setAttributes(attributeList);
 
     return false;
   }
