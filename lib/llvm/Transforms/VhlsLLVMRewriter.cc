@@ -1371,16 +1371,16 @@ struct XilinxUnrollPass : public ModulePass {
 /// current array type.
 static SmallVector<std::pair<unsigned, unsigned>>
 getArrayDimensionInfo(ArrayType *arrayTy) {
-  SmallVector<std::pair<unsigned, unsigned>> partitions;
+  SmallVector<std::pair<unsigned, unsigned>> dims;
   unsigned d = 0;
   do {
-    partitions.push_back(
+    dims.push_back(
         std::pair<unsigned, unsigned>(d + 1, arrayTy->getNumElements()));
     arrayTy = dyn_cast<ArrayType>(arrayTy->getElementType());
     ++d;
   } while (arrayTy);
 
-  return partitions;
+  return dims;
 }
 
 namespace {
@@ -1473,6 +1473,157 @@ static std::string interpretArgumentType(Type *type) {
   return "undefined_type";
 }
 
+static Function *findFunc(Module *M, StringRef name) {
+  for (auto &F : *M)
+    if (F.getName() == name)
+      return &F;
+  return nullptr;
+}
+
+static Value *findIntegerArg(Function &F) {
+  for (unsigned i = 0; i < F.arg_size(); ++i) {
+    Value *arg = F.getArg(i);
+    if (arg->getType()->isIntegerTy())
+      return arg;
+  }
+  return nullptr;
+}
+
+/// Generate the dummy C file for testbench generation. The function interface
+/// and body are generated from the input LLVM (top) function.
+static void generateXlnTBDummy(Function &F, StringRef fileName) {
+  std::error_code ec;
+  llvm::raw_fd_ostream XlnTBDummy(fileName, ec);
+  if (ec) {
+    errs() << ec.message() << '\n';
+    return;
+  }
+
+  // Find an integer argument to use as indices which results in
+  // unpredictable memory acccesses. This forces Vitis to generate generic
+  // RAM ports for all the arrays.
+  Value *intArg = findIntegerArg(F);
+
+  // Build the function interface.
+  SmallVector<std::string> argDeclList, argList, funcStmtList;
+  for (unsigned i = 0; i < F.arg_size(); i++) {
+    auto arg = F.getArg(i);
+    auto argType = arg->getType();
+    auto argName = arg->getName().str();
+    argList.push_back(argName);
+
+    // e.g. (in C), int A, float *p.
+    std::string argDecl = interpretArgumentType(argType) + " " + argName;
+
+    // If it is an array, then append the dimension information
+    // e.g. (in LLVM), [32 x f64]* %0
+    if (argType->isPointerTy() &&
+        argType->getPointerElementType()->isArrayTy()) {
+      auto dims = getArrayDimensionInfo(
+          dyn_cast<ArrayType>(argType->getPointerElementType()));
+      for (auto dim : dims)
+        argDecl += "[" + std::to_string(dim.second) + "]";
+
+      // The function body does some meaningless array assignments just to
+      // make sure that Vitis generates proper RAM interface. Add memory
+      // accesses to the function body to ensure the RAM ports are
+      // properly generated.
+      //
+      // Suppose the original LLVM interface looks like -
+      //     @foo(i32 %N, [10 x float]* %A)
+      //
+      // We will generate the following C statements as the function body -
+      //     A[N + 1] += A[N];
+      //
+      // Note that the access might be out-of-bound here. But since this body is
+      // just used to direct HLS design INTERFACE generation and will later be
+      // discarded, these malformed accesses are negligible.
+
+      if (intArg) {
+        std::string readVar = argName, storeVar = argName;
+        for (unsigned j = 0; j < dims.size(); ++j) {
+          readVar += "[" + intArg->getName().str() + "]";
+          storeVar += "[" + intArg->getName().str() + " + 1]";
+        }
+        funcStmtList.push_back(storeVar + " += " + readVar + ";");
+      }
+    }
+
+    argDeclList.push_back(argDecl);
+  }
+
+  // Generate dummy file
+  // Function definition -
+  XlnTBDummy << interpretArgumentType(F.getReturnType()) << " " << F.getName()
+             << "(";
+  interleaveComma(argDeclList, XlnTBDummy);
+  XlnTBDummy << ") {\n";
+  interleave(funcStmtList, XlnTBDummy, "\n\t");
+  XlnTBDummy << "\n}\n\n";
+
+  // Main definition -
+  XlnTBDummy << "int main() {\n";
+  // Value declaration
+  interleave(argDeclList, XlnTBDummy, ";\n");
+  if (!argDeclList.empty())
+    XlnTBDummy << ";\n";
+  // Function call
+  XlnTBDummy << F.getName() << "(";
+  interleaveComma(argList, XlnTBDummy);
+  XlnTBDummy << ");\n"
+             << "return 0;\n"
+             << "}\n";
+}
+
+static void generateXlnTBTcl(Function &F, StringRef fileName,
+                             StringRef dummyFileName,
+                             bool arrayPartitionEnabled,
+                             bool arrayPartitionFlattened) {
+  std::error_code ec;
+  llvm::raw_fd_ostream XlnTBTcl(fileName, ec);
+  if (ec) {
+    errs() << ec.message() << '\n';
+    return;
+  }
+
+  // Generate tcl file
+  XlnTBTcl << "open_project -reset tb\n"
+           << "add_files " << dummyFileName << "\n"
+           << "add_files -tb " << dummyFileName << "\n"
+           << "set_top " << F.getName().str() << "\n"
+           << "open_solution -reset solution1\n"
+           << "set_part \"zynq\"\n"
+           << "create_clock -period \"100MHz\"\n";
+
+  for (unsigned i = 0; i < F.arg_size(); i++) {
+    auto arg = F.getArg(i);
+    if (arg->getType()->isPointerTy() &&
+        arg->getType()->getPointerElementType()->isArrayTy()) {
+      auto arrayTy =
+          dyn_cast<ArrayType>(arg->getType()->getPointerElementType());
+      if (arrayPartitionEnabled) {
+        auto partitions = getArrayDimensionInfo(arrayTy);
+        if (arrayPartitionFlattened)
+          partitions.pop_back_n(partitions.size() - 1);
+        else
+          partitions.pop_back_n(partitions.size() / 2);
+
+        for (auto partition : partitions)
+          XlnTBTcl << "set_directive_array_partition -dim " << partition.first
+                   << " -factor " << partition.second << " -type block \""
+                   << XlnTop << "\" " << arg->getName() << "\n";
+        XlnTBTcl << "set_directive_interface " << F.getName() << " "
+                 << arg->getName() << " -mode ap_memory -storage_type ram_2p\n";
+      }
+    }
+  }
+
+  XlnTBTcl << "csim_design\n"
+           << "csynth_design\n"
+           << "cosim_design -rtl vhdl\n"
+           << "exit\n";
+}
+
 namespace {
 
 /// Generate test bench tcl script and C dummy for Xilinx Vitis. This pass
@@ -1483,106 +1634,17 @@ struct XilinxTBTclGenPass : public ModulePass {
   XilinxTBTclGenPass() : ModulePass(ID) {}
 
   bool runOnModule(Module &M) override {
+    assert(!XlnTop.empty() && "Top function name should be set.");
 
-    for (auto &F : M)
-      if (F.getName() == XlnTop) {
-        std::error_code ec;
-        llvm::raw_fd_ostream XlnTBTcl(XlnTBTclNames, ec),
-            XlnTBDummy(XlnTBDummyNames, ec);
+    Function *F = findFunc(&M, XlnTop);
+    assert(F && "Top function should be found.");
 
-        // Generate dummy file
-        XlnTBDummy << interpretArgumentType(F.getReturnType()) << " "
-                   << F.getName() << "(";
-        // Find an integer argument to use as indices which results in
-        // unpredictable memory acccesses. This forces Vitis to generate generic
-        // RAM ports for all the arrays.
-        std::string intVarName;
-        for (unsigned i = 0; i < F.arg_size(); i++) {
-          auto arg = F.getArg(i);
-          if (arg->getType()->isIntegerTy()) {
-            intVarName = arg->getName().str();
-            break;
-          }
-        }
-        assert(!intVarName.empty());
+    // Generate the dummy C file.
+    generateXlnTBDummy(*F, XlnTBDummyNames);
+    // Generate the Tcl file.
+    generateXlnTBTcl(*F, XlnTBTclNames, XlnTBDummyNames,
+                     XlnArrayPartitionEnabled, XlnArrayPartitionFlattened);
 
-        std::string funcBody, argDeclList, argList;
-        for (unsigned i = 0; i < F.arg_size(); i++) {
-          auto arg = F.getArg(i);
-          auto argType = arg->getType();
-          auto argName = arg->getName().str();
-          argList += argName;
-          argDeclList += interpretArgumentType(argType) + " " + argName;
-
-          // If it is an array, then append the dimension information
-          if (argType->isPointerTy() && dyn_cast<PointerType>(argType)
-                                            ->getPointerElementType()
-                                            ->isArrayTy()) {
-            auto dimensions = getArrayDimensionInfo(dyn_cast<ArrayType>(
-                dyn_cast<PointerType>(argType)->getPointerElementType()));
-            for (auto dim : dimensions)
-              argDeclList += "[" + std::to_string(dim.second) + "]";
-
-            // The function body does some meaningless array assignments just to
-            // make sure that Vitis generates proper RAM interface. Add memory
-            // accesses to the function body to ensure the RAM ports are
-            // properly generated.
-            std::string readVar = argName, storeVar = argName;
-            for (unsigned j = 0; j < dimensions.size(); ++j) {
-              readVar += "[" + intVarName + "]";
-              storeVar += "[" + intVarName + " + 1]";
-            }
-            funcBody += storeVar + " += " + readVar + ";\n";
-          }
-
-          if (i != F.arg_size() - 1) {
-            argDeclList += ", ";
-            argList += ", ";
-          }
-        }
-        XlnTBDummy << argDeclList << ") {\n"
-                   << funcBody << "}\nint main(){\n"
-                   << std::regex_replace(argDeclList + ", ", std::regex(", "),
-                                         ";\n")
-                   << F.getName() << "(" << argList << ");\nreturn 0;\n}\n";
-
-        // Generate tcl file
-        XlnTBTcl << "open_project -reset tb\n"
-                 << "add_files " << XlnTBDummyNames << "\n"
-                 << "add_files -tb " << XlnTBDummyNames << "\n"
-                 << "set_top " << XlnTop << "\n"
-                 << "open_solution -reset solution1\n"
-                 << "set_part \"zynq\"\n"
-                 << "create_clock -period \"100MHz\"\n";
-
-        for (unsigned i = 0; i < F.arg_size(); i++) {
-          auto arg = F.getArg(i);
-          if (arg->getType()->isPointerTy() &&
-              arg->getType()->getPointerElementType()->isArrayTy()) {
-            auto arrayTy =
-                dyn_cast<ArrayType>(arg->getType()->getPointerElementType());
-            if (XlnArrayPartitionEnabled) {
-              auto partitions = getArrayDimensionInfo(arrayTy);
-              if (XlnArrayPartitionFlattened)
-                partitions.pop_back_n(partitions.size() - 1);
-              else
-                partitions.pop_back_n(partitions.size() / 2);
-              for (auto partition : partitions)
-                XlnTBTcl << "set_directive_array_partition -dim "
-                         << partition.first << " -factor " << partition.second
-                         << " -type block \"" << XlnTop << "\" "
-                         << arg->getName() << "\n";
-              XlnTBTcl << "set_directive_interface " << F.getName() << " "
-                       << arg->getName()
-                       << " -mode ap_memory -storage_type ram_2p\n";
-            }
-          }
-        }
-        XlnTBTcl << "csim_design\n"
-                 << "csynth_design\n"
-                 << "cosim_design -rtl vhdl\n"
-                 << "exit\n";
-      }
     return false;
   }
 };
