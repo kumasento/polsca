@@ -209,8 +209,9 @@ public:
       for (Value *offset : offsets)
         offset->dump();
       dbgs() << "Strides: ";
-      interleave(strides, [&](const int64_t &stride) { dbgs() << stride; },
-                 [&]() { dbgs() << ", "; });
+      interleave(
+          strides, [&](const int64_t &stride) { dbgs() << stride; },
+          [&]() { dbgs() << ", "; });
       dbgs() << "\n\n";
     });
 
@@ -221,8 +222,9 @@ public:
 
     LLVM_DEBUG({
       dbgs() << "Partial dims:\n";
-      interleave(partialDims, [&](const int64_t &v) { dbgs() << v; },
-                 [&]() { dbgs() << ", "; });
+      interleave(
+          partialDims, [&](const int64_t &v) { dbgs() << v; },
+          [&]() { dbgs() << ", "; });
       dbgs() << "\n";
     });
 
@@ -1442,30 +1444,33 @@ struct XilinxArrayPartitionPass : public ModulePass {
 static std::string interpretArgumentType(Type *type) {
   if (type->isVoidTy())
     return "void";
-  else if (type->isIntegerTy(1))
+  if (type->isIntegerTy(1))
     return "bool";
-  else if (type->isIntegerTy())
+  if (type->isIntegerTy()) // TODO: could this be long?
     return "int";
-  else if (type->isDoubleTy())
+  if (type->isDoubleTy())
     return "double";
-  else if (type->isFloatTy())
+  if (type->isFloatTy())
     return "float";
-  else if (type->isPointerTy()) {
+  if (type->isPointerTy()) {
     auto pointerTy = dyn_cast<PointerType>(type);
     auto elementTy = pointerTy->getElementType();
+    // A plain pointer
     if (!elementTy->isArrayTy())
       return interpretArgumentType(elementTy) + "*";
-    else {
-      auto arrayTy = dyn_cast<ArrayType>(elementTy);
-      Type *nextTy;
-      do {
-        nextTy = arrayTy->getElementType();
-        arrayTy = dyn_cast<ArrayType>(nextTy);
-      } while (arrayTy);
-      return interpretArgumentType(nextTy);
-    }
-  } else
-    return "undefined_type";
+
+    // Pointer to an array
+    /// TODO: could type itself be an array type?
+    auto arrayTy = dyn_cast<ArrayType>(elementTy);
+    Type *nextTy;
+    do {
+      nextTy = arrayTy->getElementType();
+      arrayTy = dyn_cast<ArrayType>(nextTy);
+    } while (arrayTy);
+    return interpretArgumentType(nextTy);
+  }
+
+  return "undefined_type";
 }
 
 namespace {
@@ -1510,10 +1515,9 @@ struct XilinxTBTclGenPass : public ModulePass {
           argDeclList += interpretArgumentType(argType) + " " + argName;
 
           // If it is an array, then append the dimension information
-          if (argType->isPointerTy() &&
-              dyn_cast<PointerType>(argType)
-                  ->getPointerElementType()
-                  ->isArrayTy()) {
+          if (argType->isPointerTy() && dyn_cast<PointerType>(argType)
+                                            ->getPointerElementType()
+                                            ->isArrayTy()) {
             auto dimensions = getArrayDimensionInfo(dyn_cast<ArrayType>(
                 dyn_cast<PointerType>(argType)->getPointerElementType()));
             for (auto dim : dimensions)
@@ -1524,7 +1528,7 @@ struct XilinxTBTclGenPass : public ModulePass {
             // accesses to the function body to ensure the RAM ports are
             // properly generated.
             std::string readVar = argName, storeVar = argName;
-            for (auto dim : dimensions) {
+            for (unsigned j = 0; j < dimensions.size(); ++j) {
               readVar += "[" + intVarName + "]";
               storeVar += "[" + intVarName + " + 1]";
             }
