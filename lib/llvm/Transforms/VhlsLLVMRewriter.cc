@@ -1605,16 +1605,20 @@ static void generateXlnTBTcl(Function &F, StringRef fileName,
         auto partitions = getArrayDimensionInfo(arrayTy);
         if (arrayPartitionFlattened)
           partitions.pop_back_n(partitions.size() - 1);
-        else
+        else {
+          assert(partitions.size() % 2 == 0 &&
+                 "The number of dims should be divisble by 2 if the partition "
+                 "dims are not flattened");
           partitions.pop_back_n(partitions.size() / 2);
+        }
 
         for (auto partition : partitions)
           XlnTBTcl << "set_directive_array_partition -dim " << partition.first
                    << " -factor " << partition.second << " -type block \""
                    << XlnTop << "\" " << arg->getName() << "\n";
-        XlnTBTcl << "set_directive_interface " << F.getName() << " "
-                 << arg->getName() << " -mode ap_memory -storage_type ram_2p\n";
       }
+      XlnTBTcl << "set_directive_interface " << F.getName() << " "
+               << arg->getName() << " -mode ap_memory -storage_type ram_2p\n";
     }
   }
 
