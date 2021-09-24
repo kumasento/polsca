@@ -60,6 +60,15 @@ jobs:
       - name: Build and Test Phism (Assert)
         run: |
           ./scripts/build-phism.sh ci
+
+      - name: Install the Python library and test
+        run: |
+          python3 -m venv env
+          source env/bin/activate
+          which python3
+          python3 -m pip install -r requirements.txt
+
+          pytest pyphism/
       
       # Build and test Phism with pb-flow.
       - name: Build and Test Phism (pb-flow)

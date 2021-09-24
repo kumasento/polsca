@@ -10,7 +10,7 @@ import os
 import subprocess
 import sys
 
-import python.utils.polybench as pb_utils
+from pyphism.polybench import pb_flow
 
 
 def main():
@@ -39,7 +39,7 @@ def main():
     )
     parser.add_argument(
         "--dataset",
-        choices=pb_utils.POLYBENCH_DATASETS,
+        choices=pb_flow.POLYBENCH_DATASETS,
         default="MINI",
         help="Polybench dataset size. ",
     )
@@ -73,11 +73,11 @@ def main():
     parser.add_argument("--sanity-check", action="store_true", help="Run sanity check.")
     args = parser.parse_args()
 
-    options = pb_utils.PbFlowOptions(**vars(args))
+    options = pb_flow.PbFlowOptions(**vars(args))
 
     print(f"Options: {options}")
 
-    pb_utils.pb_flow_runner(options)
+    pb_flow.pb_flow_runner(options)
 
 
 if __name__ == "__main__":
