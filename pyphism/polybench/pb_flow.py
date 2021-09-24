@@ -1,4 +1,4 @@
-""" Utitity functions.  """
+""" Utitity functions for polybench evaluation.  """
 
 import datetime
 import functools
@@ -17,6 +17,9 @@ from timeit import default_timer as timer
 from typing import List, Optional, Tuple
 
 import pandas as pd
+
+import pyphism.utils.helper as helper
+from pyphism.polybench.utils.vhdl import get_port_list
 
 POLYBENCH_DATASETS = ("MINI", "SMALL", "MEDIUM", "LARGE", "EXTRALARGE")
 POLYBENCH_EXAMPLES = (
@@ -1346,7 +1349,7 @@ class PbFlow:
             "-xlntbgen",
             "-xln-ap-flattened",
             "-xln-ap-enabled" if xln_ap_enabled else "",
-            "-xlntbdummynames="+base_dir+"/dummy.cpp",
+            f"-xlntbdummynames={base_dir}/dummy.cpp",
             f'-xlntbtclnames="{tbgen_vitis_tcl}"',
         ]
 
@@ -1483,39 +1486,37 @@ class PbFlow:
         phism_syn_vhdl_dir = os.path.join(
             base_dir, "proj", "solution1", "impl", "ip", "hdl", "vhdl"
         )
-        assert os.path.isdir(
-            phism_syn_vhdl_dir
-        ), f"{phism_syn_vhdl_dir} doens't exist."
+        assert os.path.isdir(phism_syn_vhdl_dir), f"{phism_syn_vhdl_dir} doens't exist."
 
         # The ip files used in the design files by Phism
         phism_syn_ip_dir = os.path.join(
             base_dir, "proj", "solution1", "impl", "ip", "hdl", "ip"
         )
-        assert os.path.isdir(
-            phism_syn_ip_dir
-        ), f"{phism_syn_ip_dir} doens't exist."
+        assert os.path.isdir(phism_syn_ip_dir), f"{phism_syn_ip_dir} doens't exist."
 
-        # The test bench files 
-        tbgen_sim_vhdl_dir = os.path.join(
-            base_dir, "tb", "solution1", "sim", "vhdl"
-        )
-        assert os.path.isdir(
-            tbgen_sim_vhdl_dir
-        ), f"{tbgen_sim_vhdl_dir} doens't exist."
+        # The test bench files
+        tbgen_sim_vhdl_dir = os.path.join(base_dir, "tb", "solution1", "sim", "vhdl")
+        assert os.path.isdir(tbgen_sim_vhdl_dir), f"{tbgen_sim_vhdl_dir} doens't exist."
 
         # Copy and paste the design files.
         design_files = glob.glob(os.path.join(phism_syn_vhdl_dir, "*.*"))
         assert design_files, "There should exist design files."
         for f in design_files:
             shutil.copy(f, tbgen_sim_vhdl_dir)
-        self.logger.debug(f"Design files found: \n" + "\n".join(design_files))
-        design_files = glob.glob(os.path.join(phism_syn_ip_dir, "*.v"))
-        assert design_files, "There should exist design files."
-        for f in design_files:
-            # TODO: insert timescale. to write in a proper way?
-            os.system("sed -i '1i `timescale 1ns/1ps' "+f+";")
-            shutil.copy(f, tbgen_sim_vhdl_dir)
-        self.logger.debug(f"IP files found: \n" + "\n".join(design_files))
+        self.logger.debug(
+            f"Design files found and copied: \n" + "\n".join(design_files)
+        )
+
+        # Copy and paste the ip design files.
+        ip_design_files = glob.glob(os.path.join(phism_syn_ip_dir, "*.v"))
+        assert ip_design_files, "There should exist design files."
+        for f in ip_design_files:
+            # Prepend the `timescale setting to the beginning of each ip design file.
+            helper.prepend_to_file(
+                shutil.copy(f, tbgen_sim_vhdl_dir), "`timescale 1ns/1ps"
+            )
+
+        self.logger.debug(f"IP files found and copied: \n" + "\n".join(ip_design_files))
 
         # source_name : the name of the original design file in vhdl
         # tb_name : the name of the test bench source
@@ -1527,9 +1528,9 @@ class PbFlow:
             destination_file = open(destination_name, "w")
             top_port_list = []
             tb_port_list = []
-            
+
             source_line = source_file.readline()
-            while "entity "+top_func+" is" not in source_line:
+            while "entity " + top_func + " is" not in source_line:
                 destination_file.write(source_line)
                 source_line = source_file.readline()
             destination_file.write(source_line)
@@ -1542,7 +1543,7 @@ class PbFlow:
                 source_line = source_file.readline()
 
             tb_line = tb_file.readline()
-            while "component "+top_func+" is" not in tb_line:
+            while "component " + top_func + " is" not in tb_line:
                 tb_line = tb_file.readline()
             # "port ("
             tb_line = tb_file.readline()
@@ -1551,15 +1552,15 @@ class PbFlow:
                 tb_port_list.append(tb_line)
                 tb_line = tb_file.readline()
 
-            # Check if the precondition is true : the interface of the design from Phism is 
+            # Check if the precondition is true : the interface of the design from Phism is
             # a subset of the interface in the cosimulation
             top_port_name_list = []
             tb_port_name_list = []
             diff_list = []
             for line in top_port_list:
-                top_port_name_list.append(line[:line.find(":")].replace(" ", ""))
+                top_port_name_list.append(line[: line.find(":")].replace(" ", ""))
             for line in tb_port_list:
-                tb_port_name_list.append(line[:line.find(":")].replace(" ", ""))
+                tb_port_name_list.append(line[: line.find(":")].replace(" ", ""))
             for name in top_port_name_list:
                 if name not in tb_port_name_list:
                     diff_list.append(name)
@@ -1580,7 +1581,7 @@ class PbFlow:
             destination_file.write("-- clear write enable begin\n")
             for name in tb_port_name_list:
                 if name not in top_port_name_list and "_we" in name:
-                    destination_file.write(name+" <= '0';\n")
+                    destination_file.write(name + " <= '0';\n")
             destination_file.write("-- clear write enable end\n")
 
             source_line = source_file.readline()
@@ -1601,7 +1602,9 @@ class PbFlow:
         newtop = os.path.join(tbgen_sim_vhdl_dir, f"{top_func}.vhd")
         port_difference = update_interface(phism_top, autotb, newtop, top_func)
         if port_difference:
-            self.logger.debug(f"ERROR port difference found: \n" + "\n".join(port_difference))
+            self.logger.debug(
+                f"ERROR port difference found: \n" + "\n".join(port_difference)
+            )
 
         # phism_params = get_module_parameters(phism_top, top_func)
         # self.logger.debug(
@@ -1656,28 +1659,33 @@ class PbFlow:
         #         )
 
         # Overwrite the project file list to include files from Phism
-        prjFile = open(os.path.join(tbgen_sim_vhdl_dir, top_func+".prj"), "w")
-        design_files = glob.glob(os.path.join(tbgen_sim_vhdl_dir, "*.vhd")) + \
-                       glob.glob(os.path.join(tbgen_sim_vhdl_dir, "ip", "xil_defaultlib", "*.vhd")) + \
-                       glob.glob(os.path.join(tbgen_sim_vhdl_dir, "ieee_FP_pkg", "*.vhd"))
+        prjFile = open(os.path.join(tbgen_sim_vhdl_dir, top_func + ".prj"), "w")
+        design_files = (
+            glob.glob(os.path.join(tbgen_sim_vhdl_dir, "*.vhd"))
+            + glob.glob(
+                os.path.join(tbgen_sim_vhdl_dir, "ip", "xil_defaultlib", "*.vhd")
+            )
+            + glob.glob(os.path.join(tbgen_sim_vhdl_dir, "ieee_FP_pkg", "*.vhd"))
+        )
         for f in design_files:
-                prjFile.write("vhdl xil_defaultlib \"" +f+ "\"\n")
-        design_files = glob.glob(os.path.join(tbgen_sim_vhdl_dir, "*.v")) + \
-                       glob.glob(os.path.join(tbgen_sim_vhdl_dir, "*.sv")) + \
-                       glob.glob(os.path.join(tbgen_sim_vhdl_dir, "ip", "xil_defaultlib", "*.v"))
+            prjFile.write('vhdl xil_defaultlib "' + f + '"\n')
+        design_files = (
+            glob.glob(os.path.join(tbgen_sim_vhdl_dir, "*.v"))
+            + glob.glob(os.path.join(tbgen_sim_vhdl_dir, "*.sv"))
+            + glob.glob(os.path.join(tbgen_sim_vhdl_dir, "ip", "xil_defaultlib", "*.v"))
+        )
         for f in design_files:
             if "glbl.v" in f:
-                prjFile.write("sv work \"glbl.v\"\n")
+                prjFile.write('sv work "glbl.v"\n')
             else:
-                prjFile.write("sv xil_defaultlib \"" +f+ "\"\n")
+                prjFile.write('sv xil_defaultlib "' + f + '"\n')
         prjFile.close()
 
         # TODO : Overwrite the test vectors in tv/
-        
-        
+
         # Must remove the cached design files
         # otherwise the cosimulation may continue with errors using the old design files
-        os.system("rm -rf "+os.path.join(tbgen_sim_vhdl_dir, "xsim.dir"))
+        os.system("rm -rf " + os.path.join(tbgen_sim_vhdl_dir, "xsim.dir"))
 
         return self
 
@@ -1704,7 +1712,7 @@ class PbFlow:
         #     env=self.env,
         # )
 
-        os.system("cd "+sim_dir+"; bash run_xsim.sh")
+        os.system("cd " + sim_dir + "; bash run_xsim.sh")
 
         # TODO : Compare results in tv/
 

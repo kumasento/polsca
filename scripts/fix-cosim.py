@@ -3,7 +3,7 @@
 
 import argparse
 
-import python.utils.polybench as pb_utils
+from pyphism.polybench import pb_flow
 
 
 def main():
@@ -13,7 +13,7 @@ def main():
 
     args = parser.parse_args()
 
-    strategy = pb_utils.fix_cosim_kernels(args.dir)
+    strategy = pb_flow.fix_cosim_kernels(args.dir)
     print(strategy.phism_mem_interfaces)
     print(strategy.tbgen_mem_interfaces)
     print(strategy.phism_directives)
