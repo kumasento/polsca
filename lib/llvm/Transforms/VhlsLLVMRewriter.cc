@@ -1629,6 +1629,7 @@ static void generateXlnTBTcl(Function &F, StringRef fileName,
 
   XlnTBTcl << "set ::LLVM_CUSTOM_CMD {$LLVM_CUSTOM_OPT -no-warn " << XlnLLVMIn
            << " -o $LLVM_CUSTOM_OUTPUT}\n"
+           << "config_bind -effort high\n"
            << "csynth_design\n"
            << "cosim_design -rtl vhdl\n"
            << "exit\n";
