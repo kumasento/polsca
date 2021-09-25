@@ -1549,6 +1549,7 @@ class PbFlow:
         xsim_dir = os.path.join(tbgen_sim_vhdl_dir, "xsim.dir")
         if os.path.isdir(xsim_dir):
             shutil.rmtree(xsim_dir)
+            self.logger.debug(f"{xsim_dir} has been removed.")
 
         return self
 
