@@ -729,7 +729,7 @@ add_files {dummy_src}
 set_top {top_func}
 
 open_solution -reset solution1
-set_part "zynq"
+set_part "xqzu29dr-ffrf1760-1-i"
 create_clock -period "100MHz"
 config_compile -pipeline_loops 1
 {config}
@@ -737,7 +737,7 @@ config_compile -pipeline_loops 1
 set ::LLVM_CUSTOM_CMD {{$LLVM_CUSTOM_OPT -no-warn {src_file} -o $LLVM_CUSTOM_OUTPUT}}
 
 csynth_design
-export_design -flow syn -rtl vhdl -format ip_catalog
+# export_design -flow syn -rtl vhdl -format ip_catalog
 exit
 """
 
@@ -748,7 +748,7 @@ add_files -tb {{{src_dir}/{src_base}.c {work_dir}/utilities/polybench.c}} -cflag
 set_top {top_func}
 
 open_solution -reset solution1
-set_part "zynq"
+set_part "xqzu29dr-ffrf1760-1-i"
 create_clock -period "100MHz"
 {config}
 
@@ -834,10 +834,10 @@ class PbFlow:
                 .lower_llvm()
                 .vitis_opt()
                 .write_tb_tcl_by_llvm()
-                .run_vitis_on_phism()
+                # .run_vitis_on_phism()
                 .run_tbgen_csim()
-                .backup_csim_results()
-                .copy_design_from_phism_to_tb()
+                # .backup_csim_results()
+                # .copy_design_from_phism_to_tb()
                 .run_cosim()
             )
         except Exception as e:
@@ -1356,6 +1356,7 @@ class PbFlow:
             "-xln-ap-enabled" if xln_ap_enabled else "",
             f"-xlntbdummynames={base_dir}/dummy.cpp",
             f'-xlntbtclnames="{tbgen_vitis_tcl}"',
+            f'-xlnllvm="{src_file}"',
         ]
 
         self.run_command(

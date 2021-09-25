@@ -218,7 +218,7 @@ add_files ${dummy_c_src}
 set_top ${top_func}
 
 open_solution -reset solution1
-set_part "zynq"
+set_part "xqzu29dr-ffrf1760-1-i"
 create_clock -period "100MHz"
 config_compile -pipeline_loops 1
 ${config}
@@ -266,7 +266,7 @@ add_files -tb {${src_dir}/${src_base}.c ${polybench_dir}/utilities/polybench.c} 
 set_top ${top_func}
 
 open_solution -reset solution1
-set_part "zynq"
+set_part "xqzu29dr-ffrf1760-1-i"
 create_clock -period "100MHz"
 config_compile -pipeline_loops 1
 ${config}

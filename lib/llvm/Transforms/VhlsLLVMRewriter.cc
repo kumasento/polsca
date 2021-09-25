@@ -42,6 +42,9 @@ static cl::opt<std::string> XlnTBDummyNames(
     "xlntbdummynames",
     cl::desc("Specify the file name of the C dummy for test bench generation."),
     cl::value_desc("dummyname"));
+static cl::opt<std::string>
+    XlnLLVMIn("xlnllvm", cl::desc("Specify the LLVM source for the design."),
+              cl::value_desc("llvm input"));
 static cl::opt<bool> XlnArrayPartitionEnabled(
     "xln-ap-enabled", cl::desc("Whether array partition has been enabled"));
 static cl::opt<bool> XlnArrayPartitionFlattened(
@@ -1595,7 +1598,7 @@ static void generateXlnTBTcl(Function &F, StringRef fileName,
            << "add_files -tb " << dummyFileName << "\n"
            << "set_top " << F.getName().str() << "\n"
            << "open_solution -reset solution1\n"
-           << "set_part \"zynq\"\n"
+           << "set_part \"xqzu29dr-ffrf1760-1-i\"\n"
            << "create_clock -period \"100MHz\"\n";
 
   for (unsigned i = 0; i < F.arg_size(); i++) {
@@ -1624,7 +1627,8 @@ static void generateXlnTBTcl(Function &F, StringRef fileName,
     }
   }
 
-  XlnTBTcl << "csim_design\n"
+  XlnTBTcl << "set ::LLVM_CUSTOM_CMD {$LLVM_CUSTOM_OPT -no-warn " << XlnLLVMIn
+           << " -o $LLVM_CUSTOM_OUTPUT}\n"
            << "csynth_design\n"
            << "cosim_design -rtl vhdl\n"
            << "exit\n";
