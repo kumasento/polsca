@@ -1631,7 +1631,7 @@ static void generateXlnTBTcl(Function &F, StringRef fileName,
            << " -o $LLVM_CUSTOM_OUTPUT}\n"
            << "config_bind -effort high\n"
            << "csynth_design\n"
-           << "cosim_design -rtl vhdl\n"
+           << "cosim_design\n"
            << "exit\n";
 }
 
