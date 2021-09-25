@@ -1,8 +1,10 @@
 """Dealing with the VHDL design files."""
 
+import glob
+import logging
 import os
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from pyphism.utils import helper
 
@@ -21,8 +23,17 @@ def parse_port_definition(line: str) -> Port:
     line = line.strip()
     assert line.endswith(";")
 
-    # Trim the last character ';', including the attached ' )' (note the whitespace)
-    line = line[:-3] if line.endswith(" );") else line[:-1]
+    # Trim the last character ';'
+    #
+    # Check if the attached ')' belongs to the beginning 'port ('
+    # or not by looking at if the number of ')' is 1 larger than
+    # the number of '('
+    #
+    # TODO: cannot deal with ') ;'
+    if line.endswith(");") and line.count(")") == line.count("(") + 1:
+        line = line[:-2].strip()  # trim the ')' as well.
+    else:
+        line = line[:-1].strip()
 
     # <NAME> : <IN or OUT> <DATA_TYPE>
     comps = line.split(":")
@@ -39,11 +50,11 @@ def parse_port_definition(line: str) -> Port:
     )  # filter empty
     assert len(dir_and_type_comps) >= 2
 
-    dir = dir_and_type_comps[0].strip()
+    dir = dir_and_type_comps[0].strip().upper()
     assert dir in ("IN", "OUT"), f"{dir} is not IN or OUT"
 
     # Parse type
-    data_type = " ".join(dir_and_type_comps[1:])
+    data_type = " ".join(dir_and_type_comps[1:]).upper()
 
     return Port(name=name, direction=dir, data_type=data_type)
 
@@ -98,7 +109,11 @@ def migrate_port_list(
 
 
 def update_source_by_testbench(
-    src_file: str, tbs_file: str, dst_file: str, top_func: str
+    src_file: str,
+    tbs_file: str,
+    dst_file: str,
+    top_func: str,
+    logger: Optional[logging.Logger] = None,
 ):
     """
     Update the source file interface by the tbs file using -
@@ -127,8 +142,15 @@ def update_source_by_testbench(
     # ------------------------ Sanity check:
     src_ports = get_port_list(src_lines, top_func)
     tbs_ports = get_port_list(tbs_lines, top_func, is_component=True)
+
+    if logger:
+        logger.warn(f"src - tbs ports: {set(src_ports).difference(tbs_ports)}")
+        logger.warn(f"tbs - src ports: {set(tbs_ports).difference(src_ports)}")
+
     # Ports from the design file should be a subset of those in the testbench.
-    assert set(src_ports).issubset(tbs_ports)
+    assert set(src_ports).issubset(
+        tbs_ports
+    ), f"Source ports are not subset of testbench"
 
     # ------------------------ Step 1:
     # Blend in the ports from testbench into the source.
@@ -137,7 +159,7 @@ def update_source_by_testbench(
     # ------------------------ Step 2:
     # Newly introduced write-enable wires
     nwe_ports = [
-        port for port in tbs_ports if port not in src_lines and "_we" in port.name
+        port for port in tbs_ports if port not in src_ports and "_we" in port.name
     ]
     # Find the first begin.
     begin_pos = helper.find_substr_in_list("begin", dst_lines)
@@ -147,9 +169,37 @@ def update_source_by_testbench(
         + [f"    {port.name} <= '0';\n" for port in nwe_ports]
         + dst_lines[begin_pos + 1 :]
     )
-    print(dst_lines)
 
     # ------------------------ Step 3:
     # Update the destination file.
     with open(dst_file, "w") as f:
         f.writelines(dst_lines)
+
+
+def create_prj_file(dir: str, top_func: str):
+    """Create a prj file from the files existing in the provided directory."""
+    assert os.path.isdir(dir)
+
+    vhdl_files = (
+        glob.glob(os.path.join(dir, "*.vhd"))
+        + glob.glob(os.path.join(dir, "ip", "xil_defaultlib", "*.vhd"))
+        + glob.glob(os.path.join(dir, "ieee_FP_pkg", "*.vhd"))
+    )
+
+    sv_files = (
+        glob.glob(os.path.join(dir, "*.v"))
+        + glob.glob(os.path.join(dir, "*.sv"))
+        + glob.glob(os.path.join(dir, "ip", "xil_defaultlib", "*.v"))
+    )
+
+    dst_file = os.path.join(dir, f"{top_func}.prj")
+    with open(dst_file, "w") as f:
+        # VHDL file paths
+        for file in vhdl_files:
+            f.write(f'vhdl xil_defaultlib "{file}"\n')
+        # SV file paths
+        for file in sv_files:
+            if "glbl.v" in file:
+                f.write('sv work "glbl.v"\n')
+            else:
+                f.write(f'sv xil_defaultlib "{file}"\n')
