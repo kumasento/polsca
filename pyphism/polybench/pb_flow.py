@@ -60,12 +60,10 @@ RECORD_FIELDS = (
     "name",
     "run_status",
     "latency",
-    "csim_latency",
-    "syn_latency",
     "res_usage",
     "res_avail",
 )
-RUN_STATUS_FIELDS = ("phism_synth", "tbgen_cosim", "phism_cosim")
+RUN_STATUS_FIELDS = ("status",)
 
 PHISM_VITIS_STEPS = ("phism", "tbgen", "cosim")
 
@@ -159,7 +157,7 @@ def get_vitis_log(d, step, stream):
 
 def fetch_resource_usage(d, avail=False):
     """Find the report file *.xml and return the resource usage estimation."""
-    syn_report_dir = os.path.join(d, "proj", "solution1", "syn", "report")
+    syn_report_dir = os.path.join(d, "tb", "solution1", "syn", "report")
     if not os.path.isdir(syn_report_dir):
         return None
 
@@ -274,9 +272,9 @@ def fetch_run_status(d):
         return "SUCCESS"
 
     return RunStatus(
-        parse_synth_log(get_vitis_log(d, "phism", "stdout")),
+        # parse_synth_log(get_vitis_log(d, "phism", "stdout")),
         parse_cosim_log(get_vitis_log(d, "tbgen", "stdout")),
-        parse_cosim_log(get_vitis_log(d, "cosim", "stdout")),
+        # parse_cosim_log(get_vitis_log(d, "cosim", "stdout")),
     )
 
 
@@ -287,8 +285,8 @@ def process_directory(d):
         example_name,
         fetch_run_status(d),
         fetch_latency(d),
-        fetch_latency(d, csim=True),
-        fetch_syn_latency(d),
+        # fetch_latency(d, csim=True),
+        # fetch_syn_latency(d),
         fetch_resource_usage(d),
         fetch_resource_usage(d, avail=True),
     )
