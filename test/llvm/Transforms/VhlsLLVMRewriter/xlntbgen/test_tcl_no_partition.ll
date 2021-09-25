@@ -9,11 +9,7 @@ define void @foo(i32 %n, [32 x float]* %A, [4 x [8 x i32]]* %B) {
 ; CHECK: add_files -tb 
 ; CHECK: set_top foo
 ; CHECK: open_solution -reset solution1
-; CHECK: set_part "zynq"
+; CHECK: set_part 
 ; CHECK: create_clock -period "100MHz"
 ; CHECK: set_directive_interface foo A -mode ap_memory -storage_type ram_2p
 ; CHECK: set_directive_interface foo B -mode ap_memory -storage_type ram_2p
-; CHECK: csim_design
-; CHECK: csynth_design
-; CHECK: cosim_design
-; CHECK: exit
