@@ -12,12 +12,12 @@ def test_parse_port_definition():
     port = vhdl.parse_port_definition("nl : IN STD_LOGIC_VECTOR (31 downto 0);")
     assert port.name == "nl"
     assert port.direction == "IN"
-    assert port.data_type == "STD_LOGIC_VECTOR (31 downto 0)"
+    assert port.data_type == "STD_LOGIC_VECTOR (31 DOWNTO 0)"
 
     port = vhdl.parse_port_definition("D_5_d1 : OUT STD_LOGIC_VECTOR (63 downto 0) );")
     assert port.name == "D_5_d1"
     assert port.direction == "OUT"
-    assert port.data_type == "STD_LOGIC_VECTOR (63 downto 0)"
+    assert port.data_type == "STD_LOGIC_VECTOR (63 DOWNTO 0)"
 
 
 def test_get_port_list_on_entity():
