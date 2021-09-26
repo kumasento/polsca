@@ -836,7 +836,7 @@ class PbFlow:
                 .run_tbgen_csim()
                 # .backup_csim_results()
                 # .copy_design_from_phism_to_tb()
-                .run_cosim()
+                # .run_cosim()
             )
         except Exception as e:
             self.status = 1
@@ -1560,7 +1560,7 @@ class PbFlow:
 
         src_file = self.cur_file
         base_dir = os.path.dirname(src_file)
-        sim_dir = os.path.join(base_dir, "tb", "solution1", "sim", "vhdl")
+        sim_dir = os.path.join(base_dir, "tb", "solution1", "sim", "verilog")
 
         self.run_command(
             cmd="bash run_xsim.sh",
