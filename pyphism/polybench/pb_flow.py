@@ -311,13 +311,7 @@ def process_pb_flow_result_dir(d: str, options: PbFlowOptions):
 
 def filter_success(df):
     """Filter success rows."""
-    return df[
-        (df["phism_synth"] == "SUCCESS")
-        & (
-            ((df["tbgen_cosim"] == "SUCCESS") & (df["phism_cosim"] == "SUCCESS"))
-            | (df["syn_latency"])
-        )
-    ]
+    return df[df["status"] == "SUCCESS"]
 
 
 # ----------------------- Data processing ---------------------------
