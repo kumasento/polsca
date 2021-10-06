@@ -300,24 +300,28 @@ def fetch_pipeline_info(d: str, proj_name: str = "tb") -> Dict[str, List[Any]]:
     # Parse the XML report and find every resource usage (tags given by RESOURCE_FIELDS)
     data = defaultdict(list)
     root = ET.parse(syn_report).getroot()
+
+    def process(el: Optional[ET.Element], module_name: str):
+        if el is None:
+            return
+
+        pipeline_ii = el.findtext("PipelineII")
+        if pipeline_ii is not None:
+            name = el.findtext("Name")
+
+            data["module_name"].append(module_name)
+            data["loop_name"].append(name)
+            data["pipeline_ii"].append(pipeline_ii)
+
+            return
+
+        for child in el.getchildren():
+            process(child, module_name)
+
     for el in root.findall("ModuleInformation/Module"):
         module_name = el.findtext("Name")
-
         loops = el.find("PerformanceEstimates/SummaryOfLoopLatency")
-        if loops:
-            for loop in loops.getchildren():
-                loop_name = loop.findtext("Name")
-                for sub_loop in loop.getchildren():
-                    if not sub_loop.tag.startswith("Loop"):
-                        continue
-                    sub_loop_name = sub_loop.findtext("Name")
-                    if not sub_loop_name.startswith(loop_name):
-                        continue
-
-                    pipeline_ii = sub_loop.findtext("PipelineII")
-                    data["module_name"].append(module_name)
-                    data["loop_name"].append(sub_loop_name)
-                    data["pipeline_ii"].append(pipeline_ii)
+        process(loops, module_name)
 
     return data
 
