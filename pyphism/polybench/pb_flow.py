@@ -11,11 +11,11 @@ import shutil
 import subprocess
 import traceback
 import xml.etree.ElementTree as ET
-from collections import OrderedDict, namedtuple
+from collections import OrderedDict, defaultdict, namedtuple
 from dataclasses import dataclass
 from multiprocessing import Pool
 from timeit import default_timer as timer
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -79,6 +79,10 @@ class PbFlowOptions:
     pb_dir: str
     job: int = 1
     polymer: bool = False
+    # CLooG options
+    cloogf: int = -1
+    cloogl: int = -1
+
     dataset: str = "MINI"
     cleanup: bool = False
     debug: bool = False
@@ -103,6 +107,11 @@ class PbFlowOptions:
             self.cosim = False
             self.skip_vitis = True
             self.skip_csim = True
+
+
+def filter_init_args(args: Dict[str, Any]) -> Dict[str, Any]:
+    opt = PbFlowOptions(pb_dir="")
+    return {k: v for k, v in args.items() if hasattr(opt, k)}
 
 
 # ----------------------- Utility functions ------------------------------------
@@ -276,6 +285,41 @@ def fetch_run_status(d):
         parse_cosim_log(get_vitis_log(d, "tbgen", "stdout")),
         # parse_cosim_log(get_vitis_log(d, "cosim", "stdout")),
     )
+
+
+def fetch_pipeline_info(d: str, proj_name: str = "tb") -> Dict[str, List[Any]]:
+    """Find the pipeline II result from the provided project directory."""
+    syn_report_dir = os.path.join(d, proj_name, "solution1", "syn", "report")
+    if not os.path.isdir(syn_report_dir):
+        return None
+
+    syn_report = os.path.join(syn_report_dir, "csynth.xml")
+    if not os.path.isfile(syn_report):
+        return None
+
+    # Parse the XML report and find every resource usage (tags given by RESOURCE_FIELDS)
+    data = defaultdict(list)
+    root = ET.parse(syn_report).getroot()
+    for el in root.findall("ModuleInformation/Module"):
+        module_name = el.findtext("Name")
+
+        loops = el.find("PerformanceEstimates/SummaryOfLoopLatency")
+        if loops:
+            for loop in loops.getchildren():
+                loop_name = loop.findtext("Name")
+                for sub_loop in loop.getchildren():
+                    if not sub_loop.tag.startswith("Loop"):
+                        continue
+                    sub_loop_name = sub_loop.findtext("Name")
+                    if not sub_loop_name.startswith(loop_name):
+                        continue
+
+                    pipeline_ii = sub_loop.findtext("PipelineII")
+                    data["module_name"].append(module_name)
+                    data["loop_name"].append(sub_loop_name)
+                    data["pipeline_ii"].append(pipeline_ii)
+
+    return data
 
 
 def process_directory(d):
@@ -620,6 +664,21 @@ def toggle_cosim_setup(file: str):
         f.write("\n".join(lines))
 
 
+def comment_out_cosim(file: str):
+    with open(file, "r") as f:
+        lines = f.readlines()
+    assert lines
+
+    lines = [l.strip() for l in lines]
+    pos = next(i for i, l in enumerate(lines) if "cosim_design" in l)
+    assert pos >= 0 and pos < len(lines)
+
+    lines[pos] = f"# {lines[pos]}"
+
+    with open(file, "w") as f:
+        f.write("\n".join(lines))
+
+
 # ----------------------- Benchmark runners ---------------------------
 
 
@@ -827,7 +886,7 @@ class PbFlow:
                 .vitis_opt()
                 .write_tb_tcl_by_llvm()
                 # .run_vitis_on_phism()
-                .run_tbgen_csim()
+                .run_vitis()
                 # .backup_csim_results()
                 # .copy_design_from_phism_to_tb()
                 # .run_cosim()
@@ -1101,12 +1160,12 @@ class PbFlow:
             ]
         passes += [
             "-extract-scop-stmt",
-            "-pluto-opt",
+            f'-pluto-opt="cloogf={self.options.cloogf} cloogl={self.options.cloogl}"',
             "-debug",
         ]
 
         self.run_command(
-            cmd_list=(
+            cmd=" ".join(
                 [
                     self.get_program_abspath("polymer-opt"),
                     src_file,
@@ -1115,6 +1174,7 @@ class PbFlow:
             ),
             stderr=open(log_file, "w"),
             stdout=open(self.cur_file, "w"),
+            shell=True,
             env=self.env,
         )
 
@@ -1362,8 +1422,12 @@ class PbFlow:
 
     def run_vitis_on_phism(self):
         """Just run vitis_hls on the LLVM generated from Phism."""
+        # DEPRECATED
         if self.options.skip_vitis:
             self.logger.warn("Vitis won't run since --skip-vitis has been set.")
+            return self
+        if self.options.cosim:
+            self.logger.warn("Vitis won't run since --cosim has been set.")
             return self
 
         src_file = self.cur_file
@@ -1411,12 +1475,8 @@ class PbFlow:
 
         return self
 
-    def run_tbgen_csim(self, force_skip=False):
+    def run_vitis(self, force_skip=False):
         """Run the tbgen.tcl file. Assuming the Tcl file has been written."""
-        if not self.options.cosim:
-            self.logger.warn("Cosim won't run due to the input setting.")
-            return self
-
         src_file = self.cur_file
         base_dir = os.path.dirname(src_file)
 
@@ -1428,6 +1488,10 @@ class PbFlow:
             if not is_cosim_setup(tbgen_vitis_tcl):
                 self.logger.debug("Toggled -setup to cosim_design.")
                 toggle_cosim_setup(tbgen_vitis_tcl)
+
+        if not self.options.cosim:
+            self.logger.warn("Cosim won't run due to the input setting.")
+            comment_out_cosim(tbgen_vitis_tcl)
 
         if self.options.dry_run:
             return self
@@ -1599,7 +1663,7 @@ def pb_flow_dump_report(options: PbFlowOptions):
     df.to_csv(os.path.join(options.work_dir, f"pb-flow.report.{get_timestamp()}.csv"))
 
 
-def pb_flow_runner(options: PbFlowOptions):
+def pb_flow_runner(options: PbFlowOptions, dump_report: bool = True):
     """Run pb-flow with the provided arguments."""
     assert os.path.isdir(options.pb_dir)
 
@@ -1631,7 +1695,7 @@ def pb_flow_runner(options: PbFlowOptions):
     print("Elapsed time: {:.6f} sec".format(end - start))
 
     # Will only dump report if Vitis has been run.
-    if not options.skip_vitis:
+    if dump_report and not options.skip_vitis:
         print(">>> Dumping report ... ")
         pb_flow_dump_report(options)
 

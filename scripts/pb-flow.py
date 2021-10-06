@@ -6,9 +6,6 @@
 #      && python3 scripts/pb-flow.py -c example/polybench
 
 import argparse
-import os
-import subprocess
-import sys
 
 from pyphism.polybench import pb_flow
 
@@ -71,6 +68,8 @@ def main():
         "--skip-csim", action="store_true", help="Don't run tbgen (csim)."
     )
     parser.add_argument("--sanity-check", action="store_true", help="Run sanity check.")
+    parser.add_argument("--cloogl", type=int, default=-1, help="-cloogl option")
+    parser.add_argument("--cloogf", type=int, default=-1, help="-cloogf option")
     args = parser.parse_args()
 
     options = pb_flow.PbFlowOptions(**vars(args))
