@@ -34,6 +34,7 @@ def main():
         default="MINI",
         help="Polybench dataset size. ",
     )
+    parser.add_argument("--skip-run", action="store_true", help="Skip running pbflow.")
     args = parser.parse_args()
 
     options = pb_flow.PbFlowOptions(**pb_flow.filter_init_args(vars(args)))
@@ -47,15 +48,16 @@ def main():
     for cloogl in [-1] + list(range(args.cloogl_start, args.cloogl_end + 1)):
         for cloogf in [-1] + list(range(args.cloogf_start, args.cloogf_end + 1)):
             work_dir = os.path.join(args.work_dir, f"cloogl-{cloogl}-f-{cloogf}")
-            # if os.path.isdir(work_dir):
-            #     shutil.rmtree(work_dir)
 
             options_ = copy.deepcopy(options)
             options_.cloogf = cloogf
             options_.cloogl = cloogl
             options_.work_dir = work_dir
 
-            pb_flow.pb_flow_runner(options_, dump_report=False)
+            if not args.skip_run:
+                if os.path.isdir(work_dir):
+                    shutil.rmtree(work_dir)
+                pb_flow.pb_flow_runner(options_, dump_report=False)
 
             for d in pb_flow.discover_examples(options_.work_dir, options_.examples):
                 info = pb_flow.fetch_pipeline_info(d)
@@ -71,7 +73,9 @@ def main():
                 else:
                     results = pd.concat((results, df))
 
-    print(results)
+    if results is not None:
+        results.to_csv(os.path.join(args.work_dir, "results.csv"))
+        print(results)
 
 
 if __name__ == "__main__":
