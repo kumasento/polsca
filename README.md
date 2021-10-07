@@ -1,6 +1,7 @@
 # Phism: Polyhedral High-Level Synthesis in MLIR
 
 [![Build and Test](https://github.com/kumasento/phism/actions/workflows/buildAndTest.yml/badge.svg)](https://github.com/kumasento/phism/actions/workflows/buildAndTest.yml)
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fkumasento%2Fphism.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fkumasento%2Fphism?ref=badge_shield)
 
 ## What is Phism?
 
