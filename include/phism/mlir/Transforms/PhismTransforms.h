@@ -11,6 +11,7 @@ namespace phism {
 void registerExtractTopFuncPass();
 void registerLoopTransformPasses();
 void registerArrayPartitionPasses();
+void registerFoldIfPasses();
 void registerAllPhismPasses();
 void registerDependenceAnalysisPasses();
 } // namespace phism
