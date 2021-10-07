@@ -1229,6 +1229,7 @@ class PbFlow:
             src_file,
             f'-loop-transforms="max-span={self.options.max_span}"',
             "-loop-redis-and-merge",
+            "-fold-if",
             "-debug-only=loop-transforms",
         ]
 

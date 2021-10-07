@@ -13,6 +13,7 @@ void registerAllPhismPasses() {
   registerExtractTopFuncPass();
   registerArrayPartitionPasses();
   registerDependenceAnalysisPasses();
+  registerFoldIfPasses();
 }
 
 } // namespace phism
