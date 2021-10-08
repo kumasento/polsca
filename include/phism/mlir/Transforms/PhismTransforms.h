@@ -13,7 +13,7 @@ void registerLoopTransformPasses();
 void registerArrayPartitionPasses();
 void registerFoldIfPasses();
 void registerAllPhismPasses();
-void registerDependenceAnalysisPasses();
+// void registerDependenceAnalysisPasses();
 } // namespace phism
 
 #endif

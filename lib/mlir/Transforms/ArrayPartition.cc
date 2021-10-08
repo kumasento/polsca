@@ -26,6 +26,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/StringExtras.h"
 
 #include <fstream>
 #include <queue>
@@ -52,8 +53,8 @@ struct ArrayPartitionPipelineOptions
 
 /// -------------------------- Dependence analysis ---------------------------
 
-static FlatAffineConstraints getOpIndexSet(Operation *op) {
-  FlatAffineConstraints cst;
+static FlatAffineValueConstraints getOpIndexSet(Operation *op) {
+  FlatAffineValueConstraints cst;
   SmallVector<Operation *, 4> ops;
   getEnclosingAffineForAndIfOps(*op, &ops);
   getIndexSet(ops, &cst);
@@ -61,8 +62,8 @@ static FlatAffineConstraints getOpIndexSet(Operation *op) {
 }
 
 /// Get the access domain from all the provided operations.
-static FlatAffineConstraints getDomain(ArrayRef<Operation *> ops) {
-  FlatAffineConstraints cst;
+static FlatAffineValueConstraints getDomain(ArrayRef<Operation *> ops) {
+  FlatAffineValueConstraints cst;
   for (Operation *op : ops) {
     MemRefAccess access(op);
 
@@ -73,11 +74,11 @@ static FlatAffineConstraints getDomain(ArrayRef<Operation *> ops) {
     for (Value operand : accessMap.getOperands())
       ivs.insert(operand);
 
-    FlatAffineConstraints domain = getOpIndexSet(op);
+    FlatAffineValueConstraints domain = getOpIndexSet(op);
 
     // project out those IDs that are not in the accessMap.
     SmallVector<Value> values;
-    domain.getIdValues(0, domain.getNumDimIds(), &values);
+    domain.getValues(0, domain.getNumDimIds(), &values);
 
     SmallVector<Value> toProject;
     for (Value value : values)
@@ -100,11 +101,11 @@ static FlatAffineConstraints getDomain(ArrayRef<Operation *> ops) {
 
 struct MemRefAccessInfo {
   CallOp caller;
-  FlatAffineConstraints readCst;
-  FlatAffineConstraints writeCst;
+  FlatAffineValueConstraints readCst;
+  FlatAffineValueConstraints writeCst;
 
-  MemRefAccessInfo(CallOp caller, FlatAffineConstraints readCst,
-                   FlatAffineConstraints writeCst)
+  MemRefAccessInfo(CallOp caller, FlatAffineValueConstraints readCst,
+                   FlatAffineValueConstraints writeCst)
       : caller(caller), readCst(readCst), writeCst(writeCst) {}
 
   bool isReadOnly() const {
@@ -129,11 +130,11 @@ struct MemRefAccessInfo {
   }
 };
 
-static FlatAffineConstraints
-getArrayPartition(const FlatAffineConstraints &cst, ArrayRef<int64_t> inds,
+static FlatAffineValueConstraints
+getArrayPartition(const FlatAffineValueConstraints &cst, ArrayRef<int64_t> inds,
                   FuncOp callee, ArrayRef<Value> ivs,
                   SmallDenseMap<Value, unsigned> &ivIds) {
-  FlatAffineConstraints cur{cst};
+  FlatAffineValueConstraints cur{cst};
   for (auto ind : enumerate(inds)) {
     Value id = callee.getArgument(ivIds[ivs[ind.index()]]);
     unsigned pos;
@@ -147,8 +148,8 @@ getArrayPartition(const FlatAffineConstraints &cst, ArrayRef<int64_t> inds,
 
 /// TODO: this function tries to find whether the FORMs of two constraints are
 /// the same, not exactly the domain they are covering.
-static bool isSame(const FlatAffineConstraints &cst1,
-                   const FlatAffineConstraints &cst2) {
+static bool isSame(const FlatAffineValueConstraints &cst1,
+                   const FlatAffineValueConstraints &cst2) {
   if (cst1.getNumCols() != cst2.getNumCols())
     return false;
   if (cst1.getNumConstraints() != cst2.getNumConstraints())
@@ -193,8 +194,8 @@ static auto getMemRefAccessInfo(ArrayRef<Operation *> callers, ModuleOp m) {
               [](Operation *op) { return isa<mlir::AffineStoreOp>(op); });
 
       // Union all the read constraints from all the load operations.
-      FlatAffineConstraints readCst = getDomain(loadOps);
-      FlatAffineConstraints writeCst = getDomain(storeOps);
+      FlatAffineValueConstraints readCst = getDomain(loadOps);
+      FlatAffineValueConstraints writeCst = getDomain(storeOps);
       accesses[memref.first].push_back({caller, readCst, writeCst});
     }
   }
@@ -266,13 +267,14 @@ static bool checkAccessOverlap(MemRefAccessInfo &info, ModuleOp m,
   // TODO: Can we make this part less memory intensive?
   std::vector<std::vector<int64_t>> indices = getIndexCombinations(bounds);
 
-  FlatAffineConstraints cst = info.isWriteOnly() ? info.writeCst : info.readCst;
+  FlatAffineValueConstraints cst =
+      info.isWriteOnly() ? info.writeCst : info.readCst;
   FuncOp callee = cast<FuncOp>(m.lookupSymbol(info.caller.getCallee()));
 
   // Iterate every possible partitions and check if they would overlap.
-  std::vector<FlatAffineConstraints> parts; // temporary results;
+  std::vector<FlatAffineValueConstraints> parts; // temporary results;
   for (auto inds1 : indices) {
-    FlatAffineConstraints cur1 =
+    FlatAffineValueConstraints cur1 =
         getArrayPartition(cst, inds1, callee, ivs, argId);
     if (cur1.isEmpty())
       continue;
@@ -281,7 +283,7 @@ static bool checkAccessOverlap(MemRefAccessInfo &info, ModuleOp m,
       if (inds1 == inds2)
         continue;
 
-      FlatAffineConstraints cur2 =
+      FlatAffineValueConstraints cur2 =
           getArrayPartition(cst, inds2, callee, ivs, argId);
 
       // If cur1 and cur2 are exactly the same, then it shouldn't be
@@ -289,7 +291,7 @@ static bool checkAccessOverlap(MemRefAccessInfo &info, ModuleOp m,
       if (isSame(cur1, cur2))
         continue;
 
-      FlatAffineConstraints tmp{cur1};
+      FlatAffineValueConstraints tmp{cur1};
       tmp.append(cur2);
       if (!tmp.isEmpty())
         return true;
@@ -303,8 +305,10 @@ static bool checkAccessOverlap(MemRefAccessInfo &info, ModuleOp m,
     std::vector<std::pair<int64_t, int64_t>> partition;
 
     for (unsigned pos = 0; pos < parts[i].getNumDimIds(); ++pos) {
-      auto lb = parts[i].getConstantLowerBound(pos);
-      auto ub = parts[i].getConstantUpperBound(pos);
+      auto lb = parts[i].getConstantBound(
+          FlatAffineValueConstraints::BoundType::LB, pos);
+      auto ub = parts[i].getConstantBound(
+          FlatAffineValueConstraints::BoundType::UB, pos);
       if (lb.hasValue() && ub.hasValue())
         partition.push_back({lb.getValue(), ub.getValue()});
     }
@@ -1310,7 +1314,8 @@ static void renameTiledFunctions(ModuleOp m, OpBuilder &b) {
   m.walk([&](mlir::CallOp caller) {
     if (newNames.count(caller.getCallee()))
       caller->setAttr("callee",
-                      b.getSymbolRefAttr(newNames[caller.getCallee()]));
+                      SymbolRefAttr::get(caller.getContext(),
+                                         newNames[caller.getCallee()]));
   });
 }
 
@@ -1398,7 +1403,8 @@ struct SimpleArrayPartitionPass
 } // namespace
 
 void phism::registerArrayPartitionPasses() {
-  PassRegistration<ArrayPartitionPass>("array-partition", "Partition arrays");
+  // PassRegistration<ArrayPartitionPass>("array-partition", "Partition
+  // arrays");
 
   PassPipelineRegistration<ArrayPartitionPipelineOptions>(
       "simple-array-partition", "Partition arrays",
