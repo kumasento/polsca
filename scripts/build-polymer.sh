@@ -6,10 +6,8 @@ set -o pipefail
 set -o nounset
 
 echo ""
-echo ">>> Install Polygeist for Phism"
+echo ">>> Install Polymer for Phism"
 echo ""
-
-TARGET="${1:-"local"}"
 
 # If ninja is available, use it.
 CMAKE_GENERATOR="Unix Makefiles"
@@ -20,14 +18,15 @@ fi
 # The absolute path to the directory of this script.
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
-# Make sure Polygeist submodule is up-to-date.
+# Make sure Polymer submodule is up-to-date.
 git submodule sync
 git submodule update --init --recursive
 
-# Go to the polygeist directory and carry out installation.
-POLYGEIST_DIR="${DIR}/../polygeist"
+LLVM_DIR="${DIR}/../polygeist/llvm-project"
+# Go to the polymer directory and carry out installation.
+POLYMER_DIR="${DIR}/../polymer"
 
-cd "${POLYGEIST_DIR}"
+cd "${POLYMER_DIR}"
 mkdir -p build
 cd build
 
@@ -47,9 +46,9 @@ if [ ! -f "CMakeCache.txt" ]; then
     -DCMAKE_C_COMPILER=clang \
     -DCMAKE_CXX_COMPILER=clang++ \
     -DLLVM_USE_LINKER=lld \
-    -DMLIR_DIR="${POLYGEIST_DIR}/llvm-project/build/lib/cmake/mlir" \
-    -DCLANG_DIR="${POLYGEIST_DIR}/llvm-project/build/lib/cmake/clang" \
-    -DLLVM_TARGETS_TO_BUILD="host" \
+    -DMLIR_DIR="${LLVM_DIR}/build/lib/cmake/mlir" \
+    -DLLVM_DIR="${LLVM_DIR}/build/lib/cmake/llvm" \
+    -DLLVM_EXTERNAL_LIT="${LLVM_DIR}/build/bin/llvm-lit" \
     -DLLVM_ENABLE_ASSERTIONS=ON \
     -DCMAKE_BUILD_TYPE=DEBUG
 fi 
@@ -57,7 +56,7 @@ fi
 # Run building
 if [ "${CMAKE_GENERATOR}" == "Ninja" ]; then
   ninja
-  ninja check-mlir-clang
+  ninja check-polymer
 else 
   make -j "$(nproc)"
 fi
