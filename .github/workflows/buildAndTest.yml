@@ -36,14 +36,14 @@ jobs:
       # Extract the LLVM submodule hash for use in the cache key.
       - name: Get LLVM Hash
         id: get-llvm-hash
-        run: echo "::set-output name=hash::$(git rev-parse @:./llvm)"
+        run: echo "::set-output name=hash::$(git rev-parse @:./polygeist/llvm-project)"
         shell: bash
       # Try to fetch LLVM from the cache.
       - name: Cache LLVM
         id: cache-llvm
         uses: actions/cache@v2
         with:
-          path: llvm/build
+          path: ./polygeist/llvm-project/build
           key: ${{ runner.os }}-llvm-${{ steps.get-llvm-hash.outputs.hash }}
       # Build LLVM if we didn't hit in the cache. Even though we build it in
       # the previous job, there is a low chance that it'll have been evicted by
@@ -52,8 +52,17 @@ jobs:
       - name: Rebuild and Install LLVM
         if: steps.cache-llvm.outputs.cache-hit != 'true'
         run: |
-          ./scripts/build-llvm.sh ci
+          ./scripts/build-llvm.sh
           rm -rf ./llvm/build/test 
+
+
+      # --------
+      # Build and test Polygeist.
+      # --------
+      - name: Build and test Polygeist
+        run: |
+          ./scripts/build-polygeist.sh
+
       # --------
       # Build and test Phism in both debug and release mode.
       # --------
