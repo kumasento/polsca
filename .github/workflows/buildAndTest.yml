@@ -64,6 +64,13 @@ jobs:
           ./scripts/build-polygeist.sh
 
       # --------
+      # Build and test Polymer.
+      # --------
+      - name: Build and test Polymer
+        run: |
+          ./scripts/build-polymer.sh
+
+      # --------
       # Build and test Phism in both debug and release mode.
       # --------
       - name: Build and Test Phism (Assert)
