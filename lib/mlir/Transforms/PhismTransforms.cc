@@ -12,7 +12,7 @@ void registerAllPhismPasses() {
   registerLoopTransformPasses();
   registerExtractTopFuncPass();
   registerArrayPartitionPasses();
-  registerDependenceAnalysisPasses();
+  // registerDependenceAnalysisPasses();
   registerFoldIfPasses();
 }
 

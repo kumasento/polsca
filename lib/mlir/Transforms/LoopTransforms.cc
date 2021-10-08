@@ -113,7 +113,7 @@ struct InsertScratchpadPass
     BlockAndValueMapping vmap;
     vmap.map(parent.getInductionVar(), nextFor.getInductionVar());
 
-    SetVector<Operation *> shouldClone;
+    llvm::SetVector<Operation *> shouldClone;
 
     b.setInsertionPointToStart(nextFor.getBody());
     for (Operation &op : nextBlock->getOperations())
@@ -206,10 +206,10 @@ static bool isPointLoop(mlir::AffineForOp forOp) {
   return forOp->hasAttr("scop.point_loop");
 }
 
-static void getArgs(Operation *parentOp, SetVector<Value> &args) {
+static void getArgs(Operation *parentOp, llvm::SetVector<Value> &args) {
   args.clear();
 
-  SetVector<Operation *> internalOps;
+  llvm::SetVector<Operation *> internalOps;
   internalOps.insert(parentOp);
 
   parentOp->walk([&](Operation *op) { internalOps.insert(op); });
@@ -250,7 +250,7 @@ createPointLoopsCallee(mlir::AffineForOp forOp, int id, FuncOp f,
   b.setInsertionPointToStart(entry);
 
   // Grab arguments from the top forOp.
-  SetVector<Value> args;
+  llvm::SetVector<Value> args;
   getArgs(forOp, args);
 
   // Argument mapping for cloning. Also intialize arguments to the entry block.
@@ -283,7 +283,7 @@ static CallOp createPointLoopsCaller(AffineForOp startForOp, FuncOp callee,
   return caller;
 }
 
-using LoopTree = llvm::DenseMap<Operation *, SetVector<Operation *>>;
+using LoopTree = llvm::DenseMap<Operation *, llvm::SetVector<Operation *>>;
 
 /// Returns true if itself or any of the descendants has been extracted.
 static bool greedyLoopExtraction(Operation *op, const int maxSpan, int &startId,
@@ -345,7 +345,7 @@ static int extractPointLoops(FuncOp f, int startId, int maxSpan, OpBuilder &b) {
   b.setInsertionPoint(m.getBody(), std::prev(m.getBody()->end()));
 
   // Those point loops that has been visited and extracted.
-  SetVector<Operation *> extracted;
+  llvm::SetVector<Operation *> extracted;
 
   // Map from a point loop to its children.
   LoopTree loopTree;
@@ -481,7 +481,8 @@ struct AnnotatePointLoopsPass
 
 /// --------------------- Redistribute statements ---------------------------
 
-static void getAllScopStmts(FuncOp func, SetVector<FuncOp> &stmts, ModuleOp m) {
+static void getAllScopStmts(FuncOp func, llvm::SetVector<FuncOp> &stmts,
+                            ModuleOp m) {
   func.walk([&](mlir::CallOp caller) {
     FuncOp callee = dyn_cast<FuncOp>(m.lookupSymbol(caller.getCallee()));
     if (!callee)
@@ -494,7 +495,7 @@ static void getAllScopStmts(FuncOp func, SetVector<FuncOp> &stmts, ModuleOp m) {
 }
 
 static void detectScopPeWithMultipleStmts(ModuleOp m,
-                                          SetVector<mlir::FuncOp> &pes) {
+                                          llvm::SetVector<mlir::FuncOp> &pes) {
   FuncOp top = getTopFunction(m);
   if (!top)
     return;
@@ -507,7 +508,7 @@ static void detectScopPeWithMultipleStmts(ModuleOp m,
     if (!callee)
       return;
 
-    SetVector<FuncOp> stmts;
+    llvm::SetVector<FuncOp> stmts;
     getAllScopStmts(callee, stmts, m);
 
     if (stmts.size() >= 2)
@@ -553,9 +554,9 @@ static bool hasOnlyReadByScopStmts(FuncOp f, ModuleOp m, Value memref) {
 /// Also assuming each scop.stmt will have its accessed memrefs once in its
 /// interface.
 static bool areScopStmtsSeparable(FuncOp f, ModuleOp m) {
-  SetVector<Value> visited; // memrefs visited.
-  SetVector<Value> conflicted;
-  SetVector<FuncOp> visitedStmts;
+  llvm::SetVector<Value> visited; // memrefs visited.
+  llvm::SetVector<Value> conflicted;
+  llvm::SetVector<FuncOp> visitedStmts;
   f.walk([&](mlir::CallOp caller) {
     FuncOp callee = dyn_cast<FuncOp>(m.lookupSymbol(caller.getCallee()));
     if (!callee || !callee->hasAttr("scop.stmt"))
@@ -641,7 +642,7 @@ distributeScopStmt(FuncOp stmt, FuncOp f, ModuleOp m, OpBuilder &b) {
 static LogicalResult distributeScopStmts(
     FuncOp f, SmallVectorImpl<std::pair<FuncOp, SmallVector<unsigned>>> &dist,
     ModuleOp m, OpBuilder &b) {
-  SetVector<FuncOp> stmts;
+  llvm::SetVector<FuncOp> stmts;
   getAllScopStmts(f, stmts, m);
 
   // Need to duplicate the whole function for each statement. And within each
@@ -670,7 +671,7 @@ struct RedistributeScopStatementsPass
 
     // -------------------------------------------------------------------
     // Step 1: detect the scop.pe callee that has more than one scop.stmt.
-    SetVector<FuncOp> pes;
+    llvm::SetVector<FuncOp> pes;
     detectScopPeWithMultipleStmts(m, pes);
 
     if (pes.empty())
@@ -690,7 +691,7 @@ struct RedistributeScopStatementsPass
     // The condition is basically each caller refers to different memref.
     /// TODO: carry out alias analysis (not an issue for polybench)
     /// TODO: detailed dependence analysis to cover more cases.
-    SetVector<FuncOp> pesToProc;
+    llvm::SetVector<FuncOp> pesToProc;
     for (FuncOp pe : pes) {
       if (!areScopStmtsSeparable(pe, m)) {
         LLVM_DEBUG({
@@ -750,7 +751,7 @@ struct RedistributeScopStatementsPass
 /// --------------------- Loop merge pass ---------------------------
 
 static LogicalResult loopMergeOnScopStmt(FuncOp f, ModuleOp m, OpBuilder &b) {
-  SetVector<FuncOp> stmts;
+  llvm::SetVector<FuncOp> stmts;
   getAllScopStmts(f, stmts, m);
 
   if (!llvm::hasSingleElement(stmts)) {
@@ -777,13 +778,13 @@ static LogicalResult loopMergeOnScopStmt(FuncOp f, ModuleOp m, OpBuilder &b) {
 
   // ----------------------------------------------------------------------
   // Step 1: make sure there are no empty sets in loop domains.
-  SetVector<Operation *> erased;
+  llvm::SetVector<Operation *> erased;
   for (mlir::CallOp caller : callers) {
     SmallVector<Operation *> ops;
     getEnclosingAffineForAndIfOps(*caller.getOperation(), &ops);
 
-    FlatAffineConstraints cst;
-    getIndexSet(ops, &cst);
+    FlatAffineValueConstraints cst;
+    assert(succeeded(getIndexSet(ops, &cst)));
 
     if (!cst.findIntegerSample().hasValue()) {
       LLVM_DEBUG({
@@ -871,9 +872,9 @@ static LogicalResult loopMergeOnScopStmt(FuncOp f, ModuleOp m, OpBuilder &b) {
   // ----------------------------------------------------------------------
   // Step 3: Affine analysis
   // Check if the innermost loops have no intersection.
-  SmallVector<FlatAffineConstraints, 4> csts;
+  SmallVector<FlatAffineValueConstraints, 4> csts;
   transform(innermosts, std::back_inserter(csts), [&](mlir::AffineForOp forOp) {
-    FlatAffineConstraints cst;
+    FlatAffineValueConstraints cst;
     cst.addInductionVarOrTerminalSymbol(forOp.getInductionVar());
 
     LLVM_DEBUG(cst.dump());
@@ -883,7 +884,7 @@ static LogicalResult loopMergeOnScopStmt(FuncOp f, ModuleOp m, OpBuilder &b) {
 
   // Make every constraint has the same induction variable.
   for (unsigned i = 1; i < csts.size(); ++i)
-    csts[i].setIdValue(0, csts[0].getIdValue(0));
+    csts[i].setValue(0, csts[0].getValue(0));
 
   // Check if all the constraints share the same number of columns.
   for (unsigned i = 1; i < csts.size(); ++i) {
@@ -897,7 +898,7 @@ static LogicalResult loopMergeOnScopStmt(FuncOp f, ModuleOp m, OpBuilder &b) {
   // Check if two loops have intersection.
   for (unsigned i = 0; i < csts.size(); ++i)
     for (unsigned j = i + 1; j < csts.size(); ++j) {
-      FlatAffineConstraints tmp{csts[i]};
+      FlatAffineValueConstraints tmp{csts[i]};
       tmp.append(csts[j]);
 
       if (tmp.findIntegerSample().hasValue()) {
@@ -947,7 +948,7 @@ static LogicalResult loopMergeOnScopStmt(FuncOp f, ModuleOp m, OpBuilder &b) {
                 loopToErase = loop2;
 
                 // Set the new upper bound;
-                SetVector<AffineExpr> results;
+                llvm::SetVector<AffineExpr> results;
                 for (AffineExpr expr : ubMap.getResults())
                   if (expr != ub)
                     results.insert(expr);
@@ -1092,15 +1093,19 @@ struct ScopStmtInlinePass
 } // namespace
 
 void phism::registerLoopTransformPasses() {
-  PassRegistration<AnnotatePointLoopsPass>(
-      "annotate-point-loops", "Annotate loops with point/tile info.");
-  PassRegistration<ExtractPointLoopsPass>(
-      "extract-point-loops", "Extract point loop bands into functions");
-  PassRegistration<RedistributeScopStatementsPass>(
+  // PassRegistration<AnnotatePointLoopsPass>(
+  //     "annotate-point-loops", "Annotate loops with point/tile info.");
+  // PassRegistration<ExtractPointLoopsPass>(
+  //     "extract-point-loops", "Extract point loop bands into functions");
+  PassPipelineRegistration<>(
       "redis-scop-stmts",
-      "Redistribute scop statements across extracted point loops.");
-  PassRegistration<LoopMergePass>("loop-merge",
-                                  "Merge loops by affine analysis.");
+      "Redistribute scop statements across extracted point loops.",
+      [](OpPassManager &pm) {
+        pm.addPass(std::make_unique<RedistributeScopStatementsPass>());
+      });
+  PassPipelineRegistration<>(
+      "loop-merge", "Merge loops by affine analysis.",
+      [](OpPassManager &pm) { pm.addPass(std::make_unique<LoopMergePass>()); });
 
   PassPipelineRegistration<>(
       "improve-pipelining", "Improve the pipelining performance",

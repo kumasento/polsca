@@ -15,17 +15,10 @@ echo ""
 
 # ------------------------- Environment --------------------------
 
-# TARGET can be local or ci. ci build won't use the Xilinx environment
-TARGET="${1:-"local"}"
-
 # The absolute path to the directory of this script.
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 PHISM_DIR="${DIR}/.."
-LLVM_DIR="${PHISM_DIR}/llvm"
-
-if [ "${TARGET}" == "local" ]; then
-  "${DIR}/check-vitis.sh" || { echo "Xilinx Vitis check failed."; exit 1; }
-fi
+LLVM_DIR="${PHISM_DIR}/polygeist/llvm-project/"
 
 
 # ------------------------- CMake Configure ---------------------

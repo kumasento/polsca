@@ -1776,9 +1776,9 @@ struct ConfigMemoryInterfacePass : public ModulePass {
       if (isPointerToArray(arg->getType())) {
         // Set ap_memory interface to array arguments.
         auto arrayName = arg->getName().str();
-        attributeList = attributeList.addAttribute(F->getContext(), i + 1,
-                                                   "fpga.address.interface",
-                                                   "ap_memory." + arrayName);
+        attributeList = attributeList.addAttributeAtIndex(
+            F->getContext(), i + 1, "fpga.address.interface",
+            "ap_memory." + arrayName);
 
         // Set bram configuration to function metadata.
         auto &C = F->getContext();

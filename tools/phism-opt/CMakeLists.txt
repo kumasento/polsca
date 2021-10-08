@@ -14,7 +14,6 @@ target_link_libraries(phism-opt
   MLIRLoopAnalysis
   MLIRAnalysis
   MLIRDialect
-  MLIREDSC
   MLIROptLib
   MLIRParser
   MLIRPass
