@@ -4,3 +4,6 @@
 [submodule "polygeist"]
 	path = polygeist
 	url = https://github.com/wsmoses/Polygeist
+[submodule "polymer"]
+	path = polymer
+	url = https://github.com/kumasento/polymer
