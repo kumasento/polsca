@@ -705,24 +705,18 @@ def get_phism_env():
     root_dir = get_project_root()
 
     phism_env = os.environ.copy()
-    phism_env["PATH"] = "{}:{}:{}".format(
-        os.path.join(root_dir, "llvm", "build", "bin"),
-        os.path.join(root_dir, "build", "bin"),
-        phism_env["PATH"],
+    phism_env["PATH"] = ":".join(
+        [
+            os.path.join(root_dir, "polygeist", "llvm-project", "build", "bin"),
+            os.path.join(root_dir, "polygeist", "build", "mlir-clang"),
+            os.path.join(root_dir, "polymer", "build", "bin"),
+            os.path.join(root_dir, "build", "bin"),
+            phism_env["PATH"],
+        ]
     )
     phism_env["LD_LIBRARY_PATH"] = "{}:{}:{}:{}".format(
-        os.path.join(root_dir, "llvm", "build", "lib"),
-        os.path.join(
-            root_dir,
-            "llvm",
-            "build",
-            "tools",
-            "mlir",
-            "tools",
-            "polymer",
-            "pluto",
-            "lib",
-        ),
+        os.path.join(root_dir, "polygeist", "llvm-project", "build", "lib"),
+        os.path.join(root_dir, "polymer", "build", "pluto", "lib"),
         os.path.join(root_dir, "build", "lib"),
         phism_env["LD_LIBRARY_PATH"],
     )
@@ -950,30 +944,34 @@ class PbFlow:
         out_file = self.get_golden_out_file()
         exe_file = self.cur_file.replace(".c", ".exe")
         self.run_command(
-            cmd_list=[
-                self.get_program_abspath("clang"),
-                "-D",
-                f"{self.options.dataset}_DATASET",
-                "-D",
-                "POLYBENCH_DUMP_ARRAYS",
-                "-I",
-                os.path.join(self.work_dir, "utilities"),
-                "-I",
-                os.path.join(
-                    self.root_dir,
-                    "llvm",
-                    "build",
-                    "lib",
-                    "clang",
-                    "13.0.0",
-                    "include",
-                ),
-                "-lm",
-                self.cur_file,
-                os.path.join(self.work_dir, "utilities", "polybench.c"),
-                "-o",
-                exe_file,
-            ],
+            cmd=" ".join(
+                [
+                    self.get_program_abspath("clang"),
+                    "-D",
+                    f"{self.options.dataset}_DATASET",
+                    "-D",
+                    "POLYBENCH_DUMP_ARRAYS",
+                    "-I",
+                    os.path.join(self.work_dir, "utilities"),
+                    "-I",
+                    os.path.join(
+                        self.root_dir,
+                        "polygeist",
+                        "llvm-project",
+                        "build",
+                        "lib",
+                        "clang",
+                        "14.0.0",
+                        "include",
+                    ),
+                    "-lm",
+                    self.cur_file,
+                    os.path.join(self.work_dir, "utilities", "polybench.c"),
+                    "-o",
+                    exe_file,
+                ]
+            ),
+            shell=True,
             env=self.env,
         )
         self.run_command(
@@ -1006,28 +1004,34 @@ class PbFlow:
 
         self.run_command(cmd=f'sed -i "s/static//g" {src_file}', shell=True)
         self.run_command(
-            cmd_list=[
-                self.get_program_abspath("mlir-clang"),
-                src_file,
-                "-memref-fullrank",
-                "-D",
-                f"{self.options.dataset}_DATASET",
-                "-D",
-                "POLYBENCH_DUMP_ARRAYS",
-                "-I={}".format(
+            cmd=" ".join(
+                [
+                    self.get_program_abspath("mlir-clang"),
+                    src_file,
+                    "-memref-fullrank",
+                    "-S",
+                    "-O0",
+                    "-D",
+                    f"{self.options.dataset}_DATASET",
+                    "-D",
+                    "POLYBENCH_DUMP_ARRAYS",
+                    "-I",
                     os.path.join(
                         self.root_dir,
-                        "llvm",
+                        "polygeist",
+                        "llvm-project",
                         "build",
                         "lib",
                         "clang",
-                        "13.0.0",
+                        "14.0.0",
                         "include",
-                    )
-                ),
-                "-I={}".format(os.path.join(self.work_dir, "utilities")),
-            ],
+                    ),
+                    "-I",
+                    os.path.join(self.work_dir, "utilities"),
+                ]
+            ),
             stdout=open(self.cur_file, "w"),
+            shell=True,
             env=self.env,
         )
         return self
@@ -1046,6 +1050,7 @@ class PbFlow:
                     self.get_program_abspath("mlir-opt"),
                     "-lower-affine",
                     "-convert-scf-to-std",
+                    "-convert-memref-to-llvm",
                     "-convert-std-to-llvm",
                     self.cur_file,
                     "|",
