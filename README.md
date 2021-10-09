@@ -1,7 +1,11 @@
 # Phism: Polyhedral High-Level Synthesis in MLIR
 
 [![Build and Test](https://github.com/kumasento/phism/actions/workflows/buildAndTest.yml/badge.svg)](https://github.com/kumasento/phism/actions/workflows/buildAndTest.yml)
-[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fkumasento%2Fphism.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fkumasento%2Fphism?ref=badge_shield)
+![GitHub release (latest by date)](https://img.shields.io/github/v/release/kumasento/phism)
+![GitHub](https://img.shields.io/github/license/kumasento/phism)
+![GitHub issues](https://img.shields.io/github/issues/kumasento/phism)
+![GitHub pull requests](https://img.shields.io/github/issues-pr/kumasento/phism)
+
 
 ## What is Phism?
 
@@ -19,18 +23,38 @@ Please find how to setup the prerequisites [here](docs/PREREQUISITES.md).
 
 ### Build LLVM
 
-After that, the first thing you need to do is building the [Polygeist](wsmoses/Polygeist) submodule (with name `llvm`). Make sure you have it cloned:
+Phism uses [Polygeist](https://github.com/wsmoses/Polygeist) to process C/C++ code into MLIR. But before we built Polygeist, we need to build the LLVM package within Polygeist (`polygeist/llvm-project`). This LLVM package will be shared by Polygeist, Polymer (later), and Phism.
+
+First of all, make sure you've initialized all the submodules.
 
 ```sh
-git submodule update --init --update
+git submodule update --init --recursive
 ```
 
 You may see many submodules being synced -- don't worry, they are simply required by Pluto, the polyhedral optimizer that Phism uses.
 
-To build Polygeist, Just run the following script. It should take care of everything you need.
+To build LLVM, Just run the following script. It should take care of everything you need.
 
 ```sh
 ./scripts/build-llvm.sh
+```
+
+### Build Polygeist
+
+It is another one-liner:
+
+```sh
+./script/build-polygeist.sh
+```
+
+### Build Polymer
+
+[Polymer](https://github.com/kumasento/polymer) provides the functionality to interact MLIR code with polyhedral scheduler.
+
+There is also a script for you - 
+
+```sh
+./script/build-polymer.sh
 ```
 
 ### Build Phism
@@ -44,7 +68,6 @@ Finally, you're all prepared to build Phism! Just type in the following commands
 It should run the Phism regression test in the end. And if all the tests passed, hooray!
 
 ## Usage
-
 
 ### Using Docker
 
