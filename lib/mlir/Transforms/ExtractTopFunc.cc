@@ -28,11 +28,22 @@
 
 #include "llvm/ADT/SetVector.h"
 
+#include <deque>
+
 using namespace mlir;
 using namespace llvm;
 using namespace phism;
 
 static constexpr const char *SCOP_CONSTANT_VALUE = "scop.constant_value";
+
+namespace {
+struct PipelineOptions : public mlir::PassPipelineOptions<PipelineOptions> {
+  Option<std::string> topFuncName{*this, "name",
+                                  llvm::cl::desc("Top function name")};
+  Option<bool> keepAll{*this, "keepall",
+                       llvm::cl::desc("Keep all the functions.")};
+};
+} // namespace
 
 /// Union the given function and all the others it calls into 'keep'.
 static void unionCallee(FuncOp f, ModuleOp m,
@@ -93,14 +104,13 @@ namespace {
 struct ExtractTopFuncPass
     : public PassWrapper<ExtractTopFuncPass, OperationPass<ModuleOp>> {
 
+  std::string topFuncName;
+  bool keepAll = false;
+
   ExtractTopFuncPass() = default;
   ExtractTopFuncPass(const ExtractTopFuncPass &pass) {}
-
-  Option<std::string> topFuncName{
-      *this, "name",
-      llvm::cl::desc("Name of the top function to be extracted.")};
-  Option<bool> keepAll{*this, "keepall",
-                       llvm::cl::desc("Keep all the functions.")};
+  ExtractTopFuncPass(const PipelineOptions &options)
+      : topFuncName{options.topFuncName}, keepAll{keepAll} {}
 
   void runOnOperation() override {
     ModuleOp m = getOperation();
@@ -126,12 +136,6 @@ struct ExtractTopFuncPass
 };
 
 } // namespace
-
-struct ConstArgsPipelineOptions
-    : public mlir::PassPipelineOptions<ConstArgsPipelineOptions> {
-  Option<std::string> topFuncName{*this, "name",
-                                  llvm::cl::desc("Top function name")};
-};
 
 /// --------------------------- ReplaceConstantArguments ----------------------
 
@@ -208,7 +212,7 @@ struct PropagateConstantsPass
 
   PropagateConstantsPass() = default;
   PropagateConstantsPass(const PropagateConstantsPass &pass) {}
-  PropagateConstantsPass(const ConstArgsPipelineOptions &options)
+  PropagateConstantsPass(const PipelineOptions &options)
       : topName(options.topFuncName) {}
 
   void runOnOperation() override {
@@ -258,11 +262,14 @@ struct PropagateConstantsPass
 } // namespace
 
 void phism::registerExtractTopFuncPass() {
-  PassRegistration<ExtractTopFuncPass>(
-      "extract-top-func", "Extract the top function out of its module.");
-  PassPipelineRegistration<ConstArgsPipelineOptions>(
+  PassPipelineRegistration<PipelineOptions>(
+      "extract-top-func", "Extract the top function out of its module.",
+      [](OpPassManager &pm, const PipelineOptions &options) {
+        pm.addPass(std::make_unique<ExtractTopFuncPass>(options));
+      });
+  PassPipelineRegistration<PipelineOptions>(
       "replace-constant-arguments", "Replace the annotated constant arguments.",
-      [](OpPassManager &pm, const ConstArgsPipelineOptions &options) {
+      [](OpPassManager &pm, const PipelineOptions &options) {
         pm.addPass(std::make_unique<ReplaceConstantArgumentsPass>());
         pm.addPass(createCanonicalizerPass());
         pm.addPass(std::make_unique<RemoveEmptyAffineIfPass>());

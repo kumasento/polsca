@@ -11,11 +11,11 @@ import shutil
 import subprocess
 import traceback
 import xml.etree.ElementTree as ET
-from collections import OrderedDict, namedtuple
+from collections import OrderedDict, defaultdict, namedtuple
 from dataclasses import dataclass
 from multiprocessing import Pool
 from timeit import default_timer as timer
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -79,6 +79,10 @@ class PbFlowOptions:
     pb_dir: str
     job: int = 1
     polymer: bool = False
+    # CLooG options
+    cloogf: int = -1
+    cloogl: int = -1
+
     dataset: str = "MINI"
     cleanup: bool = False
     debug: bool = False
@@ -103,6 +107,11 @@ class PbFlowOptions:
             self.cosim = False
             self.skip_vitis = True
             self.skip_csim = True
+
+
+def filter_init_args(args: Dict[str, Any]) -> Dict[str, Any]:
+    opt = PbFlowOptions(pb_dir="")
+    return {k: v for k, v in args.items() if hasattr(opt, k)}
 
 
 # ----------------------- Utility functions ------------------------------------
@@ -276,6 +285,45 @@ def fetch_run_status(d):
         parse_cosim_log(get_vitis_log(d, "tbgen", "stdout")),
         # parse_cosim_log(get_vitis_log(d, "cosim", "stdout")),
     )
+
+
+def fetch_pipeline_info(d: str, proj_name: str = "tb") -> Dict[str, List[Any]]:
+    """Find the pipeline II result from the provided project directory."""
+    syn_report_dir = os.path.join(d, proj_name, "solution1", "syn", "report")
+    if not os.path.isdir(syn_report_dir):
+        return None
+
+    syn_report = os.path.join(syn_report_dir, "csynth.xml")
+    if not os.path.isfile(syn_report):
+        return None
+
+    # Parse the XML report and find every resource usage (tags given by RESOURCE_FIELDS)
+    data = defaultdict(list)
+    root = ET.parse(syn_report).getroot()
+
+    def process(el: Optional[ET.Element], module_name: str):
+        if el is None:
+            return
+
+        pipeline_ii = el.findtext("PipelineII")
+        if pipeline_ii is not None:
+            name = el.findtext("Name")
+
+            data["module_name"].append(module_name)
+            data["loop_name"].append(name)
+            data["pipeline_ii"].append(pipeline_ii)
+
+            return
+
+        for child in el.getchildren():
+            process(child, module_name)
+
+    for el in root.findall("ModuleInformation/Module"):
+        module_name = el.findtext("Name")
+        loops = el.find("PerformanceEstimates/SummaryOfLoopLatency")
+        process(loops, module_name)
+
+    return data
 
 
 def process_directory(d):
@@ -620,6 +668,21 @@ def toggle_cosim_setup(file: str):
         f.write("\n".join(lines))
 
 
+def comment_out_cosim(file: str):
+    with open(file, "r") as f:
+        lines = f.readlines()
+    assert lines
+
+    lines = [l.strip() for l in lines]
+    pos = next(i for i, l in enumerate(lines) if "cosim_design" in l)
+    assert pos >= 0 and pos < len(lines)
+
+    lines[pos] = f"# {lines[pos]}"
+
+    with open(file, "w") as f:
+        f.write("\n".join(lines))
+
+
 # ----------------------- Benchmark runners ---------------------------
 
 
@@ -642,24 +705,18 @@ def get_phism_env():
     root_dir = get_project_root()
 
     phism_env = os.environ.copy()
-    phism_env["PATH"] = "{}:{}:{}".format(
-        os.path.join(root_dir, "llvm", "build", "bin"),
-        os.path.join(root_dir, "build", "bin"),
-        phism_env["PATH"],
+    phism_env["PATH"] = ":".join(
+        [
+            os.path.join(root_dir, "polygeist", "llvm-project", "build", "bin"),
+            os.path.join(root_dir, "polygeist", "build", "mlir-clang"),
+            os.path.join(root_dir, "polymer", "build", "bin"),
+            os.path.join(root_dir, "build", "bin"),
+            phism_env["PATH"],
+        ]
     )
     phism_env["LD_LIBRARY_PATH"] = "{}:{}:{}:{}".format(
-        os.path.join(root_dir, "llvm", "build", "lib"),
-        os.path.join(
-            root_dir,
-            "llvm",
-            "build",
-            "tools",
-            "mlir",
-            "tools",
-            "polymer",
-            "pluto",
-            "lib",
-        ),
+        os.path.join(root_dir, "polygeist", "llvm-project", "build", "lib"),
+        os.path.join(root_dir, "polymer", "build", "pluto", "lib"),
         os.path.join(root_dir, "build", "lib"),
         phism_env["LD_LIBRARY_PATH"],
     )
@@ -827,7 +884,7 @@ class PbFlow:
                 .vitis_opt()
                 .write_tb_tcl_by_llvm()
                 # .run_vitis_on_phism()
-                .run_tbgen_csim()
+                .run_vitis()
                 # .backup_csim_results()
                 # .copy_design_from_phism_to_tb()
                 # .run_cosim()
@@ -887,30 +944,34 @@ class PbFlow:
         out_file = self.get_golden_out_file()
         exe_file = self.cur_file.replace(".c", ".exe")
         self.run_command(
-            cmd_list=[
-                self.get_program_abspath("clang"),
-                "-D",
-                f"{self.options.dataset}_DATASET",
-                "-D",
-                "POLYBENCH_DUMP_ARRAYS",
-                "-I",
-                os.path.join(self.work_dir, "utilities"),
-                "-I",
-                os.path.join(
-                    self.root_dir,
-                    "llvm",
-                    "build",
-                    "lib",
-                    "clang",
-                    "13.0.0",
-                    "include",
-                ),
-                "-lm",
-                self.cur_file,
-                os.path.join(self.work_dir, "utilities", "polybench.c"),
-                "-o",
-                exe_file,
-            ],
+            cmd=" ".join(
+                [
+                    self.get_program_abspath("clang"),
+                    "-D",
+                    f"{self.options.dataset}_DATASET",
+                    "-D",
+                    "POLYBENCH_DUMP_ARRAYS",
+                    "-I",
+                    os.path.join(self.work_dir, "utilities"),
+                    "-I",
+                    os.path.join(
+                        self.root_dir,
+                        "polygeist",
+                        "llvm-project",
+                        "build",
+                        "lib",
+                        "clang",
+                        "14.0.0",
+                        "include",
+                    ),
+                    "-lm",
+                    self.cur_file,
+                    os.path.join(self.work_dir, "utilities", "polybench.c"),
+                    "-o",
+                    exe_file,
+                ]
+            ),
+            shell=True,
             env=self.env,
         )
         self.run_command(
@@ -943,28 +1004,34 @@ class PbFlow:
 
         self.run_command(cmd=f'sed -i "s/static//g" {src_file}', shell=True)
         self.run_command(
-            cmd_list=[
-                self.get_program_abspath("mlir-clang"),
-                src_file,
-                "-memref-fullrank",
-                "-D",
-                f"{self.options.dataset}_DATASET",
-                "-D",
-                "POLYBENCH_DUMP_ARRAYS",
-                "-I={}".format(
+            cmd=" ".join(
+                [
+                    self.get_program_abspath("mlir-clang"),
+                    src_file,
+                    "-memref-fullrank",
+                    "-S",
+                    "-O0",
+                    "-D",
+                    f"{self.options.dataset}_DATASET",
+                    "-D",
+                    "POLYBENCH_DUMP_ARRAYS",
+                    "-I",
                     os.path.join(
                         self.root_dir,
-                        "llvm",
+                        "polygeist",
+                        "llvm-project",
                         "build",
                         "lib",
                         "clang",
-                        "13.0.0",
+                        "14.0.0",
                         "include",
-                    )
-                ),
-                "-I={}".format(os.path.join(self.work_dir, "utilities")),
-            ],
+                    ),
+                    "-I",
+                    os.path.join(self.work_dir, "utilities"),
+                ]
+            ),
             stdout=open(self.cur_file, "w"),
+            shell=True,
             env=self.env,
         )
         return self
@@ -983,6 +1050,7 @@ class PbFlow:
                     self.get_program_abspath("mlir-opt"),
                     "-lower-affine",
                     "-convert-scf-to-std",
+                    "-convert-memref-to-llvm",
                     "-convert-std-to-llvm",
                     self.cur_file,
                     "|",
@@ -1101,12 +1169,12 @@ class PbFlow:
             ]
         passes += [
             "-extract-scop-stmt",
-            "-pluto-opt",
+            f'-pluto-opt="cloogf={self.options.cloogf} cloogl={self.options.cloogl} diamond-tiling"',
             "-debug",
         ]
 
         self.run_command(
-            cmd_list=(
+            cmd=" ".join(
                 [
                     self.get_program_abspath("polymer-opt"),
                     src_file,
@@ -1115,6 +1183,7 @@ class PbFlow:
             ),
             stderr=open(log_file, "w"),
             stdout=open(self.cur_file, "w"),
+            shell=True,
             env=self.env,
         )
 
@@ -1165,6 +1234,7 @@ class PbFlow:
             src_file,
             f'-loop-transforms="max-span={self.options.max_span}"',
             "-loop-redis-and-merge",
+            "-fold-if",
             "-debug-only=loop-transforms",
         ]
 
@@ -1252,6 +1322,7 @@ class PbFlow:
             src_file,
             "-lower-affine",
             "-convert-scf-to-std",
+            "-convert-memref-to-llvm",
             "-canonicalize",
             convert_std_to_llvm,
             f"| {self.get_program_abspath('mlir-translate')} -mlir-to-llvmir",
@@ -1277,7 +1348,9 @@ class PbFlow:
         log_file = self.cur_file.replace(".llvm", ".log")
 
         xln_names = get_top_func_param_names(
-            self.c_source, self.work_dir, llvm_dir=os.path.join(self.root_dir, "llvm")
+            self.c_source,
+            self.work_dir,
+            llvm_dir=os.path.join(self.root_dir, "polygeist", "llvm-project"),
         )
 
         # Whether array partition has been successful.
@@ -1286,7 +1359,9 @@ class PbFlow:
         )
 
         args = [
-            os.path.join(self.root_dir, "llvm", "build", "bin", "opt"),
+            os.path.join(
+                self.root_dir, "polygeist", "llvm-project", "build", "bin", "opt"
+            ),
             src_file,
             "-S",
             "-enable-new-pm=0",
@@ -1335,7 +1410,7 @@ class PbFlow:
 
         # Write the TCL for TBGEN.
         args = [
-            os.path.join(self.root_dir, "llvm", "build", "bin", "opt"),
+            os.path.join(self.root_dir, "polygeist", "llvm-project", "build", "bin", "opt"),
             src_file,
             "-S",
             "-enable-new-pm=0",
@@ -1362,8 +1437,12 @@ class PbFlow:
 
     def run_vitis_on_phism(self):
         """Just run vitis_hls on the LLVM generated from Phism."""
+        # DEPRECATED
         if self.options.skip_vitis:
             self.logger.warn("Vitis won't run since --skip-vitis has been set.")
+            return self
+        if self.options.cosim:
+            self.logger.warn("Vitis won't run since --cosim has been set.")
             return self
 
         src_file = self.cur_file
@@ -1411,12 +1490,8 @@ class PbFlow:
 
         return self
 
-    def run_tbgen_csim(self, force_skip=False):
+    def run_vitis(self, force_skip=False):
         """Run the tbgen.tcl file. Assuming the Tcl file has been written."""
-        if not self.options.cosim:
-            self.logger.warn("Cosim won't run due to the input setting.")
-            return self
-
         src_file = self.cur_file
         base_dir = os.path.dirname(src_file)
 
@@ -1428,6 +1503,10 @@ class PbFlow:
             if not is_cosim_setup(tbgen_vitis_tcl):
                 self.logger.debug("Toggled -setup to cosim_design.")
                 toggle_cosim_setup(tbgen_vitis_tcl)
+
+        if not self.options.cosim:
+            self.logger.warn("Cosim won't run due to the input setting.")
+            comment_out_cosim(tbgen_vitis_tcl)
 
         if self.options.dry_run:
             return self
@@ -1599,7 +1678,7 @@ def pb_flow_dump_report(options: PbFlowOptions):
     df.to_csv(os.path.join(options.work_dir, f"pb-flow.report.{get_timestamp()}.csv"))
 
 
-def pb_flow_runner(options: PbFlowOptions):
+def pb_flow_runner(options: PbFlowOptions, dump_report: bool = True):
     """Run pb-flow with the provided arguments."""
     assert os.path.isdir(options.pb_dir)
 
@@ -1631,7 +1710,7 @@ def pb_flow_runner(options: PbFlowOptions):
     print("Elapsed time: {:.6f} sec".format(end - start))
 
     # Will only dump report if Vitis has been run.
-    if not options.skip_vitis:
+    if dump_report and not options.skip_vitis:
         print(">>> Dumping report ... ")
         pb_flow_dump_report(options)
 

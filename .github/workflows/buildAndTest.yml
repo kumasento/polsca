@@ -8,19 +8,19 @@ jobs:
   # Build Phism and run its tests.
   build-phism:
     name: Build and Test Phism
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
-      # - name: Configure Environment
-      #   run: echo "${GITHUB_WORKSPACE}/llvm/install/bin" >> $GITHUB_PATH
-      # Disabled for self-hosted
-      # - name: Get dependences
-      #   run: |
-      #     sudo apt-get update -y
-      #     sudo apt-get install -y build-essential libtool autoconf pkg-config flex bison libgmp-dev clang-9 libclang-9-dev texinfo python3
-      # - name: Update the LLVM/Clang version to 9
-      #   run: |
-      #     sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-9 100
-      #     sudo update-alternatives --install /usr/bin/FileCheck FileCheck /usr/bin/FileCheck-9 100
+      - name: Configure Environment
+        run: echo "${GITHUB_WORKSPACE}/llvm/install/bin" >> $GITHUB_PATH
+        
+      - name: Get dependences
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential libtool autoconf pkg-config flex bison libgmp-dev clang-9 libclang-9-dev texinfo python3
+      - name: Update the LLVM/Clang version to 9
+        run: |
+          sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-9 100
+          sudo update-alternatives --install /usr/bin/FileCheck FileCheck /usr/bin/FileCheck-9 100
           
      
       # Clone the Phism repo and its submodules. Do shallow clone to save clone
@@ -29,6 +29,11 @@ jobs:
         uses: actions/checkout@v2
         with:
           submodules: "true"
+
+      - name: Sync Polygeist submodule 
+        run: |
+          cd polygeist
+          git submodule update --init --recursive
     
       # --------
       # Restore LLVM from cache and build if it's not in there.
@@ -36,14 +41,14 @@ jobs:
       # Extract the LLVM submodule hash for use in the cache key.
       - name: Get LLVM Hash
         id: get-llvm-hash
-        run: echo "::set-output name=hash::$(git rev-parse @:./llvm)"
+        run: echo "::set-output name=hash::$(git rev-parse @:./polygeist/llvm-project)"
         shell: bash
       # Try to fetch LLVM from the cache.
       - name: Cache LLVM
         id: cache-llvm
         uses: actions/cache@v2
         with:
-          path: llvm/build
+          path: ./polygeist/llvm-project/build
           key: ${{ runner.os }}-llvm-${{ steps.get-llvm-hash.outputs.hash }}
       # Build LLVM if we didn't hit in the cache. Even though we build it in
       # the previous job, there is a low chance that it'll have been evicted by
@@ -52,8 +57,24 @@ jobs:
       - name: Rebuild and Install LLVM
         if: steps.cache-llvm.outputs.cache-hit != 'true'
         run: |
-          ./scripts/build-llvm.sh ci
+          ./scripts/build-llvm.sh
           rm -rf ./llvm/build/test 
+
+
+      # --------
+      # Build and test Polygeist.
+      # --------
+      - name: Build and test Polygeist
+        run: |
+          ./scripts/build-polygeist.sh
+
+      # --------
+      # Build and test Polymer.
+      # --------
+      - name: Build and test Polymer
+        run: |
+          ./scripts/build-polymer.sh
+
       # --------
       # Build and test Phism in both debug and release mode.
       # --------
@@ -71,19 +92,19 @@ jobs:
           pytest pyphism/
       
       # Build and test Phism with pb-flow.
-      - name: Build and Test Phism (pb-flow)
-        run: |
-          python3 -m venv env
-          source env/bin/activate
-          which python3
-          python3 -m pip install -r requirements.txt
-          python3 ./scripts/pb-flow.py ./example/polybench --dataset MINI --sanity-check
-          python3 ./scripts/pb-flow.py ./example/polybench --dataset MINI --polymer --sanity-check
-          python3 ./scripts/pb-flow.py ./example/polybench --dataset MINI --polymer --loop-transforms --sanity-check
-          python3 ./scripts/pb-flow.py ./example/polybench --dataset SMALL --skip-vitis
-          python3 ./scripts/pb-flow.py ./example/polybench --dataset SMALL --polymer --skip-vitis
-          python3 ./scripts/pb-flow.py ./example/polybench --dataset SMALL --polymer --loop-transforms --skip-vitis
-          python3 ./scripts/pb-flow.py ./example/polybench --dataset SMALL --polymer --loop-transforms --array-partition --skip-vitis
+#       - name: Build and Test Phism (pb-flow)
+#         run: |
+#           python3 -m venv env
+#           source env/bin/activate
+#           which python3
+#           python3 -m pip install -r requirements.txt
+#           python3 ./scripts/pb-flow.py ./example/polybench --dataset MINI --sanity-check
+#           python3 ./scripts/pb-flow.py ./example/polybench --dataset MINI --polymer --sanity-check
+#           python3 ./scripts/pb-flow.py ./example/polybench --dataset MINI --polymer --loop-transforms --sanity-check
+#           python3 ./scripts/pb-flow.py ./example/polybench --dataset SMALL --skip-vitis
+#           python3 ./scripts/pb-flow.py ./example/polybench --dataset SMALL --polymer --skip-vitis
+#           python3 ./scripts/pb-flow.py ./example/polybench --dataset SMALL --polymer --loop-transforms --skip-vitis
+#           python3 ./scripts/pb-flow.py ./example/polybench --dataset SMALL --polymer --loop-transforms --array-partition --skip-vitis
 
 
 

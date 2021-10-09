@@ -3,7 +3,7 @@ add_mlir_library(PhismTransforms
   LoopTransforms.cc
   PhismTransforms.cc
   ArrayPartition.cc
-  DependenceAnalysis.cc
+  FoldIf.cc
   Utils.cc
 
   ADDITIONAL_HEADER_DIRS

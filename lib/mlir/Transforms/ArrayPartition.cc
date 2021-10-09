@@ -26,6 +26,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/StringExtras.h"
 
 #include <fstream>
 #include <queue>
@@ -970,7 +971,8 @@ static void renameTiledFunctions(ModuleOp m, OpBuilder &b) {
   m.walk([&](mlir::CallOp caller) {
     if (newNames.count(caller.getCallee()))
       caller->setAttr("callee",
-                      b.getSymbolRefAttr(newNames[caller.getCallee()]));
+                      SymbolRefAttr::get(caller.getContext(),
+                                         newNames[caller.getCallee()]));
   });
 }
 

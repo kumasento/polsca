@@ -1,6 +1,9 @@
-[submodule "llvm"]
-	path = llvm
-	url = https://github.com/kumasento/Polygeist
 [submodule "example/polybench"]
 	path = example/polybench
 	url = git@github.com:MatthiasJReisinger/PolyBenchC-4.2.1.git
+[submodule "polygeist"]
+	path = polygeist
+	url = https://github.com/wsmoses/Polygeist
+[submodule "polymer"]
+	path = polymer
+	url = https://github.com/kumasento/polymer

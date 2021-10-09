@@ -1,4 +1,4 @@
-// RUN: mlir-opt -lower-affine -convert-scf-to-std -convert-std-to-llvm='use-bare-ptr-memref-call-conv=1' %s | mlir-translate -mlir-to-llvmir | opt -enable-new-pm=0 -load ${PHISM_LIBS_DIR}/VhlsLLVMRewriter.so -mem2arr -instcombine -strip-debug -S | FileCheck %s 
+// RUN: mlir-opt -lower-affine -convert-scf-to-std -convert-memref-to-llvm -convert-std-to-llvm='use-bare-ptr-memref-call-conv=1' %s | mlir-translate -mlir-to-llvmir | opt -enable-new-pm=0 -load ${PHISM_LIBS_DIR}/VhlsLLVMRewriter.so -mem2arr -instcombine -strip-debug -S | FileCheck %s 
 
 // CHECK: noinline
 // CHECK: define void @matmul([200 x [300 x float]]* %[[A:.*]], [300 x [400 x float]]* %[[B:.*]], [200 x [400 x float]]* %[[C:.*]]) #[[ATTR:.*]]
