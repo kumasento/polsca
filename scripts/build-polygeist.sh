@@ -22,7 +22,10 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
 # Make sure Polygeist submodule is up-to-date.
 git submodule sync
-git submodule update --init --recursive
+
+if [ ! -d "${DIR}/../polygeist/llvm-project" ]; then
+  git submodule update --init --recursive
+fi
 
 # Go to the polygeist directory and carry out installation.
 POLYGEIST_DIR="${DIR}/../polygeist"
