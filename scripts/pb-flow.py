@@ -70,6 +70,9 @@ def main():
     parser.add_argument("--sanity-check", action="store_true", help="Run sanity check.")
     parser.add_argument("--cloogl", type=int, default=-1, help="-cloogl option")
     parser.add_argument("--cloogf", type=int, default=-1, help="-cloogf option")
+    parser.add_argument(
+        "--diamond-tiling", action="store_true", help="Use diamond tiling"
+    )
     args = parser.parse_args()
 
     options = pb_flow.PbFlowOptions(**vars(args))
