@@ -33,7 +33,7 @@ cd build
 if [ ! -f "CMakeCache.txt" ]; then
   cmake ../llvm \
     -DLLVM_ENABLE_PROJECTS="mlir;clang" \
-    -DCMAKE_BUILD_TYPE=DEBUG \
+    -DCMAKE_BUILD_TYPE=RELEASE \
     -DLLVM_BUILD_EXAMPLES=OFF \
     -DLLVM_TARGETS_TO_BUILD="host" \
     -DLLVM_OPTIMIZED_TABLEGEN=ON \
