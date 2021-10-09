@@ -29,6 +29,11 @@ jobs:
         uses: actions/checkout@v2
         with:
           submodules: "true"
+
+      - name: Sync Polygeist submodule 
+        run: |
+          cd polygeist
+          git submodule update --init --recursive
     
       # --------
       # Restore LLVM from cache and build if it's not in there.
