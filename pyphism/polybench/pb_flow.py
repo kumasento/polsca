@@ -1169,7 +1169,7 @@ class PbFlow:
             ]
         passes += [
             "-extract-scop-stmt",
-            f'-pluto-opt="cloogf={self.options.cloogf} cloogl={self.options.cloogl}"',
+            f'-pluto-opt="cloogf={self.options.cloogf} cloogl={self.options.cloogl} diamond-tiling"',
             "-debug",
         ]
 
@@ -1322,6 +1322,7 @@ class PbFlow:
             src_file,
             "-lower-affine",
             "-convert-scf-to-std",
+            "-convert-memref-to-llvm",
             "-canonicalize",
             convert_std_to_llvm,
             f"| {self.get_program_abspath('mlir-translate')} -mlir-to-llvmir",
@@ -1347,7 +1348,9 @@ class PbFlow:
         log_file = self.cur_file.replace(".llvm", ".log")
 
         xln_names = get_top_func_param_names(
-            self.c_source, self.work_dir, llvm_dir=os.path.join(self.root_dir, "llvm")
+            self.c_source,
+            self.work_dir,
+            llvm_dir=os.path.join(self.root_dir, "polygeist", "llvm-project"),
         )
 
         # Whether array partition has been successful.
@@ -1356,7 +1359,9 @@ class PbFlow:
         )
 
         args = [
-            os.path.join(self.root_dir, "llvm", "build", "bin", "opt"),
+            os.path.join(
+                self.root_dir, "polygeist", "llvm-project", "build", "bin", "opt"
+            ),
             src_file,
             "-S",
             "-enable-new-pm=0",
@@ -1405,7 +1410,7 @@ class PbFlow:
 
         # Write the TCL for TBGEN.
         args = [
-            os.path.join(self.root_dir, "llvm", "build", "bin", "opt"),
+            os.path.join(self.root_dir, "polygeist", "llvm-project", "build", "bin", "opt"),
             src_file,
             "-S",
             "-enable-new-pm=0",
