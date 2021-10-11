@@ -9,7 +9,7 @@ USER root
 RUN dnf update -y
 RUN dnf install -y gcc-c++ sudo vim openssh-clients \
                    wget curl-devel expat-devel gettext-devel zlib-devel \
-                   perl-CPAN perl-devel git
+                   perl-CPAN perl-devel git lld
 
 # Vitis HLS dependences
 RUN dnf install -y libXext libXrender libXtst gettext libtool \
