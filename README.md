@@ -44,7 +44,7 @@ To build LLVM, Just run the following script. It should take care of everything 
 It is another one-liner:
 
 ```sh
-./script/build-polygeist.sh
+./scripts/build-polygeist.sh
 ```
 
 ### Build Polymer
@@ -54,7 +54,7 @@ It is another one-liner:
 There is also a script for you - 
 
 ```sh
-./script/build-polymer.sh
+./scripts/build-polymer.sh
 ```
 
 ### Build Phism
