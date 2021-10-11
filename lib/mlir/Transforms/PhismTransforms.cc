@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "phism/mlir/Transforms/PhismTransforms.h"
+#include "phism/mlir/Transforms/Passes.h"
 
 namespace phism {
 
@@ -14,6 +15,7 @@ void registerAllPhismPasses() {
   registerArrayPartitionPasses();
   // registerDependenceAnalysisPasses();
   registerFoldIfPasses();
+  registerLoopBoundHoistingPass();
 }
 
 } // namespace phism
