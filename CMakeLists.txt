@@ -63,6 +63,7 @@ include_directories("${MLIR_INCLUDE_DIRS}")
 include_directories("${PROJECT_SOURCE_DIR}/include")
 include_directories("${PROJECT_BINARY_DIR}/include")
 
+add_subdirectory(include/phism)
 add_subdirectory(lib)
 add_subdirectory(test)
 add_subdirectory(tools)
