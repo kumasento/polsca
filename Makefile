@@ -33,8 +33,8 @@ test-polybench-polymer:
 # Build LLVM and Phism
 build-phism:
 	./scripts/build-llvm.sh
-	./script/build-polygeist.sh
-	./script/build-polymer.sh
+	./scripts/build-polygeist.sh
+	./scripts/build-polymer.sh
 	./scripts/build-phism.sh
 
 # Sync and update submodules
