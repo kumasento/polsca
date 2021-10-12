@@ -82,6 +82,7 @@ class PbFlowOptions:
     # CLooG options
     cloogf: int = -1
     cloogl: int = -1
+    diamond_tiling: bool = False
 
     dataset: str = "MINI"
     cleanup: bool = False
@@ -880,6 +881,7 @@ class PbFlow:
                 .sanity_check()
                 .scop_stmt_inline()
                 .sanity_check()
+                .lower_scf()
                 .lower_llvm()
                 .vitis_opt()
                 .write_tb_tcl_by_llvm()
@@ -1235,6 +1237,8 @@ class PbFlow:
             f'-loop-transforms="max-span={self.options.max_span}"',
             "-loop-redis-and-merge",
             "-fold-if",
+            "-demote-bound-to-if",
+            "-fold-if",
             "-debug-only=loop-transforms",
         ]
 
@@ -1308,6 +1312,26 @@ class PbFlow:
 
         return self
 
+    def lower_scf(self):
+        """Lower to SCF first."""
+        src_file, self.cur_file = self.cur_file, self.cur_file.replace(
+            ".mlir", ".scf.mlir"
+        )
+
+        self.run_command(
+            cmd_list=[
+                self.get_program_abspath("phism-opt"),
+                src_file,
+                "-lower-affine",
+                "-loop-bound-hoisting",
+                "-loop-coalescing",
+            ],
+            stdout=open(self.cur_file, "w"),
+            env=self.env,
+        )
+
+        return self
+
     def lower_llvm(self):
         """Lower from MLIR to LLVM."""
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(".mlir", ".llvm")
@@ -1320,7 +1344,6 @@ class PbFlow:
         args = [
             self.get_program_abspath("mlir-opt"),
             src_file,
-            "-lower-affine",
             "-convert-scf-to-std",
             "-convert-memref-to-llvm",
             "-canonicalize",
@@ -1410,7 +1433,9 @@ class PbFlow:
 
         # Write the TCL for TBGEN.
         args = [
-            os.path.join(self.root_dir, "polygeist", "llvm-project", "build", "bin", "opt"),
+            os.path.join(
+                self.root_dir, "polygeist", "llvm-project", "build", "bin", "opt"
+            ),
             src_file,
             "-S",
             "-enable-new-pm=0",
