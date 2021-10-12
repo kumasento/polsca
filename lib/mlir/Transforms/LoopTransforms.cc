@@ -1,5 +1,6 @@
 //===- LoopTransforms.cc - Loop transforms ----------------------------C++-===//
 
+#include "PassDetail.h"
 #include "phism/mlir/Transforms/PhismTransforms.h"
 #include "phism/mlir/Transforms/Utils.h"
 
@@ -14,6 +15,7 @@
 #include "mlir/IR/BlockAndValueMapping.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Dominance.h"
+#include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Types.h"
@@ -21,6 +23,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/LoopUtils.h"
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "mlir/Transforms/Utils.h"
@@ -320,6 +323,7 @@ static bool greedyLoopExtraction(Operation *op, const int maxSpan, int &startId,
       BlockAndValueMapping vmap;
 
       std::tie(callee, vmap) = createPointLoopsCallee(forOp, startId, f, b);
+      callee->setAttr("scop.pe", b.getUnitAttr());
       CallOp caller = createPointLoopsCaller(forOp, callee, vmap, b);
       caller->setAttr("scop.pe", b.getUnitAttr());
 
@@ -1092,6 +1096,209 @@ struct ScopStmtInlinePass
 
 } // namespace
 
+/// ------------------ Loop coalescing --------------------------
+
+static void getLoopBand(mlir::AffineForOp topOp,
+                        SmallVectorImpl<mlir::AffineForOp> &band) {
+  Operation *currOp = topOp;
+  mlir::AffineForOp forOp;
+  while ((forOp = dyn_cast<mlir::AffineForOp>(currOp))) {
+    band.push_back(forOp);
+
+    auto &ops = forOp.getBody()->getOperations();
+    if (ops.size() != 2)
+      break;
+    currOp = &ops.front();
+  }
+}
+
+static void demoteBoundToIf(mlir::AffineForOp forOp,
+                            llvm::SetVector<Value> &ivs, OpBuilder &b) {
+  Location loc = forOp.getLoc();
+
+  auto lbMap = forOp.getLowerBoundMap();
+  auto lbOperands = forOp.getLowerBoundOperands();
+  auto ubMap = forOp.getUpperBoundMap();
+  auto ubOperands = forOp.getUpperBoundOperands();
+
+  // If none of the operands is a loop induction variable, there is no need to
+  // continue;
+  if (none_of(lbOperands, [&](Value value) { return ivs.count(value) != 0; }) &&
+      none_of(ubOperands, [&](Value value) { return ivs.count(value) != 0; }))
+    return;
+
+  // Gather the constraints from the lbMap that involve the outer IVs.
+  auto indicesOfIV = [&](OperandRange operands) -> auto {
+    llvm::SetVector<int64_t> indices;
+    for (auto operand : enumerate(lbOperands))
+      if (ivs.count(operand.value()))
+        indices.insert(operand.index());
+    return indices;
+  };
+
+  auto lbIndices = indicesOfIV(lbOperands);
+  auto ubIndices = indicesOfIV(ubOperands);
+
+  // Gather affine expressions from the affine map that involves these indices.
+  auto boundsToDemote = [&](llvm::SetVector<int64_t> indices,
+                            AffineMap affMap) -> auto {
+    SmallVector<AffineExpr> demoted, remained;
+
+    for (AffineExpr expr : affMap.getResults()) {
+      bool toDemote = false;
+      expr.walk([&](AffineExpr e) {
+        if ((e.isa<AffineDimExpr>() || e.isa<AffineSymbolExpr>()) &&
+            indices.count(e.isa<AffineDimExpr>()
+                              ? e.cast<AffineDimExpr>().getPosition()
+                              : (e.cast<AffineSymbolExpr>().getPosition() +
+                                 affMap.getNumDims())))
+          toDemote = true;
+      });
+
+      if (toDemote)
+        demoted.push_back(expr);
+      else
+        remained.push_back(expr);
+    }
+
+    return std::make_pair(demoted, remained);
+  };
+
+  SmallVector<AffineExpr> lbBoundsToDemote, lbBoundsToRemain;
+  SmallVector<AffineExpr> ubBoundsToDemote, ubBoundsToRemain;
+
+  std::tie(lbBoundsToDemote, lbBoundsToRemain) =
+      boundsToDemote(lbIndices, lbMap);
+  std::tie(ubBoundsToDemote, ubBoundsToRemain) =
+      boundsToDemote(ubIndices, ubMap);
+
+  LLVM_DEBUG({
+    dbgs() << "Lower bounds to demote:\n";
+    for (AffineExpr expr : lbBoundsToDemote)
+      dbgs() << expr << '\n';
+    dbgs() << "Upper bounds to demote:\n";
+    for (AffineExpr expr : ubBoundsToDemote)
+      dbgs() << expr << '\n';
+  });
+
+  // The new affine.if should constrain the IV of the current loop to be >=
+  // lbBoundsToDemote and <= ubBoundsToDemote.
+  // Need to make sure the dims/symbols are aligned.
+
+  auto boundConstraints = [&](OperandRange operands, AffineMap affMap,
+                              ArrayRef<AffineExpr> boundsToDemote,
+                              bool isLowerBound =
+                                  false) -> FlatAffineValueConstraints {
+    SmallVector<Value> values(operands);
+
+    FlatAffineValueConstraints cst(affMap.getNumDims() + 1,
+                                   affMap.getNumSymbols(), 0UL);
+    for (unsigned i = 0; i < affMap.getNumDims(); ++i)
+      cst.setValue(i, values[i]);
+    cst.setValue(affMap.getNumDims(), forOp.getInductionVar());
+    for (unsigned i = 0; i < affMap.getNumSymbols(); ++i)
+      cst.setValue(i + affMap.getNumDims() + 1,
+                   values[i + affMap.getNumDims()]);
+
+    assert(succeeded(cst.addBound(
+        isLowerBound ? FlatAffineValueConstraints::BoundType::LB
+                     : FlatAffineValueConstraints::BoundType::UB,
+        affMap.getNumDims(),
+        AffineMap::get(affMap.getNumDims() + 1, affMap.getNumSymbols(),
+                       boundsToDemote, b.getContext()))));
+    return cst;
+  };
+
+  auto lbBoundCst = boundConstraints(lbOperands, lbMap, lbBoundsToDemote,
+                                     /*isLowerBound=*/true);
+  auto ubBoundCst = boundConstraints(ubOperands, ubMap, ubBoundsToDemote,
+                                     /*isLowerBound=*/false);
+
+  lbBoundCst.mergeAndAlignIdsWithOther(0, &ubBoundCst);
+  lbBoundCst.append(ubBoundCst);
+
+  LLVM_DEBUG({
+    dbgs() << "Created constraints for the new affine.if:\n";
+    lbBoundCst.dump();
+  });
+
+  b.setInsertionPointToStart(forOp.getBody());
+
+  SmallVector<Value> ifOperands;
+  lbBoundCst.getAllValues(&ifOperands);
+  auto ifOp = b.create<mlir::AffineIfOp>(
+      loc, lbBoundCst.getAsIntegerSet(b.getContext()), ifOperands,
+      /*withElseRegion=*/false);
+
+  SmallVector<Operation *> toErase;
+  b.setInsertionPointToStart(ifOp.getThenBlock());
+  BlockAndValueMapping vmap;
+  for (Operation &op : forOp.getBody()->getOperations())
+    if (&op != ifOp && !isa<mlir::AffineYieldOp>(&op)) {
+      b.clone(op, vmap);
+      toErase.push_back(&op);
+    }
+
+  for (Operation *op : reverse(toErase)) {
+    LLVM_DEBUG(dbgs() << "Erasing " << *op << '\n');
+    op->erase();
+  }
+
+  // Update the for loop bounds.
+  forOp.setLowerBoundMap(AffineMap::get(lbMap.getNumDims(),
+                                        lbMap.getNumSymbols(), lbBoundsToRemain,
+                                        b.getContext()));
+  forOp.setUpperBoundMap(AffineMap::get(ubMap.getNumDims(),
+                                        ubMap.getNumSymbols(), ubBoundsToRemain,
+                                        b.getContext()));
+}
+
+static void demoteBoundToIf(FuncOp f, OpBuilder &b) {
+  for (Operation &op : f.getBody().getOps()) {
+    if (auto forOp = dyn_cast<mlir::AffineForOp>(op)) {
+      // Get loop band.
+      SmallVector<mlir::AffineForOp> band;
+      getLoopBand(forOp, band);
+
+      if (band.size() <= 1)
+        continue;
+
+      LLVM_DEBUG(forOp.dump());
+      LLVM_DEBUG(dbgs() << "Found loop band of size: " << band.size() << '\n');
+
+      // Get all loop IVs.
+      llvm::SetVector<Value> ivs;
+      for (mlir::AffineForOp op : band)
+        ivs.insert(op.getInductionVar());
+
+      // Find if an inner loop has a bound that depends on an outer loop IV.
+      for (mlir::AffineForOp op : band)
+        if (op != forOp) // skip the top
+          demoteBoundToIf(op, ivs, b);
+    }
+  }
+}
+
+namespace {
+struct DemoteBoundToIfPass
+    : public PassWrapper<DemoteBoundToIfPass, OperationPass<ModuleOp>> {
+
+  void runOnOperation() override {
+    ModuleOp m = getOperation();
+    OpBuilder b(m.getContext());
+
+    SmallVector<FuncOp> worklist;
+    m.walk([&](FuncOp f) {
+      if (f->hasAttr("scop.pe"))
+        worklist.push_back(f);
+    });
+
+    for (FuncOp f : worklist)
+      demoteBoundToIf(f, b);
+  }
+};
+} // namespace
+
 void phism::registerLoopTransformPasses() {
   // PassRegistration<AnnotatePointLoopsPass>(
   //     "annotate-point-loops", "Annotate loops with point/tile info.");
@@ -1136,6 +1343,14 @@ void phism::registerLoopTransformPasses() {
         pm.addPass(std::make_unique<LoopMergePass>());
         pm.addPass(createCanonicalizerPass());
         pm.addPass(std::make_unique<ScopStmtInlinePass>());
+        pm.addPass(createCanonicalizerPass());
+      });
+
+  PassPipelineRegistration<>(
+      "demote-bound-to-if",
+      "Demote bounds on outer loop induction variables to affine.if.",
+      [](OpPassManager &pm) {
+        pm.addPass(std::make_unique<DemoteBoundToIfPass>());
         pm.addPass(createCanonicalizerPass());
       });
 }

@@ -7,6 +7,7 @@
 
 #include "PassDetail.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/Transforms/LoopUtils.h"
 #include "mlir/Transforms/Passes.h"
@@ -64,19 +65,44 @@ static bool isHoistable(scf::ForOp forOp) {
 /// A scf::ForOp is hoistable if it has another scf.for within it, which is the
 /// only scf.for in the body, and has loop bound operations in between
 /// (prologue).
-static scf::ForOp findHoistableForOp(FuncOp f) {
+static scf::ForOp findHoistableForOp(FuncOp f,
+                                     llvm::SetVector<Operation *> &visited) {
   scf::ForOp candidate = nullptr;
 
   f.walk([&](scf::ForOp forOp) {
-    if (!candidate && isHoistable(forOp)) {
+    if (!candidate && isHoistable(forOp) && !visited.count(forOp)) {
       candidate = forOp;
+      visited.insert(forOp);
       return;
     }
   });
   return candidate;
 }
 
-static void hoistInnerLoop(scf::ForOp forOp, OpBuilder &b) {
+static bool isSCFForInductionVar(Value val) {
+  // Induction variable should be a block argument.
+  if (!val.isa<BlockArgument>())
+    return false;
+
+  Operation *op = val.getParentBlock()->getParentOp();
+  scf::ForOp forOp = dyn_cast<scf::ForOp>(op);
+  if (!forOp)
+    return false;
+
+  return forOp.getInductionVar() == val;
+}
+
+static bool checkLoopBoundsConstant(ArrayRef<Operation *> ops) {
+  for (Operation *op : ops)
+    for (Value operand : op->getOperands())
+      if (isSCFForInductionVar(operand)) {
+        LLVM_DEBUG(dbgs() << operand << " is a scf::for induction variable.\n");
+        return false;
+      }
+  return true;
+}
+
+static void hoistConstantBounds(scf::ForOp forOp, OpBuilder &b) {
   OpBuilder::InsertionGuard guard(b);
   b.setInsertionPoint(forOp);
 
@@ -96,6 +122,77 @@ static void hoistInnerLoop(scf::ForOp forOp, OpBuilder &b) {
     op->erase();
 }
 
+static LogicalResult
+getParentSCFForOps(scf::ForOp forOp,
+                   SmallVectorImpl<scf::ForOp> &parentForOps) {
+  parentForOps.push_back(forOp);
+
+  Operation *parentOp = forOp->getParentOp();
+  while (isa<scf::ForOp>(parentOp)) {
+    parentForOps.push_back(cast<scf::ForOp>(parentOp));
+    parentOp = forOp->getParentOp();
+  }
+  // The last parent op should be the FuncOp.
+  if (!isa<FuncOp>(parentOp))
+    return failure();
+
+  // Following the nesting level.
+  reverse(parentForOps);
+  return success();
+}
+
+static Value createBoundScratchpad(ArrayRef<scf::ForOp> forOps, OpBuilder &b) {
+  assert(!forOps.empty());
+  Location loc = forOps.front()->getLoc();
+
+  return nullptr;
+}
+
+static void hoistDependantBounds(scf::ForOp forOp,
+                                 SmallVectorImpl<Operation *> &ops,
+                                 OpBuilder &b) {
+  LLVM_DEBUG(dbgs() << "Hoisting dependant bounds.\n");
+
+  SmallVector<scf::ForOp> parentForOps;
+  if (failed(getParentSCFForOps(forOp, parentForOps)))
+    return;
+  if (parentForOps.empty())
+    return;
+  // if (any_of(parentForOps, [](scf::ForOp forOp) {
+  //       return !forOp.lowerBound().isa<ConstantIndexOp>() ||
+  //              !forOp.upperBound().isa<ConstantIndexOp>();
+  //     })) {
+  //   LLVM_DEBUG(
+  //       dbgs() << "Some forOps have lower/upper bounds not constant index, "
+  //                 "which makes resolving the scratchpad difficult.");
+  //   return;
+  // }
+
+  OpBuilder::InsertionGuard guard(b);
+
+  // Insert before the top scf.for.
+  b.setInsertionPoint(parentForOps.front());
+
+  // Create the scratchpad.
+  // Collect the dimensions of all parent for ops and use them to initialise the
+  // scratchpad memref.
+  // TODO: there might be some for loops that won't affect the result.
+  Value bounds = createBoundScratchpad(parentForOps, b);
+}
+
+static void hoistInnerLoop(scf::ForOp forOp, OpBuilder &b) {
+  SmallVector<Operation *> ops;
+  for (Operation &op : forOp.getBody()->getOperations())
+    ops.push_back(&op);
+
+  ops.pop_back_n(2); // scf.for and scf.yield
+
+  if (checkLoopBoundsConstant(ops))
+    hoistConstantBounds(forOp, b);
+  else
+    hoistDependantBounds(forOp, ops, b);
+}
+
 namespace {
 struct LoopBoundHoistingPass
     : public LoopBoundHoistingBase<LoopBoundHoistingPass> {
@@ -104,9 +201,10 @@ struct LoopBoundHoistingPass
     OpBuilder b(f.getContext());
 
     // Iterative algorithm.
+    llvm::SetVector<Operation *> visited;
     scf::ForOp forOp;
     int maxIterations = 100, iter = 0;
-    while ((forOp = findHoistableForOp(f))) {
+    while ((forOp = findHoistableForOp(f, visited))) {
       LLVM_DEBUG(dbgs() << "Hoistable scf.for: " << forOp << '\n');
 
       hoistInnerLoop(forOp, b);
