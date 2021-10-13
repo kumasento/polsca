@@ -92,6 +92,7 @@ class PbFlowOptions:
     examples: List[str] = POLYBENCH_EXAMPLES
     split: str = "NO_SPLIT"  # other options: "SPLIT", "HEURISTIC"
     loop_transforms: bool = False
+    coalescing: bool = False  # enable loop coalescing
     constant_args: bool = True
     improve_pipelining: bool = False
     max_span: int = -1
@@ -1236,8 +1237,8 @@ class PbFlow:
             src_file,
             f'-loop-transforms="max-span={self.options.max_span}"',
             "-loop-redis-and-merge",
-            "-fold-if",
-            "-demote-bound-to-if",
+            "-fold-if" if self.options.coalescing else "",
+            "-demote-bound-to-if" if self.options.coalescing else "",
             "-fold-if",
             "-debug-only=loop-transforms",
         ]
@@ -1323,8 +1324,8 @@ class PbFlow:
                 self.get_program_abspath("phism-opt"),
                 src_file,
                 "-lower-affine",
-                "-loop-bound-hoisting",
-                "-loop-coalescing",
+                "-loop-bound-hoisting" if self.options.coalescing else "",
+                "-loop-coalescing" if self.options.coalescing else "",
             ],
             stdout=open(self.cur_file, "w"),
             env=self.env,
