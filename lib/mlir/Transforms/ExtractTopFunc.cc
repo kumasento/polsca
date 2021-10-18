@@ -11,6 +11,7 @@
 #include "mlir/Analysis/AffineStructures.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
 #include "mlir/IR/BlockAndValueMapping.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Dominance.h"
@@ -228,7 +229,7 @@ struct PropagateConstantsPass
     FuncOp top = cast<FuncOp>(m.lookupSymbol(topName));
     top.walk([&](CallOp caller) {
       for (auto arg : enumerate(caller.getArgOperands()))
-        if (arg.value().getDefiningOp<ConstantIntOp>()) {
+        if (arg.value().getDefiningOp<arith::ConstantIntOp>()) {
           if (!constArgs[caller].count(arg.index())) {
             constArgs[caller].insert({arg.index(), arg.value()});
           } else {

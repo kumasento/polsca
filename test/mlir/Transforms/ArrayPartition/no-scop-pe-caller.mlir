@@ -10,7 +10,7 @@ module {
 func @bar(%A: memref<64xf32>, %i: index) {
   affine.for %j = #map0()[%i] to #map1()[%i] {
     %0 = affine.load %A[%j] : memref<64xf32>
-    %1 = addf %0, %0 : f32
+    %1 = arith.addf %0, %0 : f32
     affine.store %1, %A[%j] : memref<64xf32>
   }
   return

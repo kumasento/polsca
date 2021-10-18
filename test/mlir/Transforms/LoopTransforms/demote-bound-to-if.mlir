@@ -12,7 +12,7 @@ func @jacobi(%arg0: index, %arg1: index, %arg2: index, %arg3: index, %arg4: memr
   affine.for %arg5 = max #map0()[%arg1, %arg3, %arg2] to min #map1()[%arg1, %arg0, %arg2, %arg3] {
     affine.for %arg6 = max #map2(%arg5)[%arg3, %arg2] to min #map3(%arg5)[%arg1, %arg3, %arg2] {
       %0 = affine.load %arg4[%arg5, %arg6] : memref<32x32xf32>
-      %1 = mulf %0, %0 : f32
+      %1 = arith.mulf %0, %0 : f32
       affine.store %1, %arg4[%arg5, %arg6] : memref<32x32xf32>
     }
   }

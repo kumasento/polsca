@@ -39,6 +39,7 @@ int main(int argc, char *argv[]) {
   registry.insert<mlir::scf::SCFDialect>();
   registry.insert<mlir::memref::MemRefDialect>();
   registry.insert<mlir::math::MathDialect>();
+  registry.insert<mlir::arith::ArithmeticDialect>();
   registry.insert<mlir::LLVM::LLVMDialect>();
 
   // Register the standard passes we want.

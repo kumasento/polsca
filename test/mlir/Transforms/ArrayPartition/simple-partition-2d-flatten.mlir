@@ -8,7 +8,7 @@ func @bar(%A: memref<64x96xf32>, %i: index, %j: index) {
   affine.for %k = #map0()[%i] to #map1()[%i] {
     affine.for %l = #map0()[%j] to #map1()[%j] {
       %0 = affine.load %A[%k, %l] : memref<64x96xf32>
-      %1 = addf %0, %0 : f32
+      %1 = arith.addf %0, %0 : f32
       affine.store %1, %A[%k, %l] : memref<64x96xf32>
     }
   }
