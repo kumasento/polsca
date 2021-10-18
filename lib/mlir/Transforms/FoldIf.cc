@@ -8,6 +8,7 @@
 #include "mlir/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
+#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BlockAndValueMapping.h"
 #include "mlir/IR/Builders.h"
@@ -55,7 +56,7 @@ static Value createAffineIfCond(mlir::AffineIfOp ifOp, OpBuilder &b) {
   Location loc = ifOp.getLoc();
 
   IntegerSet integerSet = ifOp.getIntegerSet();
-  Value zeroConstant = b.create<ConstantIndexOp>(loc, 0);
+  Value zeroConstant = b.create<arith::ConstantIndexOp>(loc, 0);
   SmallVector<Value, 8> operands(ifOp.getOperands());
   auto operandsRef = llvm::makeArrayRef(operands);
 
@@ -72,12 +73,16 @@ static Value createAffineIfCond(mlir::AffineIfOp ifOp, OpBuilder &b) {
     if (!affResult)
       return nullptr;
 
-    auto pred = isEquality ? CmpIPredicate::eq : CmpIPredicate::sge;
-    Value cmpVal = b.create<mlir::CmpIOp>(loc, pred, affResult, zeroConstant);
-    cond = cond ? b.create<AndOp>(loc, cond, cmpVal).getResult() : cmpVal;
+    auto pred =
+        isEquality ? arith::CmpIPredicate::eq : arith::CmpIPredicate::sge;
+    Value cmpVal =
+        b.create<mlir::arith::CmpIOp>(loc, pred, affResult, zeroConstant);
+    cond = cond ? b.create<mlir::arith::AndIOp>(loc, cond, cmpVal).getResult()
+                : cmpVal;
   }
 
-  return cond ? cond : b.create<ConstantIntOp>(loc, /*value=*/1, /*width=*/1);
+  return cond ? cond
+              : b.create<arith::ConstantIntOp>(loc, /*value=*/1, /*width=*/1);
 }
 
 /// The value to be store is either the original value to be stored, or the

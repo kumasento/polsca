@@ -3,6 +3,7 @@
 #include "phism/mlir/Transforms/Utils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
@@ -45,11 +46,11 @@ public:
   }
 
   Value visitAddExpr(AffineBinaryOpExpr expr) {
-    return buildBinaryExpr<AddIOp>(expr);
+    return buildBinaryExpr<arith::AddIOp>(expr);
   }
 
   Value visitMulExpr(AffineBinaryOpExpr expr) {
-    return buildBinaryExpr<MulIOp>(expr);
+    return buildBinaryExpr<arith::MulIOp>(expr);
   }
 
   /// Euclidean modulo operation: negative RHS is not allowed.
@@ -78,11 +79,12 @@ public:
     auto rhs = visit(expr.getRHS());
     assert(lhs && rhs && "unexpected affine expr lowering failure");
 
-    Value remainder = builder.create<SignedRemIOp>(loc, lhs, rhs);
-    Value zeroCst = builder.create<ConstantIndexOp>(loc, 0);
-    Value isRemainderNegative =
-        builder.create<CmpIOp>(loc, CmpIPredicate::slt, remainder, zeroCst);
-    Value correctedRemainder = builder.create<AddIOp>(loc, remainder, rhs);
+    Value remainder = builder.create<arith::RemSIOp>(loc, lhs, rhs);
+    Value zeroCst = builder.create<arith::ConstantIndexOp>(loc, 0);
+    Value isRemainderNegative = builder.create<arith::CmpIOp>(
+        loc, arith::CmpIPredicate::slt, remainder, zeroCst);
+    Value correctedRemainder =
+        builder.create<arith::AddIOp>(loc, remainder, rhs);
     Value result = builder.create<SelectOp>(loc, isRemainderNegative,
                                             correctedRemainder, remainder);
     return result;
@@ -115,15 +117,16 @@ public:
     auto rhs = visit(expr.getRHS());
     assert(lhs && rhs && "unexpected affine expr lowering failure");
 
-    Value zeroCst = builder.create<ConstantIndexOp>(loc, 0);
-    Value noneCst = builder.create<ConstantIndexOp>(loc, -1);
-    Value negative =
-        builder.create<CmpIOp>(loc, CmpIPredicate::slt, lhs, zeroCst);
-    Value negatedDecremented = builder.create<SubIOp>(loc, noneCst, lhs);
+    Value zeroCst = builder.create<arith::ConstantIndexOp>(loc, 0);
+    Value noneCst = builder.create<arith::ConstantIndexOp>(loc, -1);
+    Value negative = builder.create<arith::CmpIOp>(
+        loc, arith::CmpIPredicate::slt, lhs, zeroCst);
+    Value negatedDecremented = builder.create<arith::SubIOp>(loc, noneCst, lhs);
     Value dividend =
         builder.create<SelectOp>(loc, negative, negatedDecremented, lhs);
-    Value quotient = builder.create<SignedDivIOp>(loc, dividend, rhs);
-    Value correctedQuotient = builder.create<SubIOp>(loc, noneCst, quotient);
+    Value quotient = builder.create<arith::DivSIOp>(loc, dividend, rhs);
+    Value correctedQuotient =
+        builder.create<arith::SubIOp>(loc, noneCst, quotient);
     Value result =
         builder.create<SelectOp>(loc, negative, correctedQuotient, quotient);
     return result;
@@ -154,17 +157,19 @@ public:
     auto rhs = visit(expr.getRHS());
     assert(lhs && rhs && "unexpected affine expr lowering failure");
 
-    Value zeroCst = builder.create<ConstantIndexOp>(loc, 0);
-    Value oneCst = builder.create<ConstantIndexOp>(loc, 1);
-    Value nonPositive =
-        builder.create<CmpIOp>(loc, CmpIPredicate::sle, lhs, zeroCst);
-    Value negated = builder.create<SubIOp>(loc, zeroCst, lhs);
-    Value decremented = builder.create<SubIOp>(loc, lhs, oneCst);
+    Value zeroCst = builder.create<arith::ConstantIndexOp>(loc, 0);
+    Value oneCst = builder.create<arith::ConstantIndexOp>(loc, 1);
+    Value nonPositive = builder.create<arith::CmpIOp>(
+        loc, arith::CmpIPredicate::sle, lhs, zeroCst);
+    Value negated = builder.create<arith::SubIOp>(loc, zeroCst, lhs);
+    Value decremented = builder.create<arith::SubIOp>(loc, lhs, oneCst);
     Value dividend =
         builder.create<SelectOp>(loc, nonPositive, negated, decremented);
-    Value quotient = builder.create<SignedDivIOp>(loc, dividend, rhs);
-    Value negatedQuotient = builder.create<SubIOp>(loc, zeroCst, quotient);
-    Value incrementedQuotient = builder.create<AddIOp>(loc, quotient, oneCst);
+    Value quotient = builder.create<arith::DivSIOp>(loc, dividend, rhs);
+    Value negatedQuotient =
+        builder.create<arith::SubIOp>(loc, zeroCst, quotient);
+    Value incrementedQuotient =
+        builder.create<arith::AddIOp>(loc, quotient, oneCst);
     Value result = builder.create<SelectOp>(loc, nonPositive, negatedQuotient,
                                             incrementedQuotient);
     return result;
@@ -173,8 +178,8 @@ public:
   Value visitConstantExpr(AffineConstantExpr expr) {
     auto valueAttr =
         builder.getIntegerAttr(builder.getIndexType(), expr.getValue());
-    auto op =
-        builder.create<ConstantOp>(loc, builder.getIndexType(), valueAttr);
+    auto op = builder.create<arith::ConstantOp>(loc, builder.getIndexType(),
+                                                valueAttr);
     return op.getResult();
   }
 

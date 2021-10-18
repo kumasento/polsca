@@ -2,7 +2,7 @@
 
 func @S0(%A: memref<32xf32>, %i: index) attributes {scop.stmt} {
   %0 = affine.load %A[%i] : memref<32xf32>
-  %1 = addf %0, %0 : f32
+  %1 = arith.addf %0, %0 : f32
   affine.store %1, %A[%i] : memref<32xf32>
   return
 }
