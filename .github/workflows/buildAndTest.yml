@@ -61,35 +61,35 @@ jobs:
           rm -rf ./llvm/build/test 
 
 
-      # --------
-      # Build and test Polygeist.
-      # --------
-      - name: Build and test Polygeist
-        run: |
-          ./scripts/build-polygeist.sh
+#       # --------
+#       # Build and test Polygeist.
+#       # --------
+#       - name: Build and test Polygeist
+#         run: |
+#           ./scripts/build-polygeist.sh
 
-      # --------
-      # Build and test Polymer.
-      # --------
-      - name: Build and test Polymer
-        run: |
-          ./scripts/build-polymer.sh
+#       # --------
+#       # Build and test Polymer.
+#       # --------
+#       - name: Build and test Polymer
+#         run: |
+#           ./scripts/build-polymer.sh
 
-      # --------
-      # Build and test Phism in both debug and release mode.
-      # --------
-      - name: Build and Test Phism (Assert)
-        run: |
-          ./scripts/build-phism.sh ci
+#       # --------
+#       # Build and test Phism in both debug and release mode.
+#       # --------
+#       - name: Build and Test Phism (Assert)
+#         run: |
+#           ./scripts/build-phism.sh ci
 
-      - name: Install the Python library and test
-        run: |
-          python3 -m venv env
-          source env/bin/activate
-          which python3
-          python3 -m pip install -r requirements.txt
+#       - name: Install the Python library and test
+#         run: |
+#           python3 -m venv env
+#           source env/bin/activate
+#           which python3
+#           python3 -m pip install -r requirements.txt
 
-          pytest pyphism/
+#           pytest pyphism/
       
       # Build and test Phism with pb-flow.
 #       - name: Build and Test Phism (pb-flow)
