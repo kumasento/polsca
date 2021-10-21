@@ -1,6 +1,10 @@
 """ Helper functions. """
 
+import functools
+import json
 import os
+import subprocess
+import time
 from typing import List, Optional
 
 # ------------------------- Operating files --------------------
@@ -47,3 +51,50 @@ def find_substr_in_list(
             return i
 
     return -1
+
+
+# -------------------------- Date and time -------------------------
+
+
+def get_timestamp():
+    return time.strftime("%Y%m%d-%H%M%S")
+
+
+# -------------------------- Analysis --------------------------------
+
+
+def get_param_names(func_name: str, src_file: str, clang_path: str):
+    """From the given C file, we try to extract the top function's parameter list.
+    This will be useful for Vitis LLVM rewrite."""
+
+    def is_func_decl(item, name):
+        return item["kind"] == "FunctionDecl" and item["name"] == name
+
+    # Get the corresponding AST in JSON.
+    proc = subprocess.Popen(
+        [
+            clang_path,
+            src_file,
+            "-Xclang",
+            "-ast-dump=json",
+            "-fsyntax-only",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    data = json.loads(proc.stdout.read())
+
+    # First find the top function declaration entry.
+    func_name_decls = list(
+        filter(functools.partial(is_func_decl, name=func_name), data["inner"])
+    )
+    assert (
+        len(func_name_decls) == 1
+    ), "Should be a single declaration for the provided function."
+    func_name_decl = func_name_decls[0]
+
+    # Then get all ParmVarDecl.
+    parm_var_decls = filter(
+        lambda x: x["kind"] == "ParmVarDecl", func_name_decl["inner"]
+    )
+    return [decl["name"] for decl in parm_var_decls]
