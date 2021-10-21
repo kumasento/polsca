@@ -111,7 +111,7 @@ struct ExtractTopFuncPass
   ExtractTopFuncPass() = default;
   ExtractTopFuncPass(const ExtractTopFuncPass &pass) {}
   ExtractTopFuncPass(const PipelineOptions &options)
-      : topFuncName{options.topFuncName}, keepAll{keepAll} {}
+      : topFuncName{options.topFuncName}, keepAll{options.keepAll} {}
 
   void runOnOperation() override {
     ModuleOp m = getOperation();
