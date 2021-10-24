@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+# TODO: this is just a draft script.
+
 set -o errexit
 set -o pipefail
 set -o nounset
@@ -23,15 +25,39 @@ mkdir -p "${BUILD_DIR}"
 gcc "${DIR}/encrypt.c" -o "${BUILD_DIR}/encrypt.bin"
 "${BUILD_DIR}/encrypt.bin" > "${BUILD_DIR}/result.golden"
 
+# Test polygeist
 mlir-clang "${DIR}/encrypt.c" -I "${LLVM_DIR}/build/lib/clang/14.0.0/include" -S -O0 -memref-fullrank -raise-scf-to-affine > "${BUILD_DIR}/encrypt.mlir"
-
 mlir-opt "${BUILD_DIR}/encrypt.mlir" -lower-affine -convert-scf-to-std -convert-memref-to-llvm -convert-std-to-llvm='use-bare-ptr-memref-call-conv=1' -convert-arith-to-llvm -reconcile-unrealized-casts |\
 mlir-translate -mlir-to-llvmir |\
 opt -O3 |\
 lli > "${BUILD_DIR}/result.polygeist"
 diff "${BUILD_DIR}/result.golden" "${BUILD_DIR}/result.polygeist"
 
+# Test polymer
 mlir-clang "${DIR}/encrypt.c" -I "${LLVM_DIR}/build/lib/clang/14.0.0/include" -S -O0 -memref-fullrank -raise-scf-to-affine |\
-  phism-opt -extract-top-func="name=encrypt keepall=1" # > "${BUILD_DIR}/encrypt.mlir" # |\
-  # polymer-opt -fold-scf-if -reg2mem -extract-scop-stmt -pluto-opt |\
-  # phism-opt  # -loop-transforms 
+  polymer-opt -annotate-scop="functions=encrypt" -fold-scf-if -reg2mem -extract-scop-stmt -pluto-opt |\
+  mlir-opt -lower-affine -convert-scf-to-std -convert-memref-to-llvm -convert-std-to-llvm='use-bare-ptr-memref-call-conv=1' -convert-arith-to-llvm -reconcile-unrealized-casts |\
+  mlir-translate -mlir-to-llvmir |\
+  opt -O3 |\
+  lli > "${BUILD_DIR}/result.polymer"
+diff "${BUILD_DIR}/result.golden" "${BUILD_DIR}/result.polymer"
+
+# Test phism
+mlir-clang "${DIR}/encrypt.c" -I "${LLVM_DIR}/build/lib/clang/14.0.0/include" -S -O0 -memref-fullrank -raise-scf-to-affine |\
+  phism-opt -extract-top-func="name=encrypt keepall=1" |\
+  polymer-opt -annotate-scop="functions=encrypt" -fold-scf-if -reg2mem -extract-scop-stmt -pluto-opt |\
+  phism-opt -loop-transforms -scop-stmt-inline |\
+  mlir-opt -lower-affine -convert-scf-to-std -convert-memref-to-llvm -convert-std-to-llvm='use-bare-ptr-memref-call-conv=1' -convert-arith-to-llvm -reconcile-unrealized-casts |\
+  mlir-translate -mlir-to-llvmir |\
+  opt -O3 |\
+  lli > "${BUILD_DIR}/result.phism"
+diff "${BUILD_DIR}/result.golden" "${BUILD_DIR}/result.phism"
+
+# Lower to LLVM
+mlir-clang "${DIR}/encrypt.c" -I "${LLVM_DIR}/build/lib/clang/14.0.0/include" -S -O0 -memref-fullrank -raise-scf-to-affine |\
+  phism-opt -extract-top-func="name=encrypt keepall=1" |\
+  polymer-opt -annotate-scop="functions=encrypt" -fold-scf-if -reg2mem -extract-scop-stmt -pluto-opt |\
+  phism-opt -loop-transforms -scop-stmt-inline |\
+  mlir-opt -lower-affine -convert-scf-to-std -convert-memref-to-llvm -convert-std-to-llvm='use-bare-ptr-memref-call-conv=1' -convert-arith-to-llvm -reconcile-unrealized-casts |\
+  mlir-translate -mlir-to-llvmir |\
+  opt -S -enable-new-pm=0 -load="${ROOT_DIR}/build/lib/VhlsLLVMRewriter.so" -strip-debug -mem2arr -instcombine -xlntop='encrypt' -xlnnames='Sbox,statemt' -xlnmath -xlnname -xlnanno -xlnunroll -xlnram2p -strip-attr
