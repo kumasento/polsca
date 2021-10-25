@@ -10,3 +10,4 @@ class PhismRunnerOptions:
     top_func: str = ""  # top function name
     polymer: bool = False  # run with polymer
     loop_transforms: bool = False  # run phism loop transform
+    fold_if: bool = False  # run phism fold if

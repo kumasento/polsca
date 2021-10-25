@@ -23,6 +23,9 @@ def main():
         action="store_true",
         help="Run with phism loop transforms",
     )
+    parser.add_argument(
+        "--fold-if", "--fi", action="store_true", help="Run with phism fold if"
+    )
     args = parser.parse_args()
 
     runner = PhismRunner(options=PhismRunnerOptions(**vars(args)))

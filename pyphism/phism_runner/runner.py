@@ -126,6 +126,7 @@ class PhismRunner:
                 .phism_extract_top_func()
                 .polymer_opt()
                 .phism_loop_transforms()
+                .phism_fold_if()
                 .lower_scf()
                 .lower_llvm()
                 .phism_vitis_opt()
@@ -275,6 +276,7 @@ class PhismRunner:
                 [
                     self.get_program_abspath("mlir-clang"),
                     src_file,
+                    "-raise-scf-to-affine",
                     "-memref-fullrank",
                     "-S",
                     "-O0",
@@ -357,6 +359,8 @@ class PhismRunner:
                 [
                     self.get_program_abspath("polymer-opt"),
                     src_file,
+                    f"-annotate-scop='functions={self.options.top_func}'",
+                    "-fold-scf-if",
                     "-reg2mem",
                     "-extract-scop-stmt",
                     f"-pluto-opt",
@@ -387,6 +391,35 @@ class PhismRunner:
             f"-loop-transforms",
             "-loop-redis-and-merge",
             "-debug-only=loop-transforms",
+        ]
+
+        self.run_command(
+            cmd=" ".join(args),
+            shell=True,
+            stderr=open(log_file, "w"),
+            stdout=open(self.cur_file, "w"),
+            env=self.env,
+        )
+
+        return self.sanity_check()
+
+    def phism_fold_if(self):
+        """Run Phism -fold-if."""
+        if not self.options.fold_if:
+            return self
+
+        src_file, self.cur_file = (
+            self.cur_file,
+            self.cur_file.replace(".mlir", ".fi.mlir"),
+        )
+        log_file = self.cur_file.replace(".mlir", ".log")
+
+        args = [
+            self.get_program_abspath("phism-opt"),
+            src_file,
+            "-scop-stmt-inline",
+            "-fold-if",
+            "-debug-only=fold-if",
         ]
 
         self.run_command(
