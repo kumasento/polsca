@@ -97,9 +97,42 @@ static LogicalResult process(mlir::AffineStoreOp storeOp, Value cond,
 
   Value orig = b.create<mlir::AffineLoadOp>(loc, memref, affMap, mapOperands);
   Value toStore = b.create<SelectOp>(
-      loc, cond, vmap.lookup(storeOp.getValueToStore()), orig);
+      loc, cond, vmap.lookupOrDefault(storeOp.getValueToStore()), orig);
 
   b.create<mlir::AffineStoreOp>(loc, toStore, memref, affMap, mapOperands);
+
+  return success();
+}
+
+/// Work within the regions of the provided op. Find the AffineStoreOp, and
+/// replace it with the select-based version.
+/// TODO: can we have a rather unified implementation?
+static LogicalResult replaceWithinRegion(Operation *parentOp, Value cond,
+                                         BlockAndValueMapping &vmap,
+                                         OpBuilder &b) {
+  for (Region &region : parentOp->getRegions()) {
+    for (Block &block : region.getBlocks()) {
+      /// TODO: is there a better way to cache the operations?
+      SmallVector<Operation *> ops;
+      for (Operation &op : block.getOperations())
+        ops.push_back(&op);
+
+      for (Operation *op : ops) {
+        if (auto storeOp = dyn_cast<mlir::AffineStoreOp>(op)) {
+          OpBuilder::InsertionGuard g(b);
+          b.setInsertionPoint(storeOp);
+
+          if (failed(process(storeOp, cond, vmap, b)))
+            return failure();
+
+          op->erase();
+        } else if (op->getNumRegions() >= 1) {
+          if (failed(replaceWithinRegion(op, cond, vmap, b)))
+            return failure();
+        }
+      }
+    }
+  }
 
   return success();
 }
@@ -125,7 +158,11 @@ static LogicalResult process(mlir::AffineIfOp ifOp, OpBuilder &b) {
       if (failed(process(storeOp, cond, vmap, b)))
         return failure();
     } else {
-      b.clone(op, vmap);
+      Operation *cloned = b.clone(op, vmap);
+      if (cloned->getNumRegions() >= 1) {
+        if (failed(replaceWithinRegion(cloned, cond, vmap, b)))
+          return failure();
+      }
     }
   }
 
