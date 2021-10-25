@@ -40,7 +40,7 @@ int main() {
   encrypt(Sbox, statemt);
 
   for (int i = 0; i < M; ++i)
-    printf("%08x\n", statemt[i]);
+    fprintf(stderr, "%08x\n", statemt[i]);
 
   return 0;
 }
