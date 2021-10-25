@@ -125,8 +125,8 @@ class PhismRunner:
                 .mlir_preprocess()
                 .phism_extract_top_func()
                 .polymer_opt()
-                .phism_loop_transforms()
                 .phism_fold_if()
+                .phism_loop_transforms()
                 .lower_scf()
                 .lower_llvm()
                 .phism_vitis_opt()
@@ -507,7 +507,7 @@ class PhismRunner:
             "-xlnanno",
             '-xlntop="{}"'.format(self.options.top_func),
             '-xlnnames="{}"'.format(",".join(xln_names)),
-            "-xlnunroll" if self.options.loop_transforms else "",
+            # "-xlnunroll" if self.options.loop_transforms else "",
             "-xlnram2p",
             "-strip-attr",
             "-debug",
