@@ -16,6 +16,7 @@ void registerAllPhismPasses() {
   // registerDependenceAnalysisPasses();
   registerFoldIfPasses();
   registerLoopBoundHoistingPass();
+  registerEliminateAffineLoadStorePass();
 }
 
 } // namespace phism

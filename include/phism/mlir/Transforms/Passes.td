@@ -9,4 +9,13 @@ def LoopBoundHoisting : FunctionPass<"loop-bound-hoisting"> {
   let constructor = "phism::createLoopBoundHoistingPass()";
 }
 
+def EliminateAffineLoadStore : FunctionPass<"eliminate-affine-load-store"> {
+  let summary = "Eliminate redundant affine load and store operations.";
+  let constructor = "phism::createEliminateAffineLoadStorePass()";
+  let options = [
+    Option<"loadAfterStore", "load-after-store", "bool", /*default=*/"true",
+           "Whether to perform load-after-store elimination">
+  ];
+}
+
 #endif
