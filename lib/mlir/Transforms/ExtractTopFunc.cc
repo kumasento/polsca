@@ -128,9 +128,10 @@ struct ExtractTopFuncPass
     unionCallee(f, m, keep);
 
     m.walk([&](FuncOp g) {
-      if (!keep.contains(g) && !keepAll)
-        g.erase();
-      else // Enforce every extracted function to be public
+      if (!keep.contains(g)) {
+        if (!keepAll)
+          g.erase();
+      } else // Enforce every extracted function to be public
         g.setVisibility(SymbolTable::Visibility::Public);
     });
   }
