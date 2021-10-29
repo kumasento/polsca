@@ -17,9 +17,9 @@ func @main() {
   return
 }
 
-// CHECK: define void @bar([10 x float]* %{{.*}})
+// CHECK-DAG: define void @bar([10 x float]* %{{.*}})
 
-// CHECK: define void @foo([10 x float]* %{{.*}})
+// CHECK-DAG: define void @foo([10 x float]* %{{.*}})
 
 // CHECK: define void @main()
 // CHECK-NEXT:   %[[v1:.*]] = call i8* @malloc(i64 ptrtoint (float* getelementptr (float, float* null, i64 10) to i64))
