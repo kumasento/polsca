@@ -92,9 +92,9 @@ static void annotateConstantArgs(FuncOp f, ModuleOp m, OpBuilder &b) {
 
   for (auto arg : enumerate(f.getArguments())) {
     auto val = caller.getOperand(arg.index());
-    if (mlir::ConstantOp constantOp =
-            dyn_cast<mlir::ConstantOp>(val.getDefiningOp())) {
-      f.setArgAttr(arg.index(), SCOP_CONSTANT_VALUE, constantOp.getValue());
+    if (arith::ConstantOp constantOp =
+            dyn_cast<arith::ConstantOp>(val.getDefiningOp())) {
+      f.setArgAttr(arg.index(), SCOP_CONSTANT_VALUE, constantOp.value());
     }
   }
 }
@@ -155,7 +155,7 @@ struct ReplaceConstantArgumentsPass
         Attribute attr = funcOp.getArgAttr(arg.index(), SCOP_CONSTANT_VALUE);
         if (attr) {
           b.setInsertionPointToStart(&funcOp.getBlocks().front());
-          ConstantOp constantOp = b.create<ConstantOp>(funcOp.getLoc(), attr);
+          auto constantOp = b.create<arith::ConstantOp>(funcOp.getLoc(), attr);
           arg.value().replaceAllUsesWith(constantOp);
         }
       }
