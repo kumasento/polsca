@@ -8,7 +8,7 @@ define void @foo(i32 %n, [32 x [24 x float]]* %A) {
 ; CHECK:   A[n + 1][n + 1] += A[n][n];
 ; CHECK: }
 ; CHECK: int main() {
-; CHECK:   int n;
+; CHECK:   static int n;
 ; CHECK:   float A[32][24];
 ; CHECK:   foo(n, A);
 ; CHECK:   return 0;

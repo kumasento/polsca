@@ -1158,7 +1158,8 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
       // Erase the original caller.
       Caller->eraseFromParent();
       for (Instruction *inst : toErase)
-        inst->eraseFromParent();
+        if (inst->getNumUses() == 0)
+          inst->eraseFromParent();
     }
 
     FuncToNew[F] = replaceFunction(F, NewFunc);
@@ -1589,6 +1590,9 @@ static void generateXlnTBDummy(Function &F, StringRef fileName) {
 
   // Main definition -
   XlnTBDummy << "int main() {\n";
+  // Prepend the `static' keyword to mitigate segmentfault.
+  for (auto &argDecl : argDeclList)
+    argDecl = std::string("static ") + argDecl;
   // Value declaration
   interleave(argDeclList, XlnTBDummy, ";\n");
   if (!argDeclList.empty())

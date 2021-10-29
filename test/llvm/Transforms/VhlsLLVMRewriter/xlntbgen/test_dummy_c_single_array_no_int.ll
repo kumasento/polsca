@@ -7,7 +7,7 @@ define void @foo([32 x float]* %A) {
 ; CHECK: void foo(float A[32]) {
 ; CHECK: }
 ; CHECK: int main() {
-; CHECK:   float A[32];
+; CHECK:   static float A[32];
 ; CHECK:   foo(A);
 ; CHECK:   return 0;
 ; CHECK: }
