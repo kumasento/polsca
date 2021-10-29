@@ -7,7 +7,7 @@ define void @foo(i32 %n) {
 ; CHECK: void foo(int n) {
 ; CHECK: }
 ; CHECK: int main() {
-; CHECK:   int n;
+; CHECK:   static int n;
 ; CHECK:   foo(n);
 ; CHECK:   return 0;
 ; CHECK: }

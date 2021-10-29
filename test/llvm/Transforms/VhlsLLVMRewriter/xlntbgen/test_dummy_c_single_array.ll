@@ -8,8 +8,8 @@ define void @foo(i32 %n, [32 x float]* %A) {
 ; CHECK:   A[n + 1] += A[n];
 ; CHECK: }
 ; CHECK: int main() {
-; CHECK:   int n;
-; CHECK:   float A[32];
+; CHECK:   static int n;
+; CHECK:   static float A[32];
 ; CHECK:   foo(n, A);
 ; CHECK:   return 0;
 ; CHECK: }
