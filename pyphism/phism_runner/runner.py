@@ -480,6 +480,10 @@ class PhismRunner:
 
     def phism_vitis_opt(self):
         """Optimize LLVM IR for Vitis."""
+        if self.options.skip_vitis:
+            self.logger.info("Skipped vitis opt.")
+            return self
+
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(
             ".llvm", ".vitis.llvm"
         )
@@ -526,6 +530,10 @@ class PhismRunner:
 
     def phism_dump_tcl(self):
         """Generate the tbgen TCL file from LLVM passes."""
+        if self.options.skip_vitis:
+            self.logger.info("Skipped dump tcl.")
+            return self
+
         src_file = self.cur_file
         base_dir = os.path.dirname(src_file)
         top_func = self.options.top_func
@@ -563,6 +571,10 @@ class PhismRunner:
 
     def run_vitis(self, force_skip=False):
         """Run the tbgen.tcl file. Assuming the Tcl file has been written."""
+        if self.options.skip_vitis:
+            self.logger.info("Skipped run_vitis.")
+            return self
+
         src_file = self.cur_file
         base_dir = os.path.dirname(src_file)
 

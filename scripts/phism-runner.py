@@ -9,6 +9,7 @@ from pyphism.phism_runner.runner import PhismRunner
 
 def main():
     parser = argparse.ArgumentParser(description="Phism main runner")
+
     parser.add_argument("source_file", type=str)
     parser.add_argument(
         "--work-dir", type=str, help="Temporary directory to store intermediate files."
@@ -25,6 +26,11 @@ def main():
     )
     parser.add_argument(
         "--fold-if", "--fi", action="store_true", help="Run with phism fold if"
+    )
+    parser.add_argument(
+        "--skip-vitis",
+        action="store_true",
+        help="Whether the vitis workflow should be skipped.",
     )
     args = parser.parse_args()
 
