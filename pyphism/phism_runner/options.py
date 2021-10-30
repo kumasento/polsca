@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -11,3 +12,4 @@ class PhismRunnerOptions:
     polymer: bool = False  # run with polymer
     loop_transforms: bool = False  # run phism loop transform
     fold_if: bool = False  # run phism fold if
+    skip_vitis: bool = False # whether to skip the whole vitis flow
