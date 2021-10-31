@@ -122,6 +122,8 @@ struct ExtractTopFuncPass
     FuncOp f = dyn_cast_or_null<FuncOp>(m.lookupSymbol(topFuncName));
     assert(f && "Given name cannot be found in the module as a FuncOp.");
 
+    f->setAttr("phism.top", b.getUnitAttr());
+
     annotateConstantArgs(f, m, b);
 
     SmallPtrSet<Operation *, 4> keep;
