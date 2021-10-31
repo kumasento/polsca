@@ -6,6 +6,7 @@ add_mlir_library(PhismTransforms
   FoldIf.cc
   LoopBoundHoisting.cc
   EliminateAffineLoadStore.cc
+  SplitNonAffine.cc
   Utils.cc
 
   ADDITIONAL_HEADER_DIRS
