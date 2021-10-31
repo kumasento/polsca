@@ -11,6 +11,8 @@ createLoopBoundHoistingPass();
 std::unique_ptr<mlir::OperationPass<mlir::FuncOp>>
 createEliminateAffineLoadStorePass();
 
+std::unique_ptr<mlir::OperationPass<mlir::FuncOp>> createSplitNonAffinePass();
+
 /// Generate the code for registering passes.
 #define GEN_PASS_REGISTRATION
 #include "phism/mlir/Transforms/Passes.h.inc"
