@@ -215,12 +215,16 @@ struct SplitNonAffinePass : phism::SplitNonAffineBase<SplitNonAffinePass> {
     OpBuilder b(f.getContext());
 
     // These functions contain only affine loop nests without any non-affine
-    // access. And we should only apply on phism.top.
-    if (f->hasAttr("scop.affine") || (topOnly && !f->hasAttr("phism.top")))
+    // access.
+    if (f->hasAttr("scop.affine"))
       return;
 
-    if (failed(splitNonAffine(f, b, markOnly, maxLoopDepth)))
+    // We should only apply this pass on the function with phism.top.
+    if ((!topOnly || f->hasAttr("phism.top")) &&
+        failed(splitNonAffine(f, b, markOnly, maxLoopDepth)))
       return signalPassFailure();
+
+    f->setAttr("scop.ignored", b.getUnitAttr());
   }
 };
 } // namespace
