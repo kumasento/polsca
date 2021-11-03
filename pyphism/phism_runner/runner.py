@@ -360,7 +360,7 @@ class PhismRunner:
                 [
                     self.get_program_abspath("polymer-opt"),
                     src_file,
-                    f"-annotate-scop='functions={self.options.top_func}'",
+                    # f"-annotate-scop='functions={self.options.top_func}'",
                     "-fold-scf-if",
                     "-reg2mem",
                     "-extract-scop-stmt",
