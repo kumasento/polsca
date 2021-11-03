@@ -334,6 +334,7 @@ class PhismRunner:
             self.get_program_abspath("phism-opt"),
             src_file,
             f'-extract-top-func="name={self.options.top_func} keepall=1"',
+            "-split-non-affine='max-loop-depth=5 top-only=1'",
         ]
         self.run_command(
             cmd=" ".join(args),
