@@ -13,6 +13,8 @@ def EliminateAffineLoadStore : FunctionPass<"eliminate-affine-load-store"> {
   let summary = "Eliminate redundant affine load and store operations.";
   let constructor = "phism::createEliminateAffineLoadStorePass()";
   let options = [
+    Option<"topOnly", "top-only", "bool", /*default=*/"false",
+           "Whether should only apply for phism.top">,
     Option<"loadAfterStore", "load-after-store", "bool", /*default=*/"true",
            "Whether to perform load-after-store elimination">
   ];
@@ -22,6 +24,8 @@ def SplitNonAffine : FunctionPass<"split-non-affine"> {
   let summary = "Split affine and non-affine loops into functions.";
   let constructor = "phism::createSplitNonAffinePass()";
   let options = [
+    Option<"topOnly", "top-only", "bool", /*default=*/"false",
+           "Whether should only apply for phism.top">,
     Option<"markOnly", "mark-only", "bool", /*default=*/"false",
            "Whether we just annotate those for loops with non affine accesses.">,
     Option<"maxLoopDepth", "max-loop-depth", "int", /*default=*/"0",
