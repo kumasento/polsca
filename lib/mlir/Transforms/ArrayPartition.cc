@@ -154,6 +154,37 @@ static MemRefType getTiledMemRefType(const TileInfo &tileInfo,
   return MemRefType::get(dstShape, src.getElementType());
 }
 
+/// Check if each result is an dim/symbol expression. Make sure they are all
+/// distinct.
+static bool isIdentityAffineMap(const AffineMap &affMap) {
+  if (affMap.getNumDims() + affMap.getNumSymbols() != affMap.getNumResults())
+    return false;
+  ArrayRef<AffineExpr> results = affMap.getResults();
+
+  LLVM_DEBUG({
+    dbgs() << "Checking if ";
+    affMap.dump();
+    dbgs() << " is identity map or not\n";
+  });
+
+  SmallSetVector<unsigned, 4> dimVis, symbolVis;
+  for (unsigned i = 0; i < affMap.getNumResults(); ++i) {
+    if (auto expr = results[i].dyn_cast<AffineDimExpr>()) {
+      if (dimVis.count(i))
+        return false;
+      dimVis.insert(expr.getPosition());
+    } else if (auto expr = results[i].dyn_cast<AffineSymbolExpr>()) {
+      if (symbolVis.count(i))
+        return false;
+      symbolVis.insert(expr.getPosition());
+    } else {
+      // No other kind of expressions.
+      return false;
+    }
+  }
+  return true;
+}
+
 namespace {
 
 static MapVector<Value, TileInfo> getTilingInfo(ArrayRef<Value> memrefs,
@@ -211,7 +242,7 @@ static MapVector<Value, TileInfo> getTilingInfo(ArrayRef<Value> memrefs,
     if (any_of(accesses, [&](MemRefAccess &access) {
           AffineValueMap vmap;
           access.getAccessMap(&vmap);
-          return !vmap.getAffineMap().isIdentity();
+          return !isIdentityAffineMap(vmap.getAffineMap());
         })) {
       LLVM_DEBUG(
           llvm::errs()
@@ -226,18 +257,54 @@ static MapVector<Value, TileInfo> getTilingInfo(ArrayRef<Value> memrefs,
 
     // If for every access the maps at each dim is the same.
     bool isIdentical = true;
-    SmallVector<AffineMap> lbMaps, ubMaps;
+    // Map from access index -> domain
+    MapVector<unsigned, AffineMap> lbMaps, ubMaps;
+
+    auto isSame = [&](const MapVector<unsigned, AffineMap> &ma,
+                      const MapVector<unsigned, AffineMap> &mb) -> bool {
+      for (const auto &it : ma) {
+        auto it2 = mb.find(it.first);
+        if (it2 == mb.end())
+          return false;
+        if (it2->second != it.second)
+          return false;
+      }
+      return true;
+    };
+
     for (MemRefAccess &ma : accesses) {
       AffineValueMap avm;
       ma.getAccessMap(&avm);
 
-      SmallVector<AffineForOp> forOps;
-      for (Value operand : avm.getOperands())
-        if (isForInductionVar(operand))
-          forOps.push_back(getForInductionVarOwner(operand));
+      MapVector<unsigned, AffineForOp> forOps;
 
-      SmallVector<AffineMap> tmpLbMaps, tmpUbMaps;
-      for (AffineForOp forOp : forOps) {
+      // Based on the presumption that every result should be an unique operand.
+      for (unsigned i = 0; i < avm.getNumResults(); ++i) {
+        // i is the index to a dim in the address.
+        AffineExpr result = avm.getResult(i);
+        unsigned index = avm.getNumResults();
+        if (auto expr = result.dyn_cast<AffineDimExpr>())
+          index = expr.getPosition();
+        else if (auto expr = result.dyn_cast<AffineSymbolExpr>())
+          index = expr.getPosition() + avm.getNumDims();
+        assert(index != avm.getNumResults() &&
+               "The presumption on identity mapping is not satisfied.");
+
+        Value operand = avm.getOperand(index);
+        if (isForInductionVar(operand))
+          forOps[i] = getForInductionVarOwner(operand);
+        else {
+          LLVM_DEBUG(dbgs()
+                     << "Address index #" << i << " has been skipped.\n");
+        }
+      }
+
+      MapVector<unsigned, AffineMap> tmpLbMaps, tmpUbMaps;
+      for (auto p : forOps) {
+        AffineForOp forOp;
+        unsigned index;
+        std::tie(index, forOp) = p;
+
         // Filter out the result that are constants. We don't care about them.
         // ()[s0] -> (70, s0 * 32 + 32) will be ()[s0] -> (s0 * 32 + 32)
         AffineMap lbMap = filterExtraConstantResults(forOp.getLowerBoundMap());
@@ -250,8 +317,8 @@ static MapVector<Value, TileInfo> getTilingInfo(ArrayRef<Value> memrefs,
           break;
         }
 
-        tmpLbMaps.push_back(lbMap);
-        tmpUbMaps.push_back(ubMap);
+        tmpLbMaps[index] = lbMap;
+        tmpUbMaps[index] = ubMap;
       }
 
       if (!isIdentical)
@@ -260,10 +327,12 @@ static MapVector<Value, TileInfo> getTilingInfo(ArrayRef<Value> memrefs,
       // Simply ignore those with constant lower upper bounds.
       // They won't cause much trouble (heuristically) if we don't partition
       // for them.
-      if (any_of(tmpLbMaps,
-                 [&](AffineMap am) { return am.isSingleConstant(); }) ||
-          any_of(tmpUbMaps,
-                 [&](AffineMap am) { return am.isSingleConstant(); })) {
+      if (any_of(
+              tmpLbMaps,
+              [&](const auto &it) { return it.second.isSingleConstant(); }) ||
+          any_of(tmpUbMaps, [&](const auto &it) {
+            return it.second.isSingleConstant();
+          })) {
         LLVM_DEBUG({
           llvm::errs() << "Skipped the access due to constant bounds: ";
           ma.opInst->dump();
@@ -275,7 +344,7 @@ static MapVector<Value, TileInfo> getTilingInfo(ArrayRef<Value> memrefs,
         std::swap(tmpLbMaps, lbMaps);
         std::swap(tmpUbMaps, ubMaps);
       } else {
-        isIdentical = tmpLbMaps == lbMaps && tmpUbMaps == ubMaps;
+        isIdentical &= isSame(tmpLbMaps, lbMaps) && isSame(tmpUbMaps, ubMaps);
         if (!isIdentical) {
           LLVM_DEBUG(dbgs() << "Found not identical loop bound maps.\n");
           break;
@@ -294,35 +363,50 @@ static MapVector<Value, TileInfo> getTilingInfo(ArrayRef<Value> memrefs,
       continue;
     }
     // Check if every bound has singular result.
-    if (any_of(lbMaps, [&](AffineMap am) { return am.getNumResults() > 1; }) ||
-        any_of(ubMaps, [&](AffineMap am) { return am.getNumResults() > 1; })) {
+    if (any_of(lbMaps,
+               [&](const auto &it) { return it.second.getNumResults() > 1; }) ||
+        any_of(ubMaps,
+               [&](const auto &it) { return it.second.getNumResults() > 1; })) {
       LLVM_DEBUG(llvm::errs() << "There are loop bounds have more than one "
                                  "non-constant expressions.\n";);
       continue;
     }
     // Check whether the loop bounds satisfy the tiling constraints.
-    if (any_of(lbMaps, [&](AffineMap am) { return !isTiledLoopBound(am); }) ||
-        any_of(ubMaps, [&](AffineMap am) { return !isTiledLoopBound(am); })) {
+    if (any_of(lbMaps,
+               [&](const auto &it) { return !isTiledLoopBound(it.second); }) ||
+        any_of(ubMaps,
+               [&](const auto &it) { return !isTiledLoopBound(it.second); })) {
       LLVM_DEBUG(llvm::errs() << "Loop bounds are not tiled expressions.\n";);
       continue;
     }
 
     // Finally resolve the tile size.
-    SmallVector<int64_t> tileSizes;
-    for (unsigned i = 0; i < lbMaps.size(); ++i) {
-      int64_t tileSize = getTileSize(lbMaps[i]);
-      if (tileSize != getTileSize(ubMaps[i]))
+    MapVector<unsigned, int64_t> tileSizeMap;
+    for (const auto &it : lbMaps) {
+      int64_t tileSize = getTileSize(it.second);
+      if (tileSize != getTileSize(ubMaps[it.first]))
         continue;
-      tileSizes.push_back(tileSize);
+      tileSizeMap[it.first] = tileSize;
+    }
+
+    // For those cannot be tiled, set the tile size equal to the dim size.
+    MemRefType ty = memref.getType().cast<MemRefType>();
+    for (unsigned i = 0; i < ty.getRank(); ++i) {
+      if (lbMaps.count(i))
+        continue;
+      tileSizeMap[i] = ty.getShape()[i];
     }
 
     // Abandon further processing if the tile size cannot match memref's type.
-    if ((int64_t)tileSizes.size() !=
-        memref.getType().cast<MemRefType>().getRank()) {
+    if ((int64_t)tileSizeMap.size() != ty.getRank()) {
       LLVM_DEBUG(
           dbgs() << "Tile sizes are not equal to the rank of the memref.\n");
       continue;
     }
+
+    SmallVector<int64_t> tileSizes(ty.getRank());
+    for (unsigned i = 0; i < ty.getRank(); ++i)
+      tileSizes[i] = tileSizeMap[i];
 
     // The resolved memref tiling.
     LLVM_DEBUG({
@@ -371,6 +455,9 @@ static FuncOp createTiledCallee(Value memref, mlir::FuncOp callee,
   FuncOp newCallee = b.create<FuncOp>(
       callee.getLoc(),
       std::string(callee.getName()) + "_" + std::to_string(stage), newFuncType);
+
+  newCallee->setAttr("scop.pe", b.getUnitAttr());
+
   Block *entry = newCallee.addEntryBlock();
   b.setInsertionPointToEnd(entry);
   b.create<mlir::ReturnOp>(callee.getLoc());
@@ -411,9 +498,25 @@ static FuncOp createTiledCallee(Value memref, mlir::FuncOp callee,
       return;
 
     b.setInsertionPoint(op);
-    unsigned dim = 0; // the current memref dim.
-    for (auto operand : enumerate(op->getOperands())) {
-      if (!isForInductionVar(operand.value()))
+
+    MemRefAccess access(op);
+    AffineValueMap vmap;
+    access.getAccessMap(&vmap);
+
+    vmap.getAffineMap().dump();
+
+    for (unsigned dim = 0; dim < vmap.getNumResults(); ++dim) {
+      AffineExpr result = vmap.getResult(dim);
+
+      unsigned index = vmap.getNumOperands();
+      if (auto expr = result.dyn_cast<AffineDimExpr>())
+        index = expr.getPosition();
+      else if (auto expr = result.dyn_cast<AffineSymbolExpr>())
+        index = expr.getPosition() + vmap.getNumDims();
+      assert(index != vmap.getNumOperands());
+
+      Value operand = vmap.getOperand(index);
+      if (!isForInductionVar(operand))
         continue;
 
       // The affine map that does the modulo operation.
@@ -421,10 +524,12 @@ static FuncOp createTiledCallee(Value memref, mlir::FuncOp callee,
           b.getAffineDimExpr(0) % b.getAffineConstantExpr(tileInfo.sizes[dim]);
       AffineMap affMap = AffineMap::get(1, 0, modExpr);
       AffineApplyOp newInd =
-          b.create<AffineApplyOp>(op->getLoc(), affMap, operand.value());
+          b.create<AffineApplyOp>(op->getLoc(), affMap, operand);
 
-      op->setOperand(operand.index(), newInd);
-      ++dim;
+      // Note that this is the operand of the op, not the vmap. So we should use
+      // the shifted dim, not index.
+      unsigned pos = dim + (isa<AffineLoadOp>(op) ? 1 : 2);
+      op->setOperand(pos, newInd);
     }
   });
 
@@ -471,7 +576,15 @@ static SmallVector<Value> resolveTileIndices(Operation *op, Value memref) {
         dbgs() << " * The " << i
                << "-th operand is not from an affine.apply op: ";
         operand.dump();
+        dbgs() << "\n";
       });
+
+      if (operand.isa<BlockArgument>() &&
+          isa<FuncOp>(operand.getParentBlock()->getParentOp())) {
+        LLVM_DEBUG(dbgs() << "It is a function argument. Kept as an index.\n");
+        indices.push_back(operand);
+      }
+
       continue;
     }
     LLVM_DEBUG({
@@ -504,7 +617,7 @@ static SmallVector<Value> resolveTileIndices(Operation *op, Value memref) {
     assert(forOp.getLowerBoundOperands().size() < 1 ||
            source == forOp.getLowerBoundOperands()[0]);
 
-    LLVM_DEBUG(dbgs() << "   * Top-level index: " << source);
+    LLVM_DEBUG(dbgs() << "   * Top-level index: " << source << '\n');
     indices.push_back(source);
   }
 
@@ -522,8 +635,14 @@ static Value createSubViewOfTiledMemRefWithFullRank(
 
   // Figure out the offsets.
   // Need to know which tile loop has used by the accessed memref.
-  for (unsigned i = 0; i < rank / 2; ++i)
-    offsets.push_back(vmap.lookup(indices[i]));
+  for (unsigned i = 0; i < rank / 2; ++i) {
+    Value index = vmap.lookup(indices[i]);
+    if (index.isa<BlockArgument>() &&
+        isa<FuncOp>(index.getParentBlock()->getParentOp()))
+      offsets.push_back(b.getIndexAttr(0));
+    else
+      offsets.push_back(index);
+  }
   for (unsigned i = 0; i < rank / 2; ++i)
     offsets.push_back(b.getIndexAttr(0));
 
@@ -577,9 +696,17 @@ static Value createSubViewOfTiledMemRefWithFlattenedRank(
         parDims[tileDims.size() - i] * tileDims[tileDims.size() - i];
 
   AffineExpr indexExpr = b.getAffineConstantExpr(0);
-  for (unsigned i = 0; i < parDims.size(); ++i)
+  for (unsigned i = 0; i < parDims.size(); ++i) {
+    Value index = vmap.lookup(indices[i]);
+
+    // The dim will be ignored if it is a function arg.
+    if (index.isa<BlockArgument>() &&
+        isa<FuncOp>(index.getParentBlock()->getParentOp()))
+      continue;
+
     indexExpr =
         indexExpr + b.getAffineConstantExpr(parDims[i]) * b.getAffineDimExpr(i);
+  }
   SmallVector<Value> mappedIndices;
   for (Value idx : indices)
     mappedIndices.push_back(vmap.lookup(idx));
@@ -650,7 +777,7 @@ static Value buildSubViewForTiledMemRef(FuncOp tiledCallee, mlir::CallOp caller,
     LLVM_DEBUG({
       dbgs() << " * Resolved indices:\n";
       for (auto ind : enumerate(indices_))
-        dbgs() << '\t' << ind.index() << ": " << ind.value();
+        dbgs() << '\t' << ind.index() << ": " << ind.value() << '\n';
       dbgs() << '\n';
     });
 
@@ -976,14 +1103,14 @@ static void renameTiledFunctions(ModuleOp m, OpBuilder &b) {
   });
 }
 
-struct SimpleArrayPartitionPass
-    : public PassWrapper<SimpleArrayPartitionPass, OperationPass<ModuleOp>> {
+struct ArrayPartitionPass
+    : public PassWrapper<ArrayPartitionPass, OperationPass<ModuleOp>> {
   bool dumpFile = false;
   bool flatten = false; // whether to flatten the partition dims.
 
-  SimpleArrayPartitionPass() = default;
-  SimpleArrayPartitionPass(const SimpleArrayPartitionPass &pass) {}
-  SimpleArrayPartitionPass(const ArrayPartitionPipelineOptions &options)
+  ArrayPartitionPass() = default;
+  ArrayPartitionPass(const ArrayPartitionPass &pass) {}
+  ArrayPartitionPass(const ArrayPartitionPipelineOptions &options)
       : dumpFile(options.dumpFile), flatten(options.flatten) {}
 
   void runOnOperation() override {
@@ -1060,10 +1187,17 @@ struct SimpleArrayPartitionPass
 } // namespace
 
 void phism::registerArrayPartitionPasses() {
+  // TODO: need to deprecate this.
   PassPipelineRegistration<ArrayPartitionPipelineOptions>(
       "simple-array-partition", "Partition arrays",
       [&](OpPassManager &pm, const ArrayPartitionPipelineOptions &options) {
-        pm.addPass(std::make_unique<SimpleArrayPartitionPass>(options));
+        pm.addPass(std::make_unique<ArrayPartitionPass>(options));
+        pm.addPass(createCanonicalizerPass());
+      });
+  PassPipelineRegistration<ArrayPartitionPipelineOptions>(
+      "array-partition", "Partition arrays",
+      [&](OpPassManager &pm, const ArrayPartitionPipelineOptions &options) {
+        pm.addPass(std::make_unique<ArrayPartitionPass>(options));
         pm.addPass(createCanonicalizerPass());
       });
 }
