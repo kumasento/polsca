@@ -127,6 +127,7 @@ class PhismRunner:
                 .polymer_opt()
                 .phism_fold_if()
                 .phism_loop_transforms()
+                .phism_array_partition()
                 .lower_scf()
                 .lower_llvm()
                 .phism_vitis_opt()
@@ -434,6 +435,40 @@ class PhismRunner:
 
         return self.sanity_check()
 
+    def phism_array_partition(self):
+        """Run phism -array-partition."""
+        if not self.options.array_partition:
+            return self
+
+        src_file, self.cur_file = self.cur_file, self.cur_file.replace(
+            ".mlir", ".ap.mlir"
+        )
+        log_file = self.cur_file.replace(".mlir", ".log")
+
+        array_partition_file = os.path.join(
+            os.path.dirname(self.cur_file), "array_partition.txt"
+        )
+        if os.path.isfile(array_partition_file):
+            os.remove(array_partition_file)
+
+        args = [
+            self.get_program_abspath("phism-opt"),
+            src_file,
+            '-array-partition="dumpFile flatten"',
+            "-debug-only=array-partition",
+            "-verify-each=0",
+        ]
+
+        self.run_command(
+            cmd=" ".join(args),
+            shell=True,
+            stderr=open(log_file, "w"),
+            stdout=open(self.cur_file, "w"),
+            env=self.env,
+        )
+
+        return self
+
     def lower_scf(self):
         """Lower to SCF first."""
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(
@@ -450,7 +485,7 @@ class PhismRunner:
             env=self.env,
         )
 
-        return self.sanity_check()
+        return self.sanity_check() if not self.options.sanity_check else self
 
     def lower_llvm(self):
         """Lower from MLIR to LLVM."""
@@ -570,7 +605,7 @@ class PhismRunner:
 
         return self
 
-    def run_vitis(self, force_skip=False):
+    def run_vitis(self):
         """Run the tbgen.tcl file. Assuming the Tcl file has been written."""
         if self.options.skip_vitis:
             self.logger.info("Skipped run_vitis.")
@@ -581,9 +616,9 @@ class PhismRunner:
 
         tbgen_vitis_tcl = os.path.join(base_dir, "tbgen.tcl")
         assert os.path.isfile(tbgen_vitis_tcl), f"{tbgen_vitis_tcl} should exist."
-        # if not self.options.cosim:
-        #     self.logger.warn("Cosim won't run due to the input setting.")
-        #     comment_out_cosim(tbgen_vitis_tcl)
+        if not self.options.cosim:
+            self.logger.warn("Cosim won't run due to the input setting.")
+            helper.comment_out_cosim(tbgen_vitis_tcl)
 
         if self.options.dry_run:
             return self

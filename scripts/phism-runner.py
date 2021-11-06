@@ -25,6 +25,12 @@ def main():
         help="Run with phism loop transforms",
     )
     parser.add_argument(
+        "--array-partition",
+        "--ap",
+        action="store_true",
+        help="Run with phism array partition.",
+    )
+    parser.add_argument(
         "--fold-if", "--fi", action="store_true", help="Run with phism fold if"
     )
     parser.add_argument(
@@ -32,6 +38,7 @@ def main():
         action="store_true",
         help="Whether the vitis workflow should be skipped.",
     )
+    parser.add_argument("--cosim", action="store_true", help="Whether to run cosim.")
     args = parser.parse_args()
 
     runner = PhismRunner(options=PhismRunnerOptions(**vars(args)))

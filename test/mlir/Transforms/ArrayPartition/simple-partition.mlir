@@ -18,7 +18,7 @@ func @bar(%A: memref<64xf32>, %i: index) {
 }
 
 // CHECK: func @foo(%[[ARG0:.*]]: memref<2x32xf32>)
-func @foo(%A: memref<64xf32>) {
+func @foo(%A: memref<64xf32>) attributes {phism.top} {
   // CHECK: affine.for %[[ARG1:.*]] = 0 to 2 
   affine.for %i = 0 to 2 {
     // CHECK: %[[VAL0:.*]] = memref.subview %[[ARG0]][%[[ARG1]], 0] [1, 32] [1, 1] : memref<2x32xf32> to memref<32xf32, #[[MAP2]]>
