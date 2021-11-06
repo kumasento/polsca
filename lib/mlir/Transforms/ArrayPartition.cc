@@ -82,7 +82,7 @@ static bool isTiledLoopBound(AffineMap affMap) {
     return false;
 
   SmallVector<int64_t> flattened;
-  getFlattenedAffineExpr(expr, 0, 1, &flattened);
+  assert(succeeded(getFlattenedAffineExpr(expr, 0, 1, &flattened)));
 
   // flattened = {tile size, 0 or tile size}
   if (flattened.size() != 2 || flattened[0] <= 0 || flattened[1] < 0 ||
@@ -97,7 +97,7 @@ static int64_t getTileSize(AffineMap affMap) {
   AffineExpr expr = affMap.getResult(0);
 
   SmallVector<int64_t> flattened;
-  getFlattenedAffineExpr(expr, 0, 1, &flattened);
+  assert(succeeded(getFlattenedAffineExpr(expr, 0, 1, &flattened)));
 
   return flattened[0];
 }
@@ -502,8 +502,6 @@ static FuncOp createTiledCallee(Value memref, mlir::FuncOp callee,
     MemRefAccess access(op);
     AffineValueMap vmap;
     access.getAccessMap(&vmap);
-
-    vmap.getAffineMap().dump();
 
     for (unsigned dim = 0; dim < vmap.getNumResults(); ++dim) {
       AffineExpr result = vmap.getResult(dim);
@@ -1046,15 +1044,13 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
 }
 
 /// Put all the visited functions into a set.
-static auto markCalledFunctions(FuncOp top, ModuleOp m) {
-  SmallPtrSet<FuncOp, 4> visited;
+static void markCalledFunctions(FuncOp top, ModuleOp m,
+                                SmallPtrSet<FuncOp, 4> &visited) {
   visited.insert(top);
 
   top.walk([&](CallOp caller) {
     visited.insert(cast<FuncOp>(m.lookupSymbol(caller.getCallee())));
   });
-
-  return visited;
 }
 
 /// Erase all the other functions.
@@ -1117,12 +1113,28 @@ struct ArrayPartitionPass
     ModuleOp m = getOperation();
     OpBuilder b(m.getContext());
 
-    FuncOp top = getTopFunction(m);
+    // Before transformation, keep all the existing functions into a set so that
+    // they won't be recycled later.
+    SmallPtrSet<FuncOp, 4> keep;
+    m.walk([&](FuncOp f) { keep.insert(f); });
+
+    // Get the top function.
+    FuncOp top = nullptr;
+    m.walk([&](FuncOp f) {
+      if (f->hasAttr("phism.top"))
+        top = f;
+    });
     if (!top) {
       m.emitRemark() << "No top function found for array partition. Have you "
                         "forgot to annotate {scop.pe} to callers?\n";
       return;
     }
+
+    // Erase the top and the functions being called by the top.
+    keep.erase(top);
+    top.walk([&](CallOp caller) {
+      keep.erase(cast<FuncOp>(m.lookupSymbol(caller.getCallee())));
+    });
 
     SmallVector<CallOp> callers;
     top.walk([&](CallOp caller) {
@@ -1161,7 +1173,8 @@ struct ArrayPartitionPass
     LLVM_DEBUG(dbgs() << "------> Clean up created auxilliary functions.\n");
 
     // Clean up.
-    sweepUncalledFunctions(m, markCalledFunctions(newTop, m));
+    markCalledFunctions(newTop, m, keep);
+    sweepUncalledFunctions(m, keep);
 
     // Reset names.
     renameTiledFunctions(m, b);

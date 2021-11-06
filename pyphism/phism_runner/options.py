@@ -11,5 +11,7 @@ class PhismRunnerOptions:
     top_func: str = ""  # top function name
     polymer: bool = False  # run with polymer
     loop_transforms: bool = False  # run phism loop transform
+    array_partition: bool = False  # run phism array partition
     fold_if: bool = False  # run phism fold if
-    skip_vitis: bool = False # whether to skip the whole vitis flow
+    skip_vitis: bool = False  # whether to skip the whole vitis flow
+    cosim: bool = False  # whether to run cosim

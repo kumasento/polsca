@@ -10,7 +10,7 @@ func @bar(%A: memref<128x128xf32>, %i: index, %j: index) attributes {scop.pe} {
   }
   return
 }
-func @foo(%A: memref<128x128xf32>, %i : index) {
+func @foo(%A: memref<128x128xf32>, %i : index) attributes {phism.top} {
   affine.for %j = 0 to 1 {
     call @bar(%A, %i, %j) {scop.pe} : (memref<128x128xf32>, index, index) -> ()
   }

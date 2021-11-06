@@ -17,7 +17,7 @@ func @bar(%A: memref<64x96xf32>, %i: index, %j: index) {
 
 
 // CHECK: func @foo(%[[ARG0:.*]]: memref<6x32x32xf32>)
-func @foo(%A: memref<64x96xf32>) {
+func @foo(%A: memref<64x96xf32>) attributes {phism.top} {
   affine.for %i = 0 to 2 {
     affine.for %j = 0 to 3 {
 

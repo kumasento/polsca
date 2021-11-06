@@ -32,6 +32,47 @@ def read_lines_from_file(path: str, strip: bool = False) -> List[str]:
     return list([line.strip() for line in lines])
 
 
+def is_cosim_setup(file: str) -> bool:
+    with open(file, "r") as f:
+        lines = f.readlines()
+
+    return any(("cosim_design" in line and "setup" in line) for line in lines)
+
+
+def toggle_cosim_setup(file: str):
+    """Toggle the -setup option for cosim_design."""
+    with open(file, "r") as f:
+        lines = f.readlines()
+    assert lines
+
+    lines = [l.strip() for l in lines]
+    pos = next(i for i, l in enumerate(lines) if "cosim_design" in l)
+    assert pos >= 0 and pos < len(lines)
+
+    if "-setup" in lines[pos]:
+        lines[pos] = lines[pos].replace("-setup", "")
+    else:
+        lines[pos] += " -setup"
+
+    with open(file, "w") as f:
+        f.write("\n".join(lines))
+
+
+def comment_out_cosim(file: str):
+    with open(file, "r") as f:
+        lines = f.readlines()
+    assert lines
+
+    lines = [l.strip() for l in lines]
+    pos = next(i for i, l in enumerate(lines) if "cosim_design" in l)
+    assert pos >= 0 and pos < len(lines)
+
+    lines[pos] = f"# {lines[pos]}"
+
+    with open(file, "w") as f:
+        f.write("\n".join(lines))
+
+
 # ------------------------ List helpers -----------------------
 
 

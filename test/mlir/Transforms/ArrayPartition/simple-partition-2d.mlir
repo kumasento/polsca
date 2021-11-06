@@ -20,7 +20,7 @@ func @bar(%A: memref<64x96xf32>, %i: index, %j: index) {
 }
 
 // CHECK: func @foo(%[[A:.*]]: memref<2x3x32x32xf32>)
-func @foo(%A: memref<64x96xf32>) {
+func @foo(%A: memref<64x96xf32>) attributes {phism.top} {
   // CHECK: affine.for %[[ARG1:.*]] = 0 to 2
   affine.for %i = 0 to 2 {
     // CHECK: affine.for %[[ARG2:.*]] = 0 to 3
