@@ -12,6 +12,9 @@ std::unique_ptr<mlir::OperationPass<mlir::FuncOp>>
 createEliminateAffineLoadStorePass();
 
 std::unique_ptr<mlir::OperationPass<mlir::FuncOp>> createSplitNonAffinePass();
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>> createArrayPartitionPass();
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createSimpleArrayPartitionPass();
 
 /// Generate the code for registering passes.
 #define GEN_PASS_REGISTRATION

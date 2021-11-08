@@ -235,4 +235,41 @@ FuncOp getTopFunction(ModuleOp m) {
   return top;
 }
 
+AffineMap filterExtraConstantResults(AffineMap affMap) {
+  if (affMap.isSingleConstant())
+    return affMap;
+
+  SmallVector<AffineExpr> results;
+  for (AffineExpr result : affMap.getResults()) {
+    if (result.isa<AffineConstantExpr>())
+      continue;
+    results.push_back(result);
+  }
+
+  return AffineMap::get(affMap.getNumDims(), affMap.getNumSymbols(), results,
+                        affMap.getContext());
+}
+
+FuncOp findPhismTop(ModuleOp m) {
+  FuncOp top = nullptr;
+  m.walk([&](FuncOp f) {
+    if (f->hasAttr("phism.top")) {
+      assert(!top && "There can only be one function with phism.top.");
+      top = f;
+    }
+  });
+  return top;
+}
+
+/// Put all the functions from the module that not the top or being called by
+/// the top into the keep set.
+void getFunctionsToKeep(ModuleOp m, FuncOp top, SmallPtrSetImpl<FuncOp> &keep) {
+  m.walk([&](FuncOp f) { keep.insert(f); });
+
+  keep.erase(top);
+  top.walk([&](CallOp caller) {
+    keep.erase(cast<FuncOp>(m.lookupSymbol(caller.getCallee())));
+  });
+}
+
 } // namespace phism

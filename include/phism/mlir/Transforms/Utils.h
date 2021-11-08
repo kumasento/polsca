@@ -8,9 +8,14 @@
 namespace phism {
 
 /// Get the top function for the hardware design.
-mlir::FuncOp getTopFunction(mlir::ModuleOp m);
-mlir::Value expandAffineExpr(mlir::OpBuilder &builder, mlir::Location loc,
-                             mlir::AffineExpr expr, mlir::ValueRange dimValues,
-                             mlir::ValueRange symbolValues);
+::mlir::FuncOp getTopFunction(::mlir::ModuleOp m);
+::mlir::Value expandAffineExpr(::mlir::OpBuilder &builder, ::mlir::Location loc,
+                               ::mlir::AffineExpr expr,
+                               ::mlir::ValueRange dimValues,
+                               ::mlir::ValueRange symbolValues);
+::mlir::AffineMap filterExtraConstantResults(::mlir::AffineMap affMap);
+::mlir::FuncOp findPhismTop(::mlir::ModuleOp m);
+void getFunctionsToKeep(::mlir::ModuleOp m, ::mlir::FuncOp top,
+                        ::llvm::SmallPtrSetImpl<::mlir::FuncOp> &keep);
 
 } // namespace phism
