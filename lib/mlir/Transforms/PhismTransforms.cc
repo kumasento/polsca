@@ -19,6 +19,7 @@ void registerAllPhismPasses() {
   registerSplitNonAffinePass();
   registerArrayPartitionPass();
   registerSimpleArrayPartitionPass();
+  registerSimplifyPartitionAccessPass();
 }
 
 } // namespace phism
