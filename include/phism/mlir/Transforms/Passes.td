@@ -33,4 +33,21 @@ def SplitNonAffine : FunctionPass<"split-non-affine"> {
   ];
 }
 
+def SimpleArrayPartition : Pass<"simple-array-partition", "::mlir::ModuleOp"> {
+  let summary = "Simple array partition, the initial version.";
+  let constructor = "phism::createSimpleArrayPartitionPass()";
+  let options = [
+    Option<"dumpFile", "dump-file", "bool", /*default=*/"false", "Whether to dump file.">,
+    Option<"flatten", "flatten", "bool", /*default=*/"false", "Whether to flatten partitioned dims.">,
+  ];
+}
+
+def ArrayPartition : Pass<"array-partition", "::mlir::ModuleOp"> {
+  let summary = "Array partition.";
+  let constructor = "phism::createArrayPartitionPass()";
+  let options = [
+
+  ];
+}
+
 #endif

@@ -12,12 +12,13 @@ namespace phism {
 void registerAllPhismPasses() {
   registerLoopTransformPasses();
   registerExtractTopFuncPass();
-  registerArrayPartitionPasses();
   // registerDependenceAnalysisPasses();
   registerFoldIfPasses();
   registerLoopBoundHoistingPass();
   registerEliminateAffineLoadStorePass();
   registerSplitNonAffinePass();
+  registerArrayPartitionPass();
+  registerSimpleArrayPartitionPass();
 }
 
 } // namespace phism

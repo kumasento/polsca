@@ -1,4 +1,4 @@
-// RUN: phism-opt %s -array-partition | FileCheck %s
+// RUN: phism-opt %s -simple-array-partition -canonicalize | FileCheck %s
 
 #map0 = affine_map<()[s0] -> (s0 * 32)>
 #map1 = affine_map<()[s0] -> (s0 * 32 + 32)>
