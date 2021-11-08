@@ -287,6 +287,8 @@ void MemRefPartition::dump() const {
 }
 
 AffineMap MemRefPartition::getAffineMap() const {
+  MLIRContext *ctx = memref.getContext();
+  MemRefType ty = memref.getType().dyn_cast<MemRefType>();
   unsigned rank = parts.size();
 
   if (!isPartitioned())
@@ -304,9 +306,9 @@ AffineMap MemRefPartition::getAffineMap() const {
     AffineExpr block = getAffineConstantExpr(part.block, ctx);
 
     // Simplify floordiv to constant 0 if the number of partition is just 1.
-    indices[ind] = pty.getShape()[ind] == 1 ? getAffineConstantExpr(0, ctx)
-                                            : dim.floorDiv(block);
-    indices[ind + rank] = pty.getShape()[ind] == 1 ? dim : (dim % block);
+    indices[ind] = ty.getShape()[ind] == 1 ? getAffineConstantExpr(0, ctx)
+                                           : dim.floorDiv(block);
+    indices[ind + rank] = ty.getShape()[ind] == 1 ? dim : (dim % block);
   }
 
   return AffineMap::get(rank, 0, indices, ctx);
