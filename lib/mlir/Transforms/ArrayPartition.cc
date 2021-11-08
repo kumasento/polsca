@@ -168,6 +168,13 @@ LogicalResult Access::createBlockPartition(unsigned index,
     return failure();
 
   auto forOp = getForInductionVarOwner(addr);
+  if (!forOp) {
+    // Partition by the dim size.
+    MemRefType ty = memref.getType().dyn_cast<MemRefType>();
+    part = Partition(ty.getShape()[index]);
+
+    return success();
+  }
   AffineMap lbMap = filterExtraConstantResults(forOp.getLowerBoundMap());
   AffineMap ubMap = filterExtraConstantResults(forOp.getLowerBoundMap());
 
@@ -266,6 +273,7 @@ void MemRefPartition::dump() const {
 
 AffineMap MemRefPartition::getAffineMap() const {
   MLIRContext *ctx = memref.getContext();
+  MemRefType ty = memref.getType().dyn_cast<MemRefType>();
   unsigned rank = parts.size();
 
   // TODO: assuming block partition across all dimensions.
@@ -276,8 +284,11 @@ AffineMap MemRefPartition::getAffineMap() const {
 
     AffineExpr dim = getAffineDimExpr(ind, ctx);
     AffineExpr block = getAffineConstantExpr(part.block, ctx);
-    indices[ind] = dim.floorDiv(block);
-    indices[ind + rank] = dim % block;
+
+    // Simplify floordiv to constant 0 if the number of partition is just 1.
+    indices[ind] = ty.getShape()[ind] == 1 ? getAffineConstantExpr(0, ctx)
+                                           : dim.floorDiv(block);
+    indices[ind + rank] = ty.getShape()[ind] == 1 ? dim : (dim % block);
   }
 
   return AffineMap::get(rank, 0, indices, ctx);
@@ -525,7 +536,16 @@ static void propagate(FuncOp f, Value memref, const MemRefPartition &mp,
       AffineValueMap avm;
       access.getAccessMap(&avm);
 
+      LLVM_DEBUG({
+        for (Value operand : user->getOperands())
+          dbgs() << operand << '\n';
+      });
+
       AffineMap newAffMap = affMap.compose(avm.getAffineMap());
+      LLVM_DEBUG(dbgs() << affMap << "\n");
+      LLVM_DEBUG(dbgs() << avm.getAffineMap() << "\n");
+      LLVM_DEBUG(dbgs() << "Composed affine map: " << newAffMap << "\n");
+
       if (auto loadOp = dyn_cast<mlir::AffineLoadOp>(user))
         loadOp->setAttr(loadOp.getMapAttrName(), AffineMapAttr::get(newAffMap));
       else if (auto storeOp = dyn_cast<mlir::AffineStoreOp>(user))
