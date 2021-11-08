@@ -454,9 +454,12 @@ class PhismRunner:
         args = [
             self.get_program_abspath("phism-opt"),
             src_file,
-            '-array-partition="dumpFile flatten"',
+            "-array-partition",
+            "-canonicalize",
+            "-simplify-partition-access",
+            "-canonicalize",
             "-debug-only=array-partition",
-            "-verify-each=0",
+            "-verify-each=1",
         ]
 
         self.run_command(

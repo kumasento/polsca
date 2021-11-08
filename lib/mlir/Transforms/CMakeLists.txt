@@ -4,6 +4,7 @@ add_mlir_library(PhismTransforms
   PhismTransforms.cc
   ArrayPartition.cc
   SimpleArrayPartition.cc
+  SimplifyPartitionAccess.cc
   FoldIf.cc
   LoopBoundHoisting.cc
   EliminateAffineLoadStore.cc

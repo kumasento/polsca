@@ -50,4 +50,12 @@ def ArrayPartition : Pass<"array-partition", "::mlir::ModuleOp"> {
   ];
 }
 
+def SimplifyPartitionAccess : FunctionPass<"simplify-partition-access"> {
+  let summary = "Simplify array partition accesses.";
+  let constructor = "phism::createSimplifyPartitionAccessPass()";
+  let options = [
+
+  ];
+}
+
 #endif
