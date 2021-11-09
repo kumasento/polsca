@@ -58,4 +58,12 @@ def SimplifyPartitionAccess : FunctionPass<"simplify-partition-access"> {
   ];
 }
 
+def StripExceptTop : Pass<"strip-except-top", "::mlir::ModuleOp"> {
+  let summary = "Strip functions except those called by the top.";
+  let constructor = "phism::createStripExceptTopPass()";
+  let options = [
+
+  ];
+}
+
 #endif
