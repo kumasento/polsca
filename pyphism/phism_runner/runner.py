@@ -454,6 +454,7 @@ class PhismRunner:
         args = [
             self.get_program_abspath("phism-opt"),
             src_file,
+            "-strip-except-top",
             "-array-partition",
             "-canonicalize",
             "-simplify-partition-access",
