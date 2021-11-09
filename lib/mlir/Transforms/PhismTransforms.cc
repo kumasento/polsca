@@ -20,6 +20,7 @@ void registerAllPhismPasses() {
   registerArrayPartitionPass();
   registerSimpleArrayPartitionPass();
   registerSimplifyPartitionAccessPass();
+  registerStripExceptTopPass();
 }
 
 } // namespace phism

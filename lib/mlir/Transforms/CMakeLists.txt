@@ -9,6 +9,7 @@ add_mlir_library(PhismTransforms
   LoopBoundHoisting.cc
   EliminateAffineLoadStore.cc
   SplitNonAffine.cc
+  StripExceptTop.cc
   Utils.cc
 
   ADDITIONAL_HEADER_DIRS

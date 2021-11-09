@@ -248,16 +248,27 @@ LogicalResult Access::createBlockPartition(unsigned index,
 struct MemRefPartition {
   Value memref;
   SmallVector<Partition, 4> parts;
+  MemRefType ty;
+  MLIRContext *ctx;
 
   MemRefPartition(Value memref)
-      : memref(memref), parts(memref.getType().cast<MemRefType>().getRank()) {}
+      : memref(memref), parts(memref.getType().cast<MemRefType>().getRank()),
+        ty(memref.getType().cast<MemRefType>()), ctx(memref.getContext()) {}
 
   void dump() const;
 
   AffineMap getAffineMap() const;
 
   MemRefType getPartitionedType() const;
+
+  bool isPartitioned() const;
 };
+
+bool MemRefPartition::isPartitioned() const {
+  return all_of(parts, [](const Partition &part) {
+    return part.kind == Partition::BLOCK;
+  });
+}
 
 void MemRefPartition::dump() const {
   for (unsigned i = 0; i < parts.size(); ++i) {
@@ -266,15 +277,22 @@ void MemRefPartition::dump() const {
     errs() << '\n';
   }
 
-  errs() << "\n\t* AffineMap:\n";
-  getAffineMap().dump();
-  errs() << '\n';
+  if (isPartitioned()) {
+    errs() << "\n\t* AffineMap:\n";
+    getAffineMap().dump();
+    errs() << '\n';
+  } else {
+    errs() << "\n\t* Not partitioned.\n";
+  }
 }
 
 AffineMap MemRefPartition::getAffineMap() const {
-  MLIRContext *ctx = memref.getContext();
-  MemRefType ty = memref.getType().dyn_cast<MemRefType>();
   unsigned rank = parts.size();
+
+  if (!isPartitioned())
+    return AffineMap::getMultiDimIdentityMap(rank, ctx);
+
+  MemRefType pty = getPartitionedType();
 
   // TODO: assuming block partition across all dimensions.
   SmallVector<AffineExpr> indices(rank * 2);
@@ -286,18 +304,15 @@ AffineMap MemRefPartition::getAffineMap() const {
     AffineExpr block = getAffineConstantExpr(part.block, ctx);
 
     // Simplify floordiv to constant 0 if the number of partition is just 1.
-    indices[ind] = ty.getShape()[ind] == 1 ? getAffineConstantExpr(0, ctx)
-                                           : dim.floorDiv(block);
-    indices[ind + rank] = ty.getShape()[ind] == 1 ? dim : (dim % block);
+    indices[ind] = pty.getShape()[ind] == 1 ? getAffineConstantExpr(0, ctx)
+                                            : dim.floorDiv(block);
+    indices[ind + rank] = pty.getShape()[ind] == 1 ? dim : (dim % block);
   }
 
   return AffineMap::get(rank, 0, indices, ctx);
 }
 
 MemRefType MemRefPartition::getPartitionedType() const {
-  MLIRContext *ctx = memref.getContext();
-
-  MemRefType ty = memref.getType().cast<MemRefType>();
   unsigned rank = ty.getRank();
 
   const auto &origShape = ty.getShape();
@@ -509,24 +524,37 @@ static void buildMemRefMapping(FuncOp f, MemRefMapping &mrm, ModuleOp m) {
 static void propagate(FuncOp f, Value memref, const MemRefPartition &mp,
                       MemRefType ty, ModuleOp m) {
   MLIRContext *ctx = f.getContext();
+  Location loc = memref.getLoc();
+
+  if (!mp.isPartitioned())
+    return;
 
   // TODO: memref can be something defined within f.
-  assert(memref.isa<BlockArgument>());
-  assert(memref.cast<BlockArgument>().getOwner()->getParentOp() == f);
+  if (memref.isa<BlockArgument>()) {
+    assert(memref.cast<BlockArgument>().getOwner()->getParentOp() == f);
 
-  unsigned argInd = find(f.getArguments(), memref) - f.args_begin();
-  LLVM_DEBUG(dbgs() << "MemRef is at: " << argInd << '\n');
+    unsigned argInd = find(f.getArguments(), memref) - f.args_begin();
+    LLVM_DEBUG(dbgs() << "MemRef is at: " << argInd << '\n');
 
-  SmallVector<Type> argTypes(f.getArgumentTypes());
+    SmallVector<Type> argTypes(f.getArgumentTypes());
 
-  argTypes[argInd] = ty;
-  FunctionType fty = FunctionType::get(ctx, argTypes, f.getType().getResults());
-  f.setType(fty);
-  LLVM_DEBUG(dbgs() << "New function type: " << fty << '\n');
+    argTypes[argInd] = ty;
+    FunctionType fty =
+        FunctionType::get(ctx, argTypes, f.getType().getResults());
+    f.setType(fty);
+    LLVM_DEBUG(dbgs() << "New function type: " << fty << '\n');
 
-  Block &entryBlock = *f.getBlocks().begin();
-  entryBlock.getArgument(argInd).setType(ty);
-  LLVM_DEBUG(dbgs() << "Replaced entry block argument type.\n");
+    Block &entryBlock = *f.getBlocks().begin();
+    entryBlock.getArgument(argInd).setType(ty);
+    LLVM_DEBUG(dbgs() << "Replaced entry block argument type.\n");
+  } else if (auto allocaOp = memref.getDefiningOp<memref::AllocaOp>()) {
+    OpBuilder b(ctx);
+    b.setInsertionPointAfter(allocaOp);
+    Value newMemRef = b.create<memref::AllocaOp>(loc, ty);
+    allocaOp.replaceAllUsesWith(newMemRef);
+    memref = newMemRef;
+    allocaOp.erase();
+  }
 
   // Replace the access.
   AffineMap affMap = mp.getAffineMap();
@@ -571,6 +599,8 @@ static LogicalResult partitionMemRef(FuncOp top, const MemRefPartition &mp,
   LLVM_DEBUG(dbgs() << "Top function - \n" << top << '\n');
 
   // Replace the source memref by the new type.
+  if (!mp.isPartitioned())
+    return success();
   MemRefType newTy = mp.getPartitionedType();
   LLVM_DEBUG(dbgs() << "New memref type: " << newTy << '\n');
 
