@@ -66,4 +66,9 @@ def StripExceptTop : Pass<"strip-except-top", "::mlir::ModuleOp"> {
   ];
 }
 
+def AffineLoopUnswitching : FunctionPass<"affine-loop-unswitching"> {
+  let summary = "Affine loop unswitching transformation.";
+  let constructor = "phism::createAffineLoopUnswitchingPass()";
+}
+
 #endif
