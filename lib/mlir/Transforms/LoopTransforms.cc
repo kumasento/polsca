@@ -454,21 +454,8 @@ static void annotatePointLoops(FuncOp f, OpBuilder &b) {
       callers.push_back(caller);
   });
 
-  for (mlir::CallOp caller : callers) {
+  for (mlir::CallOp caller : callers) 
     annotatePointLoops(caller.getOperands(), b);
-
-    // Post-fix intermediate forOps.
-    SmallVector<mlir::AffineForOp, 4> forOps;
-    getLoopIVs(*caller.getOperation(), &forOps);
-
-    bool started = false;
-    for (mlir::AffineForOp forOp : forOps) {
-      if (forOp->hasAttr("scop.point_loop"))
-        started = true;
-      else if (started)
-        forOp->setAttr("scop.point_loop", b.getUnitAttr());
-    }
-  }
 }
 
 namespace {

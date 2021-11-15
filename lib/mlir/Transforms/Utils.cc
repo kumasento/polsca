@@ -228,6 +228,9 @@ FuncOp getTopFunction(ModuleOp m) {
   FuncOp top = nullptr;
   m.walk([&](FuncOp f) {
     if (hasPeCaller(f)) {
+      if (!top) {
+        m.dump();
+      }
       assert(!top && "There should be only one top function.");
       top = f;
     }

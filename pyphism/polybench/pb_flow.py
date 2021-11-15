@@ -1140,13 +1140,11 @@ class PbFlow:
             ".mlir", ".kern.mlir"
         )
 
-        keepall = "keepall" if self.options.sanity_check else ""
-
         log_file = self.cur_file.replace(".mlir", ".log")
         args = [
             self.get_program_abspath("phism-opt"),
             src_file,
-            f'-extract-top-func="name={get_top_func(src_file)} {keepall}"',
+            f'-extract-top-func="name={get_top_func(src_file)} keepall={self.options.sanity_check}"',
         ]
         self.run_command(
             cmd=" ".join(args),
@@ -1167,14 +1165,18 @@ class PbFlow:
         )
         log_file = self.cur_file.replace(".mlir", ".log")
 
-        passes = []
+        passes = ["-fold-scf-if"]
         if self.options.split == "NO_SPLIT":  # The split stmt has applied -reg2mem
             passes += [
                 "-reg2mem",
             ]
+
+        diamond_tiling = "diamond_tiling"
+        if not self.options.diamond_tiling:
+            diamond_tiling = ""
         passes += [
             "-extract-scop-stmt",
-            f'-pluto-opt="cloogf={self.options.cloogf} cloogl={self.options.cloogl} diamond-tiling"',
+            f'-pluto-opt="cloogf={self.options.cloogf} cloogl={self.options.cloogl} {diamond_tiling}"',
             "-debug",
         ]
 
@@ -1239,9 +1241,9 @@ class PbFlow:
             src_file,
             f'-loop-transforms="max-span={self.options.max_span}"',
             "-loop-redis-and-merge",
-            "-fold-if" if self.options.coalescing else "",
-            "-demote-bound-to-if" if self.options.coalescing else "",
-            "-fold-if",
+            # "-fold-if" if self.options.coalescing else "",
+            # "-demote-bound-to-if" if self.options.coalescing else "",
+            # "-fold-if",
             "-debug-only=loop-transforms",
         ]
 
@@ -1525,6 +1527,9 @@ class PbFlow:
 
     def run_vitis(self, force_skip=False):
         """Run the tbgen.tcl file. Assuming the Tcl file has been written."""
+        if self.options.skip_vitis:
+            self.logger.warn("Vitis won't run since --skip-vitis has been set.")
+            return self
         src_file = self.cur_file
         base_dir = os.path.dirname(src_file)
 
