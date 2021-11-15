@@ -7,3 +7,6 @@
 [submodule "polymer"]
 	path = polymer
 	url = https://github.com/kumasento/polymer
+[submodule "example/machsuite"]
+	path = example/machsuite
+	url = git@github.com:JianyiCheng/MachSuite.git
