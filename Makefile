@@ -30,10 +30,11 @@ test-polybench:
 test-polybench-polymer:
 	python3 scripts/pb-flow.py -c -p -j $(th) example/polybench
 
-# Build LLVM and Phism
+# Build LLVM and Phism - temporary fix for missing mlir-clang
 build-phism:
 	./scripts/build-llvm.sh
 	./scripts/build-polygeist.sh
+	(cd ./polygeist/build; make mlir-clang)
 	./scripts/build-polymer.sh
 	./scripts/build-phism.sh
 

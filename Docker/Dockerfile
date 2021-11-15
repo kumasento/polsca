@@ -42,7 +42,7 @@ RUN cd /dkrPkgs \
     && ./configure --enable-optimizations --prefix=/usr/local \
     && make install
 RUN pip3 install --upgrade pip
-RUN pip3 install pandas dataclasses
+RUN pip3 install pandas dataclasses colorlog
 
 CMD ["bash"]
 
@@ -60,7 +60,7 @@ ENV vhls $VHLS_PATH
 RUN echo "source ${vhls}/Vitis_HLS/2020.2/settings64.sh" >> /home/dev-user/.bashrc
 RUN echo 'source /workspace/scripts/setup-vitis-hls-llvm.sh' >> /home/dev-user/.bashrc
 # PATH
-RUN echo 'export PATH=$PATH:/workspace/llvm/build/bin:/workspace/build/bin' >> /home/dev-user/.bashrc
+RUN echo 'export PATH=$PATH:/workspace/polygeist/llvm-project/build/bin:/workspace/polygeist/build/mlir-clang:/workspace/build/bin:/workspace/polymer/build/bin' >> /home/dev-user/.bashrc
 # Thread setup
 RUN echo 'export nproc=$(grep -c ^processor /proc/cpuinfo)' >> /home/dev-user/.bashrc
 # Evaluation script path:
