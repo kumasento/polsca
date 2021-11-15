@@ -54,6 +54,7 @@ def main():
     )
     parser.add_argument(
         "--loop-transforms",
+        "--lt",
         action="store_true",
         help="Enable loop transforms",
     )
