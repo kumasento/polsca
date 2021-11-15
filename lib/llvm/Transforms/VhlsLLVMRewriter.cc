@@ -72,7 +72,12 @@ struct RenameBasicBlocksAndValues : public ModulePass {
 
   bool runOnModule(Module &M) override {
     llvm::SmallVector<llvm::StringRef, 4> ParamNames;
-    llvm::SplitString(getXlnNames(), ParamNames, ",");
+    std::string names = getXlnNames();
+    llvm::SplitString(names, ParamNames, ",");
+
+    LLVM_DEBUG(dbgs() << "Input xlnnames: " << names << '\n');
+    LLVM_DEBUG(dbgs() << "Parsed name list:\n");
+    LLVM_DEBUG(interleaveComma(ParamNames, dbgs()));
 
     renameBasicBlocksAndValues(M, ParamNames);
     return false;
