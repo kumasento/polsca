@@ -217,13 +217,15 @@ static void getArgs(Operation *parentOp, llvm::SetVector<Value> &args) {
 
   parentOp->walk([&](Operation *op) { internalOps.insert(op); });
 
+  LLVM_DEBUG(dbgs() << "-- Parent operator for getting args: " << (*parentOp)
+                    << "\n\n");
   parentOp->walk([&](Operation *op) {
     for (Value operand : op->getOperands()) {
-      if (Operation *defOp = operand.getDefiningOp()) {
-        if (!internalOps.contains(defOp))
-          args.insert(operand);
-      } else if (BlockArgument bArg = operand.dyn_cast<BlockArgument>()) {
+      if (BlockArgument bArg = operand.dyn_cast<BlockArgument>()) {
         if (!internalOps.contains(bArg.getOwner()->getParentOp()))
+          args.insert(operand);
+      } else if (Operation *defOp = operand.getDefiningOp()) {
+        if (!internalOps.contains(defOp))
           args.insert(operand);
       } else {
         llvm_unreachable("Operand cannot be handled.");
@@ -300,6 +302,7 @@ static bool greedyLoopExtraction(Operation *op, const int maxSpan, int &startId,
   bool shouldExtract =
       isa<FuncOp>(op) || (maxSpan > 0 && (int)loopTree[op].size() > maxSpan);
 
+  // Try to extract the child loop.
   SmallPtrSet<Operation *, 4> extracted;
   for (Operation *child : loopTree[op])
     if (greedyLoopExtraction(child, maxSpan, startId, loopTree, f, b))
@@ -309,7 +312,7 @@ static bool greedyLoopExtraction(Operation *op, const int maxSpan, int &startId,
   // extracted.
   shouldExtract |= !extracted.empty();
 
-  if (shouldExtract)
+  if (shouldExtract) {
     for (Operation *child : loopTree[op]) {
       // Don't extract again.
       if (extracted.count(child))
@@ -329,31 +332,28 @@ static bool greedyLoopExtraction(Operation *op, const int maxSpan, int &startId,
 
       startId++;
     }
+  }
 
   return shouldExtract;
 }
 
-static int extractPointLoops(FuncOp f, int startId, int maxSpan, OpBuilder &b) {
-  ModuleOp m = f->getParentOfType<ModuleOp>();
-
-  // Get the scop.stmt callers. These are what we focus on.
-  SmallVector<Operation *, 4> callers;
+static void getScopStmtCallers(FuncOp f, ModuleOp m,
+                               SmallVectorImpl<Operation *> &callers) {
   f.walk([&](mlir::CallOp caller) {
     FuncOp callee = m.lookupSymbol<FuncOp>(caller.getCallee());
     if (callee->hasAttr("scop.stmt"))
       callers.push_back(caller);
   });
+}
 
-  // Place to insert the new function.
-  OpBuilder::InsertionGuard guard(b);
-  b.setInsertionPoint(m.getBody(), std::prev(m.getBody()->end()));
-
-  // Those point loops that has been visited and extracted.
-  llvm::SetVector<Operation *> extracted;
-
+static void buildLoopTree(FuncOp f, ModuleOp m, LoopTree &loopTree) {
   // Map from a point loop to its children.
-  LoopTree loopTree;
+  loopTree.clear();
   loopTree[f] = {}; // root node is the function.
+
+  // Get the scop.stmt callers. These are what we focus on.
+  SmallVector<Operation *> callers;
+  getScopStmtCallers(f, m, callers);
 
   // Build the tree.
   for (Operation *caller : callers) {
@@ -376,7 +376,32 @@ static int extractPointLoops(FuncOp f, int startId, int maxSpan, OpBuilder &b) {
     if (lastPointLoop)
       loopTree[f].insert(lastPointLoop);
   }
+}
 
+static void dumpLoopTree(const LoopTree &loopTree) {
+  for (auto &it : loopTree) {
+    dbgs() << "Parent: \n" << (*it.first) << "\n\n";
+    auto &children = it.second;
+    for (auto child : children)
+      dbgs() << " * Child: \n" << (*child) << '\n';
+  }
+}
+
+static int extractPointLoops(FuncOp f, int startId, int maxSpan, OpBuilder &b) {
+  LLVM_DEBUG(dbgs() << "Before point loop extraction: \n" << f << '\n');
+  ModuleOp m = f->getParentOfType<ModuleOp>();
+
+  // Place to insert the new function.
+  OpBuilder::InsertionGuard guard(b);
+  b.setInsertionPoint(m.getBody(), std::prev(m.getBody()->end()));
+
+  // Those point loops that has been visited and extracted.
+  llvm::SetVector<Operation *> extracted;
+
+  // Map from a point loop to its children.
+  LoopTree loopTree;
+  buildLoopTree(f, m, loopTree);
+  LLVM_DEBUG(dumpLoopTree(loopTree));
   greedyLoopExtraction(f, maxSpan, startId, loopTree, f, b);
 
   return startId;
@@ -454,7 +479,7 @@ static void annotatePointLoops(FuncOp f, OpBuilder &b) {
       callers.push_back(caller);
   });
 
-  for (mlir::CallOp caller : callers) 
+  for (mlir::CallOp caller : callers)
     annotatePointLoops(caller.getOperands(), b);
 }
 
@@ -466,6 +491,8 @@ struct AnnotatePointLoopsPass
     OpBuilder b(f.getContext());
 
     annotatePointLoops(f, b);
+
+    LLVM_DEBUG(dbgs() << "Annotated point_loops:\n" << f << '\n');
   }
 };
 } // namespace
@@ -1285,6 +1312,100 @@ struct DemoteBoundToIfPass
   }
 };
 } // namespace
+
+/// Return true if anything has changed.
+static bool affineLoopUnswitching(FuncOp f) {
+  bool changed = false;
+  f.walk([&](mlir::AffineIfOp ifOp) {
+    if (changed)
+      return;
+
+    if (ifOp.hasElse())
+      return;
+
+    // the set should take only one input dim.
+    auto iset = ifOp.getIntegerSet();
+    if (iset.getNumDims() != 1 || iset.getNumInputs() != 1)
+      return;
+
+    /// TODO: support intervals
+    if (iset.getNumConstraints() != 1)
+      return;
+
+    // only having a single constraint is supported.
+    auto expr = iset.getConstraint(0);
+    // parse this expression, only support - d0 + x
+    /// TODO: support more cases
+    auto binOp = expr.dyn_cast<AffineBinaryOpExpr>();
+    if (binOp.getKind() != AffineExprKind::Add)
+      return;
+    LLVM_DEBUG(dbgs() << "Found an -d0 + x expression: " << expr << '\n');
+    auto lhs = binOp.getLHS().dyn_cast<AffineBinaryOpExpr>();
+    auto rhs = binOp.getRHS().dyn_cast<AffineConstantExpr>();
+    if (lhs.getKind() != AffineExprKind::Mul ||
+        !lhs.getRHS().isa<AffineConstantExpr>() ||
+        lhs.getRHS().dyn_cast<AffineConstantExpr>().getValue() != -1)
+      return;
+
+    auto dimExpr = lhs.getLHS().dyn_cast<AffineDimExpr>();
+    if (!dimExpr)
+      return;
+
+    int64_t bound = rhs.getValue();
+
+    // The value that if take should be an affine.for induction variable.
+    Value dim = ifOp.getOperand(0);
+    if (!isForInductionVar(dim))
+      return;
+    auto forOp = getForInductionVarOwner(dim);
+
+    // The following code would clone forOp into -
+    // newForOp; forOp.
+    // We will remove the ifOp from the forOp and update both boundaries.
+    // Later, once the ifOp from the newForOp is found, we can check if that
+    // newForOp has an upper bound of bound. If so, clone the content from the
+    // ifOp and erase it.
+
+    OpBuilder b(f.getContext());
+
+    if (bound == forOp.getConstantUpperBound()) {
+      b.setInsertionPoint(ifOp);
+      BlockAndValueMapping vmap;
+      for (auto &op : *ifOp.getThenBlock())
+        if (!isa<mlir::AffineYieldOp>(op))
+          b.clone(op, vmap);
+    } else {
+
+      b.setInsertionPoint(forOp);
+      auto cloned = b.clone(*forOp.getOperation());
+      auto newForOp = cast<mlir::AffineForOp>(cloned);
+
+      newForOp.setConstantUpperBound(bound);
+      forOp.setConstantLowerBound(bound);
+    }
+
+    ifOp.erase();
+    changed = true;
+  });
+
+  return changed;
+}
+
+namespace {
+struct AffineLoopUnswitchingPass
+    : public ::phism::AffineLoopUnswitchingBase<AffineLoopUnswitchingPass> {
+  void runOnFunction() override {
+    FuncOp f = getFunction();
+    while (affineLoopUnswitching(f))
+      ;
+  }
+};
+} // namespace
+
+std::unique_ptr<mlir::OperationPass<mlir::FuncOp>>
+phism::createAffineLoopUnswitchingPass() {
+  return std::make_unique<AffineLoopUnswitchingPass>();
+}
 
 void phism::registerLoopTransformPasses() {
   // PassRegistration<AnnotatePointLoopsPass>(
