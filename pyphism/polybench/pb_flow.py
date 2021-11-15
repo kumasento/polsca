@@ -1055,6 +1055,8 @@ class PbFlow:
                     "-convert-scf-to-std",
                     "-convert-memref-to-llvm",
                     "-convert-std-to-llvm",
+                    "-convert-arith-to-llvm",
+                    "-reconcile-unrealized-casts",
                     self.cur_file,
                     "|",
                     self.get_program_abspath("mlir-translate"),
@@ -1345,17 +1347,22 @@ class PbFlow:
         args = [
             self.get_program_abspath("mlir-opt"),
             src_file,
+            "-convert-math-to-llvm",
             "-convert-scf-to-std",
             "-convert-memref-to-llvm",
             "-canonicalize",
             convert_std_to_llvm,
+            "-convert-arith-to-llvm",
+            "-reconcile-unrealized-casts",
             f"| {self.get_program_abspath('mlir-translate')} -mlir-to-llvmir",
         ]
+        log_file = self.cur_file.replace(".llvm", ".log")
 
         self.run_command(
             cmd=" ".join(args),
             shell=True,
             stdout=open(self.cur_file, "w"),
+            stderr=open(log_file, "w"),
             env=self.env,
         )
 
