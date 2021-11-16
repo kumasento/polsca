@@ -1358,12 +1358,29 @@ struct XilinxRewriteMathInstPass : public ModulePass {
 
 static void unrollLoop(Loop *loop) {
   LLVMContext &Context = loop->getHeader()->getContext();
-  MDNode *EnableUnrollMD =
-      MDNode::get(Context, MDString::get(Context, "llvm.loop.unroll.full"));
-  MDNode *LoopID = loop->getLoopID();
-  MDNode *NewLoopID = makePostTransformationMetadata(
-      Context, LoopID, {"llvm.loop.unroll."}, {EnableUnrollMD});
-  loop->setLoopID(NewLoopID);
+  SmallVector<Metadata *, 4> Args;
+
+  // Reserve operand 0 for loop id self reference.
+  LLVMContext &Context = loop->getHeader()->getContext();
+  auto TempNode = MDNode::getTemporary(Context, None);
+  Args.push_back(TempNode.get());
+
+  // Keep the original loop metadata
+  auto id = loop->getLoopID();
+  for (unsigned int i = 1; i < id->getNumOperands(); i++)
+    Args.push_back(id->getOperand(i));
+
+  // Loop unroll
+  // TODO: Use a opt arg instead of a constant
+  Metadata *nameVals[] = {MDString::get(Context, "llvm.loop.unroll.count"),
+                          ConstantAsMetadata::get(ConstantInt::get(
+                              IntegerType::get(Context, 32), 4))};
+  Args.push_back(MDNode::get(Context, nameVals));
+
+  // Set the first operand to itself.
+  MDNode *LoopID = MDNode::get(Context, Args);
+  LoopID->replaceOperandWith(0, LoopID);
+  loop->setLoopID(LoopID);
 
   if (!loop->isInnermost())
     for (auto &subloop : loop->getSubLoops())
