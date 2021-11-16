@@ -1039,6 +1039,70 @@ struct LoopMergePass
 
 /// -------------------------- Scop stmt inline -------------------------------
 
+static void replaceSymbolWithDim(Operation *op) {
+  MLIRContext *ctx = op->getContext();
+  if (!isa<mlir::AffineLoadOp, mlir::AffineStoreOp>(op))
+    return;
+
+  LLVM_DEBUG(dbgs() << "---- Replacing symbol with dim\n\n");
+  AffineMap map;
+  SmallVector<Value> operands, newOperands;
+  unsigned addrStart = 1;
+
+  if (auto loadOp = dyn_cast<mlir::AffineLoadOp>(op)) {
+    map = loadOp.getAffineMap();
+    newOperands.push_back(loadOp.getOperand(0));
+  } else if (auto storeOp = dyn_cast<mlir::AffineStoreOp>(op)) {
+    map = storeOp.getAffineMap();
+    addrStart = 2;
+    newOperands.push_back(storeOp.getOperand(0));
+    newOperands.push_back(storeOp.getOperand(1));
+  }
+
+  for (unsigned i = addrStart; i < op->getNumOperands(); ++i)
+    operands.push_back(op->getOperand(i));
+
+  unsigned numDims = map.getNumDims();
+  unsigned numSymbols = 0;
+  SmallVector<Value> newDims{operands.begin(), operands.begin() + numDims};
+  SmallVector<Value> newSymbols;
+  llvm::DenseMap<AffineExpr, AffineExpr> replacement;
+  for (unsigned pos = map.getNumDims(); pos < map.getNumInputs(); ++pos) {
+    AffineExpr src = getAffineSymbolExpr(pos - map.getNumDims(), ctx);
+    AffineExpr dst;
+    if (!isValidSymbol(operands[pos])) {
+      LLVM_DEBUG(dbgs() << operands[pos] << " at pos " << pos
+                        << " is not a valid symbol.");
+      dst = getAffineDimExpr(numDims, ctx);
+      newDims.push_back(operands[pos]);
+      ++numDims;
+    } else {
+      dst = getAffineSymbolExpr(numSymbols, ctx);
+      newSymbols.push_back(operands[pos]);
+      ++numSymbols;
+    }
+    replacement[src] = dst;
+  }
+
+  if (numDims == map.getNumDims())
+    return;
+
+  LLVM_DEBUG(dbgs() << "new num dims: " << numDims << '\n');
+
+  map = map.replace(replacement, numDims, map.getNumInputs() - numDims);
+  LLVM_DEBUG(map.dump());
+
+  newOperands.append(newDims);
+  newOperands.append(newSymbols);
+  if (auto loadOp = dyn_cast<mlir::AffineLoadOp>(op)) {
+    loadOp->setAttr(loadOp.getMapAttrName(), AffineMapAttr::get(map));
+    loadOp->setOperands(newOperands);
+  } else if (auto storeOp = dyn_cast<mlir::AffineStoreOp>(op)) {
+    storeOp->setAttr(storeOp.getMapAttrName(), AffineMapAttr::get(map));
+    storeOp->setOperands(newOperands);
+  }
+}
+
 static LogicalResult inlineScopStmtWithinFunction(FuncOp f, FuncOp stmt,
                                                   OpBuilder &b) {
   if (f->hasAttr("scop.stmt")) // skipped.
@@ -1060,13 +1124,17 @@ static LogicalResult inlineScopStmtWithinFunction(FuncOp f, FuncOp stmt,
     // We know that the body of the stmt is simply a list of operations without
     // region.
     for (Operation &op : stmt.getBlocks().begin()->getOperations())
-      if (!isa<mlir::ReturnOp>(op))
-        b.clone(op, vmap);
+      if (!isa<mlir::ReturnOp>(op)) {
+        auto cloned = b.clone(op, vmap);
+        replaceSymbolWithDim(cloned);
+      }
   }
 
   // Erase the callers.
   for (mlir::CallOp caller : callers)
     caller.erase();
+
+  f.dump();
 
   return success();
 }

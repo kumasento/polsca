@@ -1246,7 +1246,7 @@ class PbFlow:
             # f'-loop-transforms="max-span={self.options.max_span}"',
             "-affine-loop-unswitching",
             "-anno-point-loop",
-            "-outline-proc-elem='max-tripcount=10'",
+            "-outline-proc-elem",
             "-loop-redis-and-merge",
             "-scop-stmt-inline",
             # "-fold-if" if self.options.coalescing else "",
@@ -1284,7 +1284,8 @@ class PbFlow:
         args = [
             self.get_program_abspath("phism-opt"),
             src_file,
-            '-simple-array-partition="dumpFile flatten"',
+            '-simple-array-partition="dump-file=1 flatten=1"',
+            "-canonicalize",
             "-debug-only=array-partition",
         ]
 

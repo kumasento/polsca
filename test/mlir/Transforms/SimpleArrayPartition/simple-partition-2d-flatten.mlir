@@ -26,7 +26,7 @@ func @foo(%A: memref<64x96xf32>) attributes {phism.top} {
       // CHECK: %[[VAL0:.*]] = affine.apply #[[MAP2]](%[[ARG1]], %[[ARG2]])
       // CHECK: %[[VAL1:.*]] = memref.subview %[[ARG0]][%[[VAL0]], 0, 0] [1, 32, 32] [1, 1, 1]
 
-      call @bar(%A, %i, %j) {scop.pe} : (memref<64x96xf32>, index, index) -> ()
+      call @bar(%A, %i, %j) {phism.pe} : (memref<64x96xf32>, index, index) -> ()
     }
   }
   return

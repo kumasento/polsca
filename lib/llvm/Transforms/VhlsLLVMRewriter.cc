@@ -225,7 +225,7 @@ struct XilinxUnrollPass : public ModulePass {
   XilinxUnrollPass() : ModulePass(ID) {}
 
   bool runOnModule(Module &M) override {
-    assert(!XlnTop.empty() && "Top function name should be set.");
+    assert(!getXlnTop().empty() && "Top function name should be set.");
 
     for (auto &F : M)
       if (F.getName() == getXlnTop()) {
