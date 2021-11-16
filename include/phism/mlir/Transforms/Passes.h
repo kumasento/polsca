@@ -20,6 +20,8 @@ createSimplifyPartitionAccessPass();
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>> createStripExceptTopPass();
 std::unique_ptr<mlir::OperationPass<mlir::FuncOp>>
 createAffineLoopUnswitchingPass();
+std::unique_ptr<mlir::OperationPass<mlir::FuncOp>>
+createAnnotatePointLoopPass();
 
 /// Generate the code for registering passes.
 #define GEN_PASS_REGISTRATION

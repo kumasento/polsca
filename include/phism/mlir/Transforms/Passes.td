@@ -71,4 +71,9 @@ def AffineLoopUnswitching : FunctionPass<"affine-loop-unswitching"> {
   let constructor = "phism::createAffineLoopUnswitchingPass()";
 }
 
+def AnnotatePointLoop : FunctionPass<"anno-point-loop"> {
+  let summary = "Annotate point loops from nested affine.for";
+  let constructor = "phism::createAnnotatePointLoopPass()";
+}
+
 #endif

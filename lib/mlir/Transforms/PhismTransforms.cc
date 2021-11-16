@@ -22,6 +22,7 @@ void registerAllPhismPasses() {
   registerSimplifyPartitionAccessPass();
   registerStripExceptTopPass();
   registerAffineLoopUnswitchingPass();
+  registerAnnotatePointLoopPass();
 }
 
 } // namespace phism
