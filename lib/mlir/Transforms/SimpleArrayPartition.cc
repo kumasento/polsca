@@ -186,9 +186,9 @@ static MapVector<Value, TileInfo> getTilingInfo(ArrayRef<Value> memrefs,
       dbgs() << "Trying to tile: ";
       memref.dump();
     });
-    // Check if all the users of memref are scop.pe callers.
+    // Check if all the users of memref are phism.pe callers.
     if (any_of(memref.getUsers(), [&](Operation *op) {
-          return !isa<CallOp>(op) || !op->hasAttr("scop.pe");
+          return !isa<CallOp>(op) || !op->hasAttr("phism.pe");
         })) {
       LLVM_DEBUG({
         memref.dump();
@@ -269,6 +269,7 @@ static MapVector<Value, TileInfo> getTilingInfo(ArrayRef<Value> memrefs,
       MapVector<unsigned, AffineForOp> forOps;
 
       // Based on the presumption that every result should be an unique operand.
+      bool hasInvalidAddr = false;
       for (unsigned i = 0; i < avm.getNumResults(); ++i) {
         // i is the index to a dim in the address.
         AffineExpr result = avm.getResult(i);
@@ -286,7 +287,14 @@ static MapVector<Value, TileInfo> getTilingInfo(ArrayRef<Value> memrefs,
         else {
           LLVM_DEBUG(dbgs()
                      << "Address index #" << i << " has been skipped.\n");
+          hasInvalidAddr = true;
+          break;
         }
+      }
+
+      if (hasInvalidAddr) {
+        isIdentical = false;
+        break;
       }
 
       MapVector<unsigned, AffineMap> tmpLbMaps, tmpUbMaps;
@@ -446,7 +454,7 @@ static FuncOp createTiledCallee(Value memref, mlir::FuncOp callee,
       callee.getLoc(),
       std::string(callee.getName()) + "_" + std::to_string(stage), newFuncType);
 
-  newCallee->setAttr("scop.pe", b.getUnitAttr());
+  newCallee->setAttr("phism.pe", b.getUnitAttr());
 
   Block *entry = newCallee.addEntryBlock();
   b.setInsertionPointToEnd(entry);
@@ -830,7 +838,7 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
     // Rebuild the caller list.
     SmallVector<mlir::CallOp> callers;
     prevFunc.walk([&](mlir::CallOp caller) {
-      if (caller->hasAttr("scop.pe"))
+      if (caller->hasAttr("phism.pe"))
         callers.push_back(caller);
     });
 
@@ -1006,7 +1014,7 @@ static FuncOp tileTopFunction(FuncOp top, ArrayRef<Value> memrefs,
       // Note that we still use the original callee symbol here.
       mlir::CallOp newCaller =
           b.create<mlir::CallOp>(caller.getLoc(), newCallee, args);
-      newCaller->setAttr("scop.pe", b.getUnitAttr());
+      newCaller->setAttr("phism.pe", b.getUnitAttr());
 
       LLVM_DEBUG(dbgs() << " * New caller: " << newCaller << '\n');
 
@@ -1102,7 +1110,7 @@ struct SimpleArrayPartitionPass
     FuncOp top = findPhismTop(m);
     if (!top) {
       m.emitRemark() << "No top function found for array partition. Have you "
-                        "forgot to annotate {scop.pe} to callers?\n";
+                        "forgot to annotate {phism.pe} to callers?\n";
       return;
     }
 
@@ -1113,7 +1121,7 @@ struct SimpleArrayPartitionPass
 
     SmallVector<CallOp> callers;
     top.walk([&](CallOp caller) {
-      if (caller->hasAttr("scop.pe"))
+      if (caller->hasAttr("phism.pe"))
         callers.push_back(caller);
     });
 

@@ -80,7 +80,7 @@ def OutlineProcessElement : Pass<"outline-proc-elem", "::mlir::ModuleOp"> {
   let summary = "Outline process elements";
   let constructor = "phism::createOutlineProcessElementPass()";
   let options = [
-    Option<"maxTripcount", "max-tripcount", "int", /*default=*/"0", "Max trip count for a tile loop.">;
+    Option<"maxTripcount", "max-tripcount", "int", /*default=*/"0", "Max trip count for a tile loop.">
   ];
 }
 

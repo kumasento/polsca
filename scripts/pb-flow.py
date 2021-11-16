@@ -62,7 +62,7 @@ def main():
         "--tile-sizes", nargs="+", default=[], help="Tile sizes for each loop nest."
     )
     parser.add_argument(
-        "--array-partition", action="store_true", help="Use array partition."
+        "--array-partition", "--ap", action="store_true", help="Use array partition."
     )
     parser.add_argument("--skip-vitis", action="store_true", help="Don't run Vitis.")
     parser.add_argument(
