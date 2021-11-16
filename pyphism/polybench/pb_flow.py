@@ -1051,6 +1051,7 @@ class PbFlow:
             cmd=" ".join(
                 [
                     self.get_program_abspath("mlir-opt"),
+                    "-convert-math-to-llvm",
                     "-lower-affine",
                     "-convert-scf-to-std",
                     "-convert-memref-to-llvm",
@@ -1165,7 +1166,10 @@ class PbFlow:
         )
         log_file = self.cur_file.replace(".mlir", ".log")
 
-        passes = ["-fold-scf-if"]
+        passes = [
+            f"-annotate-scop='functions={get_top_func(src_file)}'",
+            "-fold-scf-if",
+        ]
         if self.options.split == "NO_SPLIT":  # The split stmt has applied -reg2mem
             passes += [
                 "-reg2mem",
@@ -1239,8 +1243,12 @@ class PbFlow:
         args = [
             self.get_program_abspath("phism-opt"),
             src_file,
-            f'-loop-transforms="max-span={self.options.max_span}"',
+            # f'-loop-transforms="max-span={self.options.max_span}"',
+            "-affine-loop-unswitching",
+            "-anno-point-loop",
+            "-outline-proc-elem='max-tripcount=10'",
             "-loop-redis-and-merge",
+            "-scop-stmt-inline",
             # "-fold-if" if self.options.coalescing else "",
             # "-demote-bound-to-if" if self.options.coalescing else "",
             # "-fold-if",

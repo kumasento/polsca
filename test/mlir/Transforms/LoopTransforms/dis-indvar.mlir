@@ -11,14 +11,14 @@ func @foo() {
   return
 }
 
-// CHECK:  func @foo__PE0(%[[i:.*]]: index) attributes {scop.pe} 
+// CHECK:  func @foo__PE0(%[[i:.*]]: index) attributes {phism.pe} 
 // CHECK:    affine.for %[[j:.*]] = 0 to 20 {
 // CHECK:      call @S0(%[[i]], %[[j]]) : (index, index) -> ()
-// CHECK:    } {scop.point_loop}
+// CHECK:    } {phism.point_loop}
 
 // CHECK:  func @foo() 
 // CHECK:    affine.for %[[i:.*]] = 0 to 10 {
 // CHECK:      affine.for %[[j:.*]] = 0 to 20 {
-// CHECK:        call @foo__PE0(%[[i]]) {scop.pe} : (index) -> ()
+// CHECK:        call @foo__PE0(%[[i]]) {phism.pe} : (index) -> ()
 // CHECK:      }
-// CHECK:    } {scop.point_loop}
+// CHECK:    } {phism.point_loop}

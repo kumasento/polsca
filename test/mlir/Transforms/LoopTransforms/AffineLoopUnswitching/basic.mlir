@@ -12,8 +12,8 @@ func @foo() {
 }
 
 // CHECK: func @foo() 
-// CHECK:   affine.for %{{.*}} = 0 to 5 
+// CHECK:   affine.for %{{.*}} = 0 to 6 
 // CHECK:     call @S0() 
 // CHECK:     call @S1() 
-// CHECK:   affine.for %{{.*}} = 5 to 10 
+// CHECK:   affine.for %{{.*}} = 6 to 10 
 // CHECK:     call @S0() 
