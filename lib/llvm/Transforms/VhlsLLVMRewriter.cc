@@ -1357,7 +1357,6 @@ struct XilinxRewriteMathInstPass : public ModulePass {
 } // namespace
 
 static void unrollLoop(Loop *loop) {
-  LLVMContext &Context = loop->getHeader()->getContext();
   SmallVector<Metadata *, 4> Args;
 
   // Reserve operand 0 for loop id self reference.
@@ -1366,9 +1365,9 @@ static void unrollLoop(Loop *loop) {
   Args.push_back(TempNode.get());
 
   // Keep the original loop metadata
-  auto id = loop->getLoopID();
-  for (unsigned int i = 1; i < id->getNumOperands(); i++)
-    Args.push_back(id->getOperand(i));
+  if (auto id = loop->getLoopID())
+    for (unsigned int i = 1; i < id->getNumOperands(); i++)
+      Args.push_back(id->getOperand(i));
 
   // Loop unroll
   // TODO: Use a opt arg instead of a constant
@@ -1395,6 +1394,7 @@ struct XilinxUnrollPass : public ModulePass {
   XilinxUnrollPass() : ModulePass(ID) {}
 
   bool runOnModule(Module &M) override {
+    assert(!XlnTop.empty() && "Top function name should be set.");
 
     for (auto &F : M)
       if (F.getName() == XlnTop) {
