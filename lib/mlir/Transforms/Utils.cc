@@ -216,7 +216,7 @@ mlir::Value expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
 static bool hasPeCaller(FuncOp f) {
   bool ret = false;
   f.walk([&](CallOp caller) {
-    if (caller->hasAttr("scop.pe"))
+    if (caller->hasAttr("phism.pe"))
       ret = true;
   });
   return ret;
@@ -273,6 +273,98 @@ void getFunctionsToKeep(ModuleOp m, FuncOp top, SmallPtrSetImpl<FuncOp> &keep) {
   top.walk([&](CallOp caller) {
     keep.erase(cast<FuncOp>(m.lookupSymbol(caller.getCallee())));
   });
+}
+
+static void getArgs(ArrayRef<Operation *> ops, llvm::SetVector<Value> &args) {
+  args.clear();
+
+  llvm::SetVector<Operation *> internalOps;
+  for (Operation *parentOp : ops) {
+    internalOps.insert(parentOp);
+    parentOp->walk([&](Operation *op) { internalOps.insert(op); });
+    parentOp->walk([&](Operation *op) {
+      for (Value operand : op->getOperands()) {
+        if (Operation *defOp = operand.getDefiningOp()) {
+          if (!internalOps.contains(defOp))
+            args.insert(operand);
+        } else if (BlockArgument bArg = operand.dyn_cast<BlockArgument>()) {
+          if (!internalOps.contains(bArg.getOwner()->getParentOp()))
+            args.insert(operand);
+        } else {
+          llvm_unreachable("Operand cannot be handled.");
+        }
+      }
+    });
+  }
+}
+
+static std::pair<FuncOp, BlockAndValueMapping>
+createCallee(MutableArrayRef<Operation *> ops, StringRef calleeName, ModuleOp m,
+             OpBuilder &b) {
+  assert(!ops.empty());
+
+  OpBuilder::InsertionGuard guard(b);
+  b.setInsertionPoint(m.getBody(), std::prev(m.getBody()->end()));
+
+  FunctionType calleeType = b.getFunctionType(llvm::None, llvm::None);
+  FuncOp callee =
+      b.create<FuncOp>(ops.front()->getLoc(), calleeName, calleeType);
+
+  // Initialize the entry block and the return operation.
+  Block *entry = callee.addEntryBlock();
+  b.setInsertionPointToStart(entry);
+  b.create<mlir::ReturnOp>(callee.getLoc());
+  b.setInsertionPointToStart(entry);
+
+  // Grab arguments from the top forOp.
+  llvm::SetVector<Value> args;
+  getArgs(ops, args);
+
+  // Argument mapping for cloning. Also intialize arguments to the entry block.
+  BlockAndValueMapping mapping;
+  for (Value arg : args)
+    mapping.map(arg, entry->addArgument(arg.getType()));
+
+  callee.setType(b.getFunctionType(entry->getArgumentTypes(), llvm::None));
+
+  for (Operation *op : ops)
+    b.clone(*op, mapping);
+
+  return {callee, mapping};
+}
+
+static CallOp createCaller(MutableArrayRef<Operation *> ops, FuncOp callee,
+                           BlockAndValueMapping vmap, OpBuilder &b) {
+  OpBuilder::InsertionGuard g(b);
+
+  // Inversed mapping from callee arguments to values in the source function.
+  BlockAndValueMapping imap = vmap.getInverse();
+
+  SmallVector<Value> args;
+  transform(callee.getArguments(), std::back_inserter(args),
+            [&](Value value) { return imap.lookup(value); });
+
+  // Get function type.
+  assert(!ops.empty());
+  b.setInsertionPoint(ops.front());
+  CallOp caller = b.create<CallOp>(ops.front()->getLoc(), callee, args);
+
+  return caller;
+}
+
+std::pair<Operation *, Operation *>
+outlineFunction(MutableArrayRef<Operation *> ops, StringRef funcName,
+                ModuleOp m) {
+  FuncOp callee;
+  BlockAndValueMapping vmap;
+
+  OpBuilder b(m.getContext());
+  std::tie(callee, vmap) =
+      createCallee(MutableArrayRef<Operation *>(ops), funcName, m, b);
+  CallOp caller =
+      createCaller(MutableArrayRef<Operation *>(ops), callee, vmap, b);
+
+  return {callee, caller};
 }
 
 } // namespace phism

@@ -200,13 +200,13 @@ static bool hasPointLoops(FuncOp f) {
   bool hasPointLoop = false;
   f.walk([&](mlir::AffineForOp forOp) {
     if (!hasPointLoop)
-      hasPointLoop = forOp->hasAttr("scop.point_loop");
+      hasPointLoop = forOp->hasAttr("phism.point_loop");
   });
   return hasPointLoop;
 }
 
 static bool isPointLoop(mlir::AffineForOp forOp) {
-  return forOp->hasAttr("scop.point_loop");
+  return forOp->hasAttr("phism.point_loop");
 }
 
 static void getArgs(Operation *parentOp, llvm::SetVector<Value> &args) {
@@ -319,16 +319,16 @@ static bool greedyLoopExtraction(Operation *op, const int maxSpan, int &startId,
         continue;
 
       mlir::AffineForOp forOp = cast<mlir::AffineForOp>(child);
-      assert(forOp->hasAttr("scop.point_loop") &&
+      assert(forOp->hasAttr("phism.point_loop") &&
              "The forOp to be extracted should be a point loop.");
 
       FuncOp callee;
       BlockAndValueMapping vmap;
 
       std::tie(callee, vmap) = createPointLoopsCallee(forOp, startId, f, b);
-      callee->setAttr("scop.pe", b.getUnitAttr());
+      callee->setAttr("phism.pe", b.getUnitAttr());
       CallOp caller = createPointLoopsCaller(forOp, callee, vmap, b);
-      caller->setAttr("scop.pe", b.getUnitAttr());
+      caller->setAttr("phism.pe", b.getUnitAttr());
 
       startId++;
     }
@@ -449,7 +449,7 @@ static void annotatePointLoops(ValueRange operands, OpBuilder &b) {
       if (forOp) {
         // An affine.for that has its indunction var used by a scop.stmt
         // caller is a point loop.
-        forOp->setAttr("scop.point_loop", b.getUnitAttr());
+        forOp->setAttr("phism.point_loop", b.getUnitAttr());
       }
     } else {
       mlir::AffineApplyOp applyOp =
@@ -520,7 +520,7 @@ static void detectScopPeWithMultipleStmts(ModuleOp m,
     return;
 
   top.walk([&](mlir::CallOp caller) {
-    if (!caller->hasAttr("scop.pe"))
+    if (!caller->hasAttr("phism.pe"))
       return;
 
     FuncOp callee = dyn_cast<FuncOp>(m.lookupSymbol(caller.getCallee()));
@@ -689,7 +689,7 @@ struct RedistributeScopStatementsPass
     OpBuilder b(m.getContext());
 
     // -------------------------------------------------------------------
-    // Step 1: detect the scop.pe callee that has more than one scop.stmt.
+    // Step 1: detect the phism.pe callee that has more than one scop.stmt.
     llvm::SetVector<FuncOp> pes;
     detectScopPeWithMultipleStmts(m, pes);
 
@@ -755,7 +755,7 @@ struct RedistributeScopStatementsPass
 
           mlir::CallOp newCaller =
               b.create<CallOp>(caller.getLoc(), callee, operands);
-          newCaller->setAttr("scop.pe", b.getUnitAttr());
+          newCaller->setAttr("phism.pe", b.getUnitAttr());
         }
       }
 
@@ -1004,7 +1004,7 @@ static LogicalResult loopMergeOnScopStmt(FuncOp f, ModuleOp m, OpBuilder &b) {
 
 namespace {
 
-/// Will only work within scop.pe on scop.stmt to avoid side effects.
+/// Will only work within phism.pe on scop.stmt to avoid side effects.
 struct LoopMergePass
     : public mlir::PassWrapper<LoopMergePass, OperationPass<ModuleOp>> {
 
@@ -1018,7 +1018,7 @@ struct LoopMergePass
       return;
 
     f.walk([&](mlir::CallOp caller) {
-      if (!caller->hasAttr("scop.pe"))
+      if (!caller->hasAttr("phism.pe"))
         return;
       FuncOp pe = dyn_cast<FuncOp>(m.lookupSymbol(caller.getCallee()));
       if (!pe)
@@ -1304,7 +1304,7 @@ struct DemoteBoundToIfPass
 
     SmallVector<FuncOp> worklist;
     m.walk([&](FuncOp f) {
-      if (f->hasAttr("scop.pe"))
+      if (f->hasAttr("phism.pe"))
         worklist.push_back(f);
     });
 
@@ -1352,7 +1352,7 @@ static bool affineLoopUnswitching(FuncOp f) {
     if (!dimExpr)
       return;
 
-    int64_t bound = rhs.getValue();
+    int64_t bound = rhs.getValue() + 1;
 
     // The value that if take should be an affine.for induction variable.
     Value dim = ifOp.getOperand(0);
@@ -1445,6 +1445,120 @@ struct AnnotatePointLoopPass
 std::unique_ptr<mlir::OperationPass<mlir::FuncOp>>
 phism::createAnnotatePointLoopPass() {
   return std::make_unique<AnnotatePointLoopPass>();
+}
+
+/// ----------------------- OutlineProcessElementPass --------------------------
+
+static bool outlineProcessElement(FuncOp f, ModuleOp m, int nextId,
+                                  const int maxTripcount, OpBuilder &b) {
+  auto shouldOutline = [&](mlir::AffineForOp forOp) {
+    if (forOp.getLowerBoundMap().isSingleConstant() &&
+        forOp.getUpperBoundMap().isSingleConstant())
+      if (maxTripcount > 0 &&
+          forOp.getConstantUpperBound() - forOp.getConstantLowerBound() >
+              maxTripcount)
+        return false;
+
+    auto &ops = forOp.getBody()->getOperations();
+    // If there is a single caller to phism.pe, don't outline this.
+    if (ops.size() == 2)
+      if (auto caller = dyn_cast<mlir::CallOp>(ops.front()))
+        if (caller->hasAttr("phism.pe"))
+          return false;
+
+    LLVM_DEBUG(forOp.dump());
+
+    for (Operation &op : *forOp.getBody()) {
+      if (isa<mlir::AffineYieldOp>(op))
+        continue;
+
+      auto loop = dyn_cast<mlir::AffineForOp>(op);
+      // Check if there is any operation that is not a loop
+      if (!loop)
+        return true;
+      // Check if there exists a point_loop sub-loop.
+      if (loop->hasAttr("phism.point_loop"))
+        return true;
+    }
+    return false;
+  };
+
+  std::function<mlir::AffineForOp(mlir::AffineForOp)> findTarget =
+      [&](mlir::AffineForOp forOp) -> mlir::AffineForOp {
+    if (shouldOutline(forOp))
+      return forOp;
+
+    for (Operation &op : *forOp.getBody()) {
+      if (auto loop = dyn_cast<mlir::AffineForOp>(op)) {
+        auto target = findTarget(loop);
+        if (target)
+          return target;
+      }
+    }
+    return nullptr;
+  };
+
+  mlir::AffineForOp target = nullptr;
+  for (Block &block : f) {
+    for (Operation &op : block) {
+      if (auto forOp = dyn_cast<mlir::AffineForOp>(op)) {
+        target = findTarget(forOp);
+        if (target)
+          break;
+      }
+    }
+  }
+
+  // There is no target;
+  if (!target)
+    return false;
+
+  SmallVector<Operation *> ops;
+  transform(target.getBody()->getOperations(), std::back_inserter(ops),
+            [](auto &op) { return &op; });
+  ops.pop_back(); // affine.yield
+
+  std::string funcName =
+      std::string(f.getName()) + "__PE" + std::to_string(nextId);
+  auto p = outlineFunction(ops, funcName, m);
+  p.first->setAttr("phism.pe", b.getUnitAttr());
+  p.second->setAttr("phism.pe", b.getUnitAttr());
+
+  std::reverse(ops.begin(), ops.end());
+  for (Operation *op : ops)
+    op->erase();
+
+  LLVM_DEBUG(dbgs() << "Outlined for-loop: \n" << target << "\n\n");
+  LLVM_DEBUG(dbgs() << "Callee: \n" << (*p.first) << "\n\n");
+
+  return true;
+}
+
+namespace {
+
+/// Outline the loop body if there is a point loop or any operations other
+/// than loops.
+struct OutlineProcessElementPass
+    : public ::phism::OutlineProcessElementBase<OutlineProcessElementPass> {
+  void runOnOperation() override {
+    ModuleOp m = getOperation();
+    OpBuilder b(m.getContext());
+
+    int nextId = 0;
+    m.walk([&](FuncOp f) {
+      if (f->hasAttr("phism.pe"))
+        return;
+      LLVM_DEBUG(dbgs() << "Before extraction: --- \n\n" << f << "\n\n");
+      while (outlineProcessElement(f, m, nextId, maxTripcount, b))
+        ++nextId;
+    });
+  }
+};
+} // namespace
+
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+phism::createOutlineProcessElementPass() {
+  return std::make_unique<OutlineProcessElementPass>();
 }
 
 void phism::registerLoopTransformPasses() {

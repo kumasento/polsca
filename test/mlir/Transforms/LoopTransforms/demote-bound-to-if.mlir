@@ -8,7 +8,7 @@
 #map2 = affine_map<(d0)[s0, s1] -> (s0 * 32, s1 * 32 + 2, d0 * 2 + 1, d0 * 4 - s1 * 32 - 31)>
 #map3 = affine_map<(d0)[s0, s1, s2] -> (s1 * 32 + 32, d0 * 4 - s2 * 32 + 3, s0 * 2 + s2 * 32 + 28, d0 * 2 + s0)>
 
-func @jacobi(%arg0: index, %arg1: index, %arg2: index, %arg3: index, %arg4: memref<32x32xf32>) attributes {scop.pe} {
+func @jacobi(%arg0: index, %arg1: index, %arg2: index, %arg3: index, %arg4: memref<32x32xf32>) attributes {phism.pe} {
   affine.for %arg5 = max #map0()[%arg1, %arg3, %arg2] to min #map1()[%arg1, %arg0, %arg2, %arg3] {
     affine.for %arg6 = max #map2(%arg5)[%arg3, %arg2] to min #map3(%arg5)[%arg1, %arg3, %arg2] {
       %0 = affine.load %arg4[%arg5, %arg6] : memref<32x32xf32>
