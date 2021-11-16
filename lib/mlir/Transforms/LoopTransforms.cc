@@ -464,6 +464,7 @@ static void annotatePointLoops(ValueRange operands, OpBuilder &b) {
 
 /// Annotate loops in the dst to indicate whether they are point/tile loops.
 /// Should only call this after -canonicalize.
+/// TODO: DEPRECATED
 /// TODO: Support handling index calculation, e.g., jacobi-1d.
 static void annotatePointLoops(FuncOp f, OpBuilder &b) {
   ModuleOp m = f->getParentOfType<ModuleOp>();
@@ -1391,6 +1392,8 @@ static bool affineLoopUnswitching(FuncOp f) {
   return changed;
 }
 
+/// ----------------------- AffineLoopUnswitchingPass --------------------------
+
 namespace {
 struct AffineLoopUnswitchingPass
     : public ::phism::AffineLoopUnswitchingBase<AffineLoopUnswitchingPass> {
@@ -1405,6 +1408,43 @@ struct AffineLoopUnswitchingPass
 std::unique_ptr<mlir::OperationPass<mlir::FuncOp>>
 phism::createAffineLoopUnswitchingPass() {
   return std::make_unique<AffineLoopUnswitchingPass>();
+}
+
+/// ------------------------- AnnotatePointLoopPass ----------------------------
+
+namespace {
+struct AnnotatePointLoopPass
+    : public ::phism::AnnotatePointLoopBase<AnnotatePointLoopPass> {
+  void runOnFunction() override {
+    FuncOp f = getFunction();
+    ModuleOp m = f->getParentOfType<ModuleOp>();
+    OpBuilder b(f.getContext());
+
+    f.walk([&](CallOp caller) {
+      auto callee = cast<FuncOp>(m.lookupSymbol(caller.getCallee()));
+      if (callee->hasAttr("scop.stmt")) {
+        for (auto operand : caller.getOperands()) {
+          if (isForInductionVar(operand)) {
+            auto forOp = getForInductionVarOwner(operand);
+
+            // Besides being used by a scop.stmt caller, an affine.for can be a
+            // point loop if it is not purely constantly bounded.
+            if (forOp.getLowerBoundMap().isSingleConstant() &&
+                forOp.getUpperBoundMap().isSingleConstant())
+              continue;
+
+            forOp->setAttr("phism.point_loop", b.getUnitAttr());
+          }
+        }
+      }
+    });
+  }
+};
+} // namespace
+
+std::unique_ptr<mlir::OperationPass<mlir::FuncOp>>
+phism::createAnnotatePointLoopPass() {
+  return std::make_unique<AnnotatePointLoopPass>();
 }
 
 void phism::registerLoopTransformPasses() {
