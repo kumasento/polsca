@@ -122,8 +122,8 @@ static MemRefType getTiledMemRefType(const TileInfo &tileInfo,
                                      bool tileOnly = false,
                                      bool flatten = false) {
   MemRefType src = tileInfo.memref.getType().cast<MemRefType>();
-  assert(src.getAffineMaps().empty() &&
-         "We don't support memref with affine maps.");
+  assert(src.getLayout().isIdentity() &&
+         "We don't support memref with non-identity affine map.");
 
   SmallVector<int64_t> dstShape;
   auto srcShape = src.getShape();
