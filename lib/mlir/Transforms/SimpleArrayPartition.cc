@@ -1152,6 +1152,7 @@ struct SimpleArrayPartitionPass
 
     // Tile the top function.
     FuncOp newTop = tileTopFunction(top, memrefs, tiling, flatten, m, b);
+    // newTop->setAttrs(top->getAttrs());
 
     LLVM_DEBUG(dbgs() << "------> Clean up created auxilliary functions.\n");
 
@@ -1178,25 +1179,60 @@ struct SimpleArrayPartitionPass
         }
       }
     }
+
+    if (genMain) {
+      FuncOp orig = dyn_cast<FuncOp>(m.lookupSymbol("main"));
+      if (orig)
+        orig.erase();
+
+      Location loc = newTop.getLoc();
+      b.setInsertionPointAfter(newTop);
+
+      StringRef name = "main";
+      FunctionType ty = b.getFunctionType({}, {b.getIntegerType(32)});
+      FuncOp main = b.create<FuncOp>(loc, name, ty);
+
+      Block *entry = main.addEntryBlock();
+      b.setInsertionPointToStart(entry);
+
+      b.create<mlir::ReturnOp>(
+          loc, b.create<arith::ConstantIntOp>(loc, 0, 32).getResult());
+
+      // Iterate every top argument.
+      b.setInsertionPointToStart(entry);
+
+      SmallVector<Value> operands;
+      for (auto it : enumerate(newTop.getArguments())) {
+        Value arg = it.value();
+        unsigned index = it.index();
+        Type ty = arg.getType();
+        if (auto intTy = ty.dyn_cast<IntegerType>()) {
+          IntegerAttr attr = newTop.getArgAttr(index, "scop.constant_value")
+                                 .dyn_cast<IntegerAttr>();
+          Value operand = b.create<arith::ConstantIntOp>(loc, attr.getInt(), 32)
+                              .getResult();
+          operands.push_back(operand);
+        } else if (auto floatTy = ty.dyn_cast<FloatType>()) {
+          Value operand = b.create<arith::ConstantFloatOp>(
+              loc, llvm::APFloat(1.0), floatTy);
+          operands.push_back(operand);
+        } else if (auto memTy = ty.dyn_cast<MemRefType>()) {
+          Value operand = b.create<memref::AllocaOp>(loc, memTy);
+          operands.push_back(operand);
+        }
+      }
+
+      LLVM_DEBUG({
+        dbgs() << "List of operands:\n";
+        for (Value operand : operands)
+          dbgs() << " * " << operand << "\n";
+      });
+
+      b.create<CallOp>(loc, newTop, operands);
+    }
   }
 };
 } // namespace
-
-// void phism::registerSimpleArrayPartitionPasses() {
-// TODO: need to deprecate this.
-// PassPipelineRegistration<ArrayPartitionPipelineOptions>(
-//     "simple-array-partition", "Partition arrays",
-//     [&](OpPassManager &pm, const ArrayPartitionPipelineOptions &options) {
-//       pm.addPass(std::make_unique<ArrayPartitionPass>(options));
-//       pm.addPass(createCanonicalizerPass());
-//     });
-// PassPipelineRegistration<ArrayPartitionPipelineOptions>(
-//     "array-partition", "Partition arrays",
-//     [&](OpPassManager &pm, const ArrayPartitionPipelineOptions &options) {
-//       pm.addPass(std::make_unique<ArrayPartitionPass>(options));
-//       pm.addPass(createCanonicalizerPass());
-//     });
-// }
 
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 phism::createSimpleArrayPartitionPass() {

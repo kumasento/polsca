@@ -39,6 +39,7 @@ def SimpleArrayPartition : Pass<"simple-array-partition", "::mlir::ModuleOp"> {
   let options = [
     Option<"dumpFile", "dump-file", "bool", /*default=*/"false", "Whether to dump file.">,
     Option<"flatten", "flatten", "bool", /*default=*/"false", "Whether to flatten partitioned dims.">,
+    Option<"genMain", "gen-main", "bool", /*default=*/"false", "Generate a dummy main function.">
   ];
 }
 

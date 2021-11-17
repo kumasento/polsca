@@ -19,6 +19,9 @@ def main():
         "-e", "--examples", nargs="+", default=[], help="Polybench examples to run."
     )
     parser.add_argument(
+        "--excl", nargs="+", default=[], help="Polybench examples not to run."
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="Only produce the commands to run."
     )
     parser.add_argument("-d", "--debug", action="store_true", help="Enable debug mode")
