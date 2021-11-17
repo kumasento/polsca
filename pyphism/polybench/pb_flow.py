@@ -12,7 +12,7 @@ import subprocess
 import traceback
 import xml.etree.ElementTree as ET
 from collections import OrderedDict, defaultdict, namedtuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from multiprocessing import Pool
 from timeit import default_timer as timer
 from typing import Any, Dict, List, Optional, Tuple
@@ -90,6 +90,7 @@ class PbFlowOptions:
     work_dir: str = ""
     dry_run: bool = False
     examples: List[str] = POLYBENCH_EXAMPLES
+    excl: List[str] = field(default_factory=list)
     split: str = "NO_SPLIT"  # other options: "SPLIT", "HEURISTIC"
     loop_transforms: bool = False
     coalescing: bool = False  # enable loop coalescing
@@ -351,7 +352,7 @@ def process_pb_flow_result_dir(d: str, options: PbFlowOptions):
     pattern = "{}/**/*.h".format(d)
     for src_header_file in glob.glob(pattern, recursive=True):
         basename = os.path.basename(src_header_file)[:-2]  # skip '.h'
-        if basename in options.examples:
+        if basename in options.examples and basename not in options.excl:
             records.append(
                 process_directory(os.path.abspath(os.path.dirname(src_header_file)))
             )
@@ -688,7 +689,9 @@ def comment_out_cosim(file: str):
 # ----------------------- Benchmark runners ---------------------------
 
 
-def discover_examples(d: str, examples: Optional[List[str]] = None) -> List[str]:
+def discover_examples(
+    d: str, examples: Optional[List[str]] = None, excludes: Optional[List[str]] = None
+) -> List[str]:
     """Find examples in the given directory."""
     if not examples:
         examples = POLYBENCH_EXAMPLES
@@ -698,6 +701,7 @@ def discover_examples(d: str, examples: Optional[List[str]] = None) -> List[str]
             root
             for root, _, _ in os.walk(d)
             if os.path.basename(root).lower() in examples
+            and os.path.basename(root).lower() not in excludes
         ]
     )
 
@@ -879,9 +883,9 @@ class PbFlow:
                 .loop_transforms()
                 .sanity_check()
                 .array_partition()
-                .sanity_check()
+                .sanity_check(no_diff=True)
                 .scop_stmt_inline()
-                .sanity_check()
+                .sanity_check(no_diff=True)
                 .lower_scf()
                 .lower_llvm()
                 .vitis_opt()
@@ -1039,7 +1043,7 @@ class PbFlow:
         )
         return self
 
-    def sanity_check(self):
+    def sanity_check(self, no_diff=False):
         """Sanity check the current file."""
         if not self.options.sanity_check:
             return self
@@ -1074,10 +1078,11 @@ class PbFlow:
             stderr=open(out_file, "w"),
         )
 
-        self.run_command(
-            cmd_list=["diff", self.get_golden_out_file(), out_file],
-            stdout=open(out_file.replace(".out", ".diff"), "w"),
-        )
+        if not no_diff:
+            self.run_command(
+                cmd_list=["diff", self.get_golden_out_file(), out_file],
+                stdout=open(out_file.replace(".out", ".diff"), "w"),
+            )
 
         return self
 
@@ -1284,7 +1289,7 @@ class PbFlow:
         args = [
             self.get_program_abspath("phism-opt"),
             src_file,
-            '-simple-array-partition="dump-file=1 flatten=1"',
+            '-simple-array-partition="dump-file=1 flatten=1 gen-main=1"',
             "-canonicalize",
             "-debug-only=array-partition",
         ]
@@ -1751,7 +1756,9 @@ def pb_flow_runner(options: PbFlowOptions, dump_report: bool = True):
             functools.partial(
                 pb_flow_process, work_dir=options.work_dir, options=options
             ),
-            discover_examples(options.work_dir, examples=options.examples),
+            discover_examples(
+                options.work_dir, examples=options.examples, excludes=options.excl
+            ),
         )
     end = timer()
     print("Elapsed time: {:.6f} sec".format(end - start))
