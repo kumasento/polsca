@@ -64,46 +64,18 @@ class PhismRunner:
         if not os.path.isdir(self.options.work_dir):
             os.makedirs(self.options.work_dir, exist_ok=True)
 
-        # Copy the source file and its subdirectories.
-        source_dir = os.path.dirname(self.options.source_file)
-        shutil.copytree(source_dir, self.options.work_dir, dirs_exist_ok=True)
+        # TODO: here we only copy if the source_dir is not set.
+        if not self.options.source_dir:
+            # Copy the source file and its subdirectories.
+            source_dir = os.path.dirname(self.options.source_file)
+            shutil.copytree(source_dir, self.options.work_dir, dirs_exist_ok=True)
 
     def setup_logger(self):
         """Setup self.logger."""
-        self.logger = logging.getLogger("phism-runner")
-        self.logger.setLevel(logging.DEBUG)
-
         log_file = os.path.join(
             self.options.work_dir, f"phism-runner.{helper.get_timestamp()}.log"
         )
-        if os.path.isfile(log_file):
-            os.remove(log_file)
-
-        # File handler
-        fh = logging.FileHandler(log_file)
-        fh.setFormatter(
-            logging.Formatter("[%(asctime)s][%(name)s][%(levelname)s] %(message)s")
-        )
-        fh.setLevel(logging.DEBUG)
-        self.logger.addHandler(fh)
-
-        # Console handler
-        ch = logging.StreamHandler()
-        ch.setFormatter(
-            colorlog.ColoredFormatter(
-                "%(log_color)s[%(asctime)s][%(name)s][%(levelname)s]%(reset)s"
-                + " %(message_log_color)s%(message)s",
-                log_colors={
-                    "DEBUG": "cyan",
-                    "INFO": "green",
-                    "WARNING": "yellow",
-                    "ERROR": "red",
-                    "CRITICAL": "red,bg_white",
-                },
-                secondary_log_colors={"message": {"ERROR": "red", "CRITICAL": "red"}},
-            )
-        )
-        self.logger.addHandler(ch)
+        self.logger = helper.get_logger("phism-runner", log_file)
 
     def run(self):
         self.logger.info("Started phism-runner ...")
@@ -267,7 +239,7 @@ class PhismRunner:
 
         return self
 
-    def polygeist_compile_c(self):
+    def polygeist_compile_c(self, flags: Optional[List[str]] = None):
         """Compile C code to MLIR using mlir-clang."""
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(".c", ".mlir")
 
@@ -293,6 +265,7 @@ class PhismRunner:
                         "include",
                     ),
                 ]
+                + (flags if flags else [])
             ),
             stdout=open(self.cur_file, "w"),
             shell=True,

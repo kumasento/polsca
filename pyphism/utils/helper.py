@@ -1,11 +1,13 @@
 """ Helper functions. """
-
 import functools
 import json
+import logging
 import os
 import subprocess
 import time
 from typing import List, Optional
+
+import colorlog
 
 # ------------------------- Operating files --------------------
 
@@ -139,3 +141,48 @@ def get_param_names(func_name: str, src_file: str, clang_path: str):
         lambda x: x["kind"] == "ParmVarDecl", func_name_decl["inner"]
     )
     return [decl["name"] for decl in parm_var_decls]
+
+
+# -------------------------- Others --------------------------------
+
+
+def get_project_root():
+    """Get the root directory of the project."""
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+def get_logger(name: str, log_file: str, console: bool = True) -> logging.Logger:
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.DEBUG)
+
+    if os.path.isfile(log_file):
+        os.remove(log_file)
+
+    # File handler
+    fh = logging.FileHandler(log_file)
+    fh.setFormatter(
+        logging.Formatter("[%(asctime)s][%(name)s][%(levelname)s] %(message)s")
+    )
+    fh.setLevel(logging.DEBUG)
+    logger.addHandler(fh)
+
+    # Console handler
+    if console:
+        ch = logging.StreamHandler()
+        ch.setFormatter(
+            colorlog.ColoredFormatter(
+                "%(log_color)s[%(asctime)s][%(name)s][%(levelname)s]%(reset)s"
+                + " %(message_log_color)s%(message)s",
+                log_colors={
+                    "DEBUG": "cyan",
+                    "INFO": "green",
+                    "WARNING": "yellow",
+                    "ERROR": "red",
+                    "CRITICAL": "red,bg_white",
+                },
+                secondary_log_colors={"message": {"ERROR": "red", "CRITICAL": "red"}},
+            )
+        )
+        logger.addHandler(ch)
+
+    return logger
