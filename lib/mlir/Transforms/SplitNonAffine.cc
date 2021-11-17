@@ -122,7 +122,9 @@ static CallOp createCaller(MutableArrayRef<Operation *> forOps, FuncOp callee,
   OpBuilder::InsertionGuard g(b);
 
   // Inversed mapping from callee arguments to values in the source function.
-  BlockAndValueMapping imap = vmap.getInverse();
+  BlockAndValueMapping imap;
+  for (auto &it : vmap.getValueMap())
+    imap.map(it.second, it.first);
 
   SmallVector<Value> args;
   transform(callee.getArguments(), std::back_inserter(args),

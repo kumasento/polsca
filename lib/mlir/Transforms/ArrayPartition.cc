@@ -330,8 +330,8 @@ MemRefType MemRefPartition::getPartitionedType() const {
 
   // TODO: could be dangerous if the AffineMaps from the original type is not
   // empty.
-  return MemRefType::get(shape, ty.getElementType(), ty.getAffineMaps(),
-                         ty.getMemorySpace());
+  return MemRefType::Builder(shape, ty.getElementType())
+      .setMemorySpace(ty.getMemorySpace());
 }
 
 struct MemRefToPartition {
