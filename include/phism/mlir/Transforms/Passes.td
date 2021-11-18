@@ -85,4 +85,11 @@ def OutlineProcessElement : Pass<"outline-proc-elem", "::mlir::ModuleOp"> {
   ];
 }
 
+def RewritePloopIndvar : FunctionPass<"rewrite-ploop-indvar"> {
+  let summary = "Rewrite the indvar of point loops.";
+  let constructor = "phism::createRewritePloopIndvarPass()";
+  let options = [
+  ];
+}
+
 #endif

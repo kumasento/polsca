@@ -24,6 +24,8 @@ std::unique_ptr<mlir::OperationPass<mlir::FuncOp>>
 createAnnotatePointLoopPass();
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createOutlineProcessElementPass();
+std::unique_ptr<mlir::OperationPass<mlir::FuncOp>>
+createRewritePloopIndvarPass();
 
 /// Generate the code for registering passes.
 #define GEN_PASS_REGISTRATION

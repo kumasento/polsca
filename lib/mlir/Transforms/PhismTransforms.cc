@@ -24,6 +24,7 @@ void registerAllPhismPasses() {
   registerAffineLoopUnswitchingPass();
   registerAnnotatePointLoopPass();
   registerOutlineProcessElementPass();
+  registerRewritePloopIndvarPass();
 }
 
 } // namespace phism
