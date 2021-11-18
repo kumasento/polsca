@@ -1634,6 +1634,160 @@ phism::createOutlineProcessElementPass() {
   return std::make_unique<OutlineProcessElementPass>();
 }
 
+/// ----------------------- RewritePloopIndvarPass ----------------------------
+
+static bool parseMulAdd(AffineExpr expr, AffineDimExpr &dim,
+                        AffineSymbolExpr &symbol,
+                        AffineConstantExpr &multiplier,
+                        AffineConstantExpr &adder) {
+  if (!expr)
+    return false;
+  auto bin = expr.dyn_cast<AffineBinaryOpExpr>();
+  if (!bin)
+    return false;
+
+  if (bin.getKind() == AffineExprKind::Add) {
+    // Get the adder.
+    bool lhs = true;
+    adder = bin.getRHS().dyn_cast<AffineConstantExpr>();
+    if (!adder) {
+      lhs = false;
+      adder = bin.getLHS().dyn_cast<AffineConstantExpr>();
+    }
+    if (!adder)
+      return false;
+
+    bin = lhs ? bin.getLHS().dyn_cast<AffineBinaryOpExpr>()
+              : bin.getRHS().dyn_cast<AffineBinaryOpExpr>();
+    if (!bin)
+      return false;
+  }
+
+  if (bin.getKind() != AffineExprKind::Mul)
+    return false;
+
+  bool lhs = true;
+  multiplier = bin.getRHS().dyn_cast<AffineConstantExpr>();
+  if (!multiplier) {
+    lhs = false;
+    multiplier = bin.getLHS().dyn_cast<AffineConstantExpr>();
+  }
+
+  AffineExpr dimOrSymbol = lhs ? bin.getLHS() : bin.getRHS();
+  if (dimOrSymbol.isa<AffineDimExpr>())
+    dim = dimOrSymbol.dyn_cast<AffineDimExpr>();
+  else if (dimOrSymbol.isa<AffineSymbolExpr>())
+    symbol = dimOrSymbol.dyn_cast<AffineSymbolExpr>();
+  else
+    return false;
+
+  return true;
+}
+
+namespace {
+struct RewritePloopIndvarPass
+    : public ::phism::RewritePloopIndvarBase<RewritePloopIndvarPass> {
+  bool process(FuncOp f) {
+    bool changed = false;
+
+    f.walk([&](mlir::AffineForOp forOp) {
+      if (changed)
+        return;
+      if (!forOp->hasAttr("phism.point_loop"))
+        return;
+
+      if (forOp.getLowerBoundMap().getNumResults() != 1 ||
+          forOp.getUpperBoundMap().getNumResults() != 1)
+        return;
+
+      auto lbMap = forOp.getLowerBoundMap();
+      auto ubMap = forOp.getUpperBoundMap();
+      if (lbMap.isSingleConstant() || ubMap.isSingleConstant())
+        return;
+
+      auto lb = lbMap.getResult(0), ub = ubMap.getResult(0);
+      auto diff = (ub - lb).dyn_cast<AffineConstantExpr>();
+      if (!diff)
+        return;
+
+      // Assuming lb is just a multiple of d0 or s0.
+      if (!lb.isFunctionOfDim(0) && !lb.isFunctionOfSymbol(0))
+        return;
+
+      // Now we can start rewrite.
+      OpBuilder b(f.getContext());
+      b.setInsertionPoint(forOp);
+
+      // The new lower bound and upper bound are the same as the original except
+      // the multiplier term.
+      AffineDimExpr lDim = nullptr, uDim = nullptr;
+      AffineSymbolExpr lSymbol = nullptr, uSymbol = nullptr;
+      AffineConstantExpr lMultiplier = nullptr, uMultiplier = nullptr;
+      AffineConstantExpr lAdder = nullptr, uAdder = nullptr;
+
+      if (!parseMulAdd(lb, lDim, lSymbol, lMultiplier, lAdder) ||
+          !parseMulAdd(ub, uDim, uSymbol, uMultiplier, uAdder))
+        return;
+
+      if (lDim && (!uDim || uDim.getPosition() != lDim.getPosition()))
+        return;
+      if (lSymbol &&
+          (!uSymbol || uSymbol.getPosition() != lSymbol.getPosition()))
+        return;
+      if ((lDim && lSymbol) || (!lDim && !lSymbol))
+        return;
+      if (lMultiplier.getValue() != uMultiplier.getValue())
+        return;
+
+      AffineExpr term;
+      if (lDim)
+        term = lDim * lMultiplier;
+      else
+        term = lSymbol * lMultiplier;
+      auto newForOp = b.create<mlir::AffineForOp>(
+          forOp.getLoc(), lAdder ? lAdder.getValue() : 0L,
+          uAdder ? uAdder.getValue() : 0L);
+      b.setInsertionPointToStart(newForOp.getBody());
+
+      SmallVector<Value> operands{forOp.getLowerBoundOperands().front(),
+                                  newForOp.getInductionVar()};
+      if (!lDim)
+        std::swap(operands[0], operands[1]);
+
+      auto indvar = b.create<mlir::AffineApplyOp>(
+          forOp.getLoc(),
+          AffineMap::get(lbMap.getNumDims() + 1, lbMap.getNumSymbols(),
+                         term + b.getAffineDimExpr(lDim ? 1 : 0)),
+          operands);
+
+      BlockAndValueMapping vmap;
+      vmap.map(forOp.getInductionVar(), indvar);
+
+      for (auto &op : *forOp.getBody())
+        if (!isa<mlir::AffineYieldOp>(&op))
+          b.clone(op, vmap);
+
+      forOp.erase();
+
+      changed = true;
+    });
+
+    return changed;
+  }
+
+  void runOnFunction() override {
+    FuncOp f = getFunction();
+    while (process(f))
+      ;
+  }
+};
+} // namespace
+
+std::unique_ptr<mlir::OperationPass<mlir::FuncOp>>
+phism::createRewritePloopIndvarPass() {
+  return std::make_unique<RewritePloopIndvarPass>();
+}
+
 void phism::registerLoopTransformPasses() {
   // PassRegistration<AnnotatePointLoopsPass>(
   //     "annotate-point-loops", "Annotate loops with point/tile info.");
