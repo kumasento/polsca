@@ -49,7 +49,96 @@ static Value getValue(const AffineMap &avm, OperandRange operands,
   return nullptr;
 }
 
-static LogicalResult simplifyFloorDivAccess(Operation *op) {
+/// Case #1 - (B * x) floordiv B -> B
+static AffineExpr
+simplifyFloorDivForSameMultiplier(AffineExpr result, const AffineValueMap &avm,
+                                  SmallVectorImpl<Value> &dims,
+                                  MLIRContext *ctx) {
+  auto expr = result.dyn_cast<AffineBinaryOpExpr>();
+  if (!expr)
+    return nullptr;
+  if (expr.getKind() != AffineExprKind::FloorDiv)
+    return nullptr;
+
+  AffineConstantExpr denom = expr.getRHS().dyn_cast<AffineConstantExpr>();
+  if (!denom)
+    return nullptr;
+
+  Value dstIndex;
+  if (auto dim = expr.getLHS().dyn_cast<AffineDimExpr>())
+    dstIndex = avm.getOperand(dim.getPosition());
+  else if (auto symbol = expr.getLHS().dyn_cast<AffineSymbolExpr>())
+    dstIndex = avm.getOperand(symbol.getPosition() + avm.getNumDims());
+
+  if (!dstIndex)
+    return nullptr;
+  if (!isForInductionVar(dstIndex))
+    return nullptr;
+
+  auto forOp = getForInductionVarOwner(dstIndex);
+  auto lbMap = filterExtraConstantResults(forOp.getLowerBoundMap());
+  auto ubMap = filterExtraConstantResults(forOp.getUpperBoundMap());
+
+  if (lbMap.getNumResults() != ubMap.getNumResults() ||
+      lbMap.getNumResults() != 1)
+    return nullptr;
+  if (lbMap.getNumDims() != ubMap.getNumDims() ||
+      lbMap.getNumSymbols() != ubMap.getNumSymbols() ||
+      lbMap.getNumSymbols() + lbMap.getNumDims() != 1)
+    return nullptr;
+
+  LLVM_DEBUG(dbgs() << "To replace: " << dstIndex << "\n");
+
+  AffineExpr newLbExpr =
+      simplifyAffineExpr(lbMap.getResult(0).floorDiv(denom), lbMap.getNumDims(),
+                         lbMap.getNumSymbols());
+  AffineExpr newUbExpr =
+      simplifyAffineExpr((ubMap.getResult(0) - 1).floorDiv(denom),
+                         ubMap.getNumDims(), ubMap.getNumSymbols());
+  LLVM_DEBUG(dbgs() << "New LB: " << newLbExpr << '\n');
+  LLVM_DEBUG(dbgs() << "New UB: " << newUbExpr << '\n');
+
+  Value lbSrcIndex = getValue(lbMap, forOp.getLowerBoundOperands(), newLbExpr);
+  Value ubSrcIndex = getValue(ubMap, forOp.getUpperBoundOperands(), newUbExpr);
+  if (!lbSrcIndex || lbSrcIndex != ubSrcIndex)
+    return nullptr;
+
+  AffineExpr newExpr = getAffineDimExpr(dims.size(), ctx);
+  dims.push_back(lbSrcIndex);
+  return newExpr;
+}
+
+/// Match and replace x floordiv B if x is within 0 to B
+static AffineExpr simplifyFloorDivIfWithinBound(AffineExpr result,
+                                                const AffineValueMap &avm,
+                                                MLIRContext *ctx) {
+  llvm::DenseMap<AffineExpr, AffineExpr> replacement;
+  for (auto p : enumerate(avm.getOperands())) {
+    Value operand = p.value();
+    if (!isForInductionVar(operand))
+      continue;
+    auto forOp = getForInductionVarOwner(operand);
+    if (!forOp.getLowerBoundMap().isSingleConstant() ||
+        !forOp.getLowerBoundMap().isSingleConstant())
+      continue;
+
+    auto lb = forOp.getLowerBoundMap().getSingleConstantResult();
+    auto ub = forOp.getUpperBoundMap().getSingleConstantResult();
+
+    if (p.index() >= avm.getNumDims())
+      continue;
+    if (lb < 0)
+      continue;
+    AffineExpr pattern = getAffineDimExpr(p.index(), ctx)
+                             .floorDiv(getAffineConstantExpr(ub, ctx));
+    LLVM_DEBUG(dbgs() << " -> Patter to replace: " << pattern << "\n");
+    replacement.insert({pattern, getAffineConstantExpr(0, ctx)});
+  }
+
+  return result.replace(replacement);
+}
+
+static LogicalResult simplifyPartitionAccess(Operation *op) {
   MLIRContext *ctx = op->getContext();
 
   MemRefAccess access(op);
@@ -68,60 +157,17 @@ static LogicalResult simplifyFloorDivAccess(Operation *op) {
   for (unsigned i = 0; i < avm.getNumSymbols(); ++i)
     symbols.push_back(avm.getOperand(i + avm.getNumDims()));
 
+  // Simplify per result of the input affine map.
   for (unsigned i = 0; i < am.getNumResults(); ++i) {
-    AffineExpr result = am.getResult(i);
-    if (auto expr = result.dyn_cast<AffineBinaryOpExpr>()) {
-      if (expr.getKind() != AffineExprKind::FloorDiv)
-        continue;
-
-      AffineConstantExpr denom = expr.getRHS().dyn_cast<AffineConstantExpr>();
-      if (!denom)
-        continue;
-
-      Value dstIndex;
-      if (auto dim = expr.getLHS().dyn_cast<AffineDimExpr>())
-        dstIndex = avm.getOperand(dim.getPosition());
-      else if (auto symbol = expr.getLHS().dyn_cast<AffineSymbolExpr>())
-        dstIndex = avm.getOperand(symbol.getPosition() + am.getNumDims());
-
-      if (!dstIndex)
-        continue;
-      if (!isForInductionVar(dstIndex))
-        continue;
-
-      auto forOp = getForInductionVarOwner(dstIndex);
-      auto lbMap = filterExtraConstantResults(forOp.getLowerBoundMap());
-      auto ubMap = filterExtraConstantResults(forOp.getUpperBoundMap());
-
-      if (lbMap.getNumResults() != ubMap.getNumResults() ||
-          lbMap.getNumResults() != 1)
-        continue;
-      if (lbMap.getNumDims() != ubMap.getNumDims() ||
-          lbMap.getNumSymbols() != ubMap.getNumSymbols() ||
-          lbMap.getNumSymbols() + lbMap.getNumDims() != 1)
-        continue;
-
-      LLVM_DEBUG(dbgs() << "To replace: " << dstIndex << "\n");
-
-      AffineExpr newLbExpr =
-          simplifyAffineExpr(lbMap.getResult(0).floorDiv(denom),
-                             lbMap.getNumDims(), lbMap.getNumSymbols());
-      AffineExpr newUbExpr =
-          simplifyAffineExpr((ubMap.getResult(0) - 1).floorDiv(denom),
-                             ubMap.getNumDims(), ubMap.getNumSymbols());
-      LLVM_DEBUG(dbgs() << "New LB: " << newLbExpr << '\n');
-      LLVM_DEBUG(dbgs() << "New UB: " << newUbExpr << '\n');
-
-      Value lbSrcIndex =
-          getValue(lbMap, forOp.getLowerBoundOperands(), newLbExpr);
-      Value ubSrcIndex =
-          getValue(ubMap, forOp.getUpperBoundOperands(), newUbExpr);
-      if (!lbSrcIndex || lbSrcIndex != ubSrcIndex)
-        continue;
-
-      results[i] = getAffineDimExpr(dims.size(), ctx);
-      dims.push_back(lbSrcIndex);
-    }
+    // Case #1 - (B * x) floordiv B -> B
+    if (AffineExpr expr =
+            simplifyFloorDivForSameMultiplier(results[i], avm, dims, ctx))
+      results[i] = expr;
+    // Case #2 - x floordiv B if x is within [0, B)
+    // This is actually a special case of the version above. We distinguish them
+    // just for simpler processing.
+    if (AffineExpr expr = simplifyFloorDivIfWithinBound(results[i], avm, ctx))
+      results[i] = expr;
   }
 
   SmallVector<Value> operands{op->getOperand(0)};
@@ -153,7 +199,7 @@ struct SimplifyPartitionAccessPass
       // TODO: memref load/store
       if (!isa<mlir::AffineReadOpInterface, mlir::AffineWriteOpInterface>(op))
         return;
-      if (failed(simplifyFloorDivAccess(op)))
+      if (failed(simplifyPartitionAccess(op)))
         return signalPassFailure();
     });
   }

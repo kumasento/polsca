@@ -13,6 +13,12 @@ def main():
         "--jobs", "-j", default=1, type=int, help="Number of concucrrent jobs."
     )
     parser.add_argument(
+        "--polymer", "-p", action="store_true", help="Whether to run polymer."
+    )
+    parser.add_argument(
+        "--tile-sizes", nargs="+", default=[], help="Tile sizes for each loop nest."
+    )
+    parser.add_argument(
         "--includes",
         "--incls",
         nargs="+",
@@ -25,6 +31,18 @@ def main():
         nargs="+",
         default=[],
         help="MachSuite examples not to run.",
+    )
+    parser.add_argument(
+        "-c", "--cosim", action="store_true", help="Enable co-simulation"
+    )
+    parser.add_argument(
+        "--loop-transforms",
+        "--lt",
+        action="store_true",
+        help="Enable loop transforms",
+    )
+    parser.add_argument(
+        "--array-partition", "--ap", action="store_true", help="Use array partition."
     )
     args = parser.parse_args()
 

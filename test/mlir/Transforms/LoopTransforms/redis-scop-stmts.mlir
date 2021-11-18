@@ -34,7 +34,7 @@ func @two_stmts(%A: memref<32xf32>, %B: memref<32xf32>) {
 // CHECK: call @two_stmts__cloned_for__S0(%[[ARG0]])
 // CHECK: call @two_stmts__cloned_for__S1(%[[ARG1]])
 
-func @top(%A : memref<32xf32>, %B : memref<32xf32>) {
+func @top(%A : memref<32xf32>, %B : memref<32xf32>) attributes {phism.top} {
   call @two_stmts(%A, %B) {phism.pe} : (memref<32xf32>, memref<32xf32>) -> ()
   return 
 }

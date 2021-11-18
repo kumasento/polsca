@@ -28,12 +28,15 @@
 #include "mlir/Transforms/Utils.h"
 
 #include "llvm/ADT/SetVector.h"
+#include "llvm/Support/Debug.h"
 
 #include <deque>
 
 using namespace mlir;
 using namespace llvm;
 using namespace phism;
+
+#define DEBUG_TYPE "extract-top"
 
 static constexpr const char *SCOP_CONSTANT_VALUE = "scop.constant_value";
 
@@ -81,7 +84,7 @@ static void annotateConstantArgs(FuncOp f, ModuleOp m, OpBuilder &b) {
   OpBuilder::InsertionGuard g(b);
 
   // Find the caller for f.
-  mlir::CallOp caller;
+  mlir::CallOp caller = nullptr;
   m.walk([&](mlir::CallOp callOp) {
     if (callOp.getCallee() == f.getName()) {
       assert(!caller &&
@@ -89,6 +92,13 @@ static void annotateConstantArgs(FuncOp f, ModuleOp m, OpBuilder &b) {
       caller = callOp;
     }
   });
+
+  if (!caller) {
+    LLVM_DEBUG(
+        dbgs()
+        << "Failed to annotate constant args since a caller cannot be found.");
+    return;
+  }
 
   for (auto arg : enumerate(f.getArguments())) {
     auto val = caller.getOperand(arg.index());

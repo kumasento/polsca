@@ -517,7 +517,7 @@ static void getAllScopStmts(FuncOp func, llvm::SetVector<FuncOp> &stmts,
 
 static void detectScopPeWithMultipleStmts(ModuleOp m,
                                           llvm::SetVector<mlir::FuncOp> &pes) {
-  FuncOp top = getTopFunction(m);
+  FuncOp top = findPhismTop(m);
   if (!top)
     return;
 
@@ -1015,7 +1015,7 @@ struct LoopMergePass
     OpBuilder b(m.getContext());
 
     SmallVector<FuncOp> pes;
-    FuncOp f = getTopFunction(m);
+    FuncOp f = findPhismTop(m);
     if (!f)
       return;
 
@@ -1522,6 +1522,9 @@ phism::createAnnotatePointLoopPass() {
 static bool outlineProcessElement(FuncOp f, ModuleOp m, int nextId,
                                   const int maxTripcount, OpBuilder &b) {
   auto shouldOutline = [&](mlir::AffineForOp forOp) {
+    if (forOp->hasAttr("scop.non_affine_access"))
+      return false;
+
     if (forOp.getLowerBoundMap().isSingleConstant() &&
         forOp.getUpperBoundMap().isSingleConstant())
       if (maxTripcount > 0 &&

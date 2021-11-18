@@ -3,6 +3,7 @@ import functools
 import json
 import logging
 import os
+import pprint
 import subprocess
 import time
 from typing import List, Optional
@@ -132,8 +133,8 @@ def get_param_names(func_name: str, src_file: str, clang_path: str):
         filter(functools.partial(is_func_decl, name=func_name), data["inner"])
     )
     assert (
-        len(func_name_decls) == 1
-    ), "Should be a single declaration for the provided function."
+        len(func_name_decls) >= 1
+    ), "Should have at least a single declaration for the provided function."
     func_name_decl = func_name_decls[0]
 
     # Then get all ParmVarDecl.

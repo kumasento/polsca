@@ -40,9 +40,10 @@ using namespace phism;
 
 /// Find memref.load and memref.store, and mark their parent affine.for to be
 /// non-affine.
+/// CallOp is also consider non-affine.
 static void markNonAffine(FuncOp f, OpBuilder &b) {
   f.walk([&](Operation *op) {
-    if (isa<memref::LoadOp, memref::StoreOp>(op)) {
+    if (isa<memref::LoadOp, memref::StoreOp, CallOp>(op)) {
       while (Operation *parent = op->getParentOp()) {
         if (isa<FuncOp>(parent))
           break;

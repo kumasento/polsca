@@ -21,7 +21,7 @@ func @two_loops(%A: memref<32xf32>) {
 // CHECK: affine.for %[[ARG0:.*]] = 0 to 32
 // CHECK: call @S0(%{{.*}}, %[[ARG0]])
 
-func @top(%A : memref<32xf32>) {
+func @top(%A : memref<32xf32>) attributes {phism.top} {
   call @two_loops(%A) {phism.pe} : (memref<32xf32>) -> ()
   return 
 }
