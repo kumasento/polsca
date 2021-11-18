@@ -127,12 +127,44 @@ static AffineExpr simplifyFloorDivIfWithinBound(AffineExpr result,
 
     if (p.index() >= avm.getNumDims())
       continue;
-    if (lb < 0)
+    if (lb < 0 || lb >= ub)
       continue;
     AffineExpr pattern = getAffineDimExpr(p.index(), ctx)
                              .floorDiv(getAffineConstantExpr(ub, ctx));
     LLVM_DEBUG(dbgs() << " -> Patter to replace: " << pattern << "\n");
     replacement.insert({pattern, getAffineConstantExpr(0, ctx)});
+  }
+
+  return result.replace(replacement);
+}
+
+/// Match and replace x mod B -> x if x is within [a, B) and a >= 0
+static AffineExpr simplifyModIfWithinBound(AffineExpr result,
+                                           const AffineValueMap &avm,
+                                           MLIRContext *ctx) {
+
+  llvm::DenseMap<AffineExpr, AffineExpr> replacement;
+  for (auto p : enumerate(avm.getOperands())) {
+    Value operand = p.value();
+    if (!isForInductionVar(operand))
+      continue;
+    auto forOp = getForInductionVarOwner(operand);
+    if (!forOp.getLowerBoundMap().isSingleConstant() ||
+        !forOp.getLowerBoundMap().isSingleConstant())
+      continue;
+
+    auto lb = forOp.getLowerBoundMap().getSingleConstantResult();
+    auto ub = forOp.getUpperBoundMap().getSingleConstantResult();
+
+    if (p.index() >= avm.getNumDims())
+      continue;
+    if (lb < 0 || lb >= ub)
+      continue;
+
+    AffineExpr dim = getAffineDimExpr(p.index(), ctx);
+    AffineExpr pattern = dim % getAffineConstantExpr(ub, ctx);
+    LLVM_DEBUG(dbgs() << " -> Patter to replace: " << pattern << "\n");
+    replacement.insert({pattern, dim});
   }
 
   return result.replace(replacement);
@@ -163,11 +195,14 @@ static LogicalResult simplifyPartitionAccess(Operation *op) {
     if (AffineExpr expr =
             simplifyFloorDivForSameMultiplier(results[i], avm, dims, ctx))
       results[i] = expr;
+
     // Case #2 - x floordiv B if x is within [0, B)
     // This is actually a special case of the version above. We distinguish them
     // just for simpler processing.
-    if (AffineExpr expr = simplifyFloorDivIfWithinBound(results[i], avm, ctx))
-      results[i] = expr;
+    results[i] = simplifyFloorDivIfWithinBound(results[i], avm, ctx);
+
+    // Case #3 - x mod B if x is within [0, B)
+    results[i] = simplifyModIfWithinBound(results[i], avm, ctx);
   }
 
   SmallVector<Value> operands{op->getOperand(0)};

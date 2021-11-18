@@ -85,10 +85,13 @@ using MemRefMapping = llvm::DenseMap<Value, Value>;
 struct Partition {
   enum Kind { NONE, BLOCK } kind;
   int64_t block;
+  enum Source { DIM, SYMBOL } source = Source::DIM;
 
   /// Initialize block partition.
   Partition() : kind(NONE) {}
   Partition(int64_t block) : kind(BLOCK), block(block) {}
+  Partition(int64_t block, Source source)
+      : kind(BLOCK), block(block), source(source) {}
 
   void dump() const;
 };
@@ -96,9 +99,14 @@ struct Partition {
 void Partition::dump() const {
   errs() << "Partition(";
   if (kind == Kind::BLOCK)
-    errs() << "BLOCK, " << block << ")";
+    errs() << "BLOCK, " << block << ", ";
   else
-    errs() << "NONE)";
+    errs() << "NONE, ";
+  if (source == Source::SYMBOL)
+    errs() << "SYMBOL";
+  else
+    errs() << "DIM";
+  errs() << ")";
 }
 
 struct Access {
@@ -154,6 +162,55 @@ void Access::initPartitions() {
   }
 }
 
+static Value getValueForDimOrSymbol(const AffineValueMap &avm,
+                                    AffineExpr expr) {
+  if (auto dim = expr.dyn_cast<AffineDimExpr>())
+    return avm.getOperand(dim.getPosition());
+
+  if (auto symbol = expr.dyn_cast<AffineSymbolExpr>())
+    return avm.getOperand(symbol.getPosition() + avm.getNumDims());
+
+  return nullptr;
+}
+
+static void
+gatherAccessedDimAndSymbols(const AffineValueMap &avm, unsigned index,
+                            llvm::MapVector<Value, int64_t> &addrs) {
+  AffineExpr expr = avm.getAffineMap().getResult(index);
+
+  // Check if there is any expression of d0, or cst * d0.
+  // We will select the largest multiplier.
+  expr.walk([&](AffineExpr e) {
+    if (auto dim = e.dyn_cast<AffineDimExpr>()) {
+      Value val = getValueForDimOrSymbol(avm, dim);
+      addrs[val] = std::max(addrs[val], 1L);
+    } else if (auto symbol = e.dyn_cast<AffineSymbolExpr>()) {
+      Value val = getValueForDimOrSymbol(avm, symbol);
+      addrs[val] = std::max(addrs[val], 1L);
+    } else if (auto bin = e.dyn_cast<AffineBinaryOpExpr>()) {
+      if (bin.getKind() != AffineExprKind::Mul)
+        return;
+
+      AffineExpr dimOrSymbol;
+      AffineConstantExpr cst;
+
+      if (bin.getLHS().isa<AffineDimExpr>() ||
+          bin.getLHS().isa<AffineSymbolExpr>()) {
+        dimOrSymbol = bin.getLHS();
+        cst = bin.getRHS().dyn_cast<AffineConstantExpr>();
+      } else {
+        dimOrSymbol = bin.getRHS();
+        cst = bin.getLHS().dyn_cast<AffineConstantExpr>();
+      }
+      if (!dimOrSymbol)
+        return;
+
+      Value val = getValueForDimOrSymbol(avm, dimOrSymbol);
+      addrs[val] = std::max(addrs[val], cst.getValue());
+    }
+  });
+}
+
 LogicalResult Access::createBlockPartition(unsigned index,
                                            Partition &part) const {
   if (!isAffine)
@@ -163,85 +220,106 @@ LogicalResult Access::createBlockPartition(unsigned index,
   AffineValueMap avm;
   access.getAccessMap(&avm);
 
-  Value addr = getIdentityMapOperand(avm, index);
-  if (!addr)
+  llvm::MapVector<Value, int64_t> addrs;
+  gatherAccessedDimAndSymbols(avm, index, addrs);
+
+  if (addrs.empty())
     return failure();
 
-  auto forOp = getForInductionVarOwner(addr);
-  if (!forOp) {
-    // Partition by the dim size.
-    MemRefType ty = memref.getType().dyn_cast<MemRefType>();
-    part = Partition(ty.getShape()[index]);
+  auto updatePartition = [&](Partition newPart) {
+    if (part.kind == Partition::NONE)
+      part = newPart;
+    else if (part.kind == Partition::BLOCK &&
+             newPart.source != Partition::SYMBOL)
+      part = newPart.block > part.block ? newPart : part;
+    else
+      llvm_unreachable("Cannot handle");
+  };
 
-    return success();
+  for (auto &it : addrs) {
+    Value addr = it.first;
+    auto forOp = getForInductionVarOwner(addr);
+    if (!forOp) {
+      // Partition by the dim size.
+      MemRefType ty = memref.getType().dyn_cast<MemRefType>();
+      updatePartition(
+          Partition(ty.getShape()[index], Partition::Source::SYMBOL));
+    } else {
+
+      AffineMap lbMap = filterExtraConstantResults(forOp.getLowerBoundMap());
+      AffineMap ubMap = filterExtraConstantResults(forOp.getLowerBoundMap());
+
+      // Match map structure.
+      if (lbMap.getNumResults() != 1 || ubMap.getNumResults() != 1 ||
+          lbMap.getNumDims() != ubMap.getNumDims() ||
+          lbMap.getNumSymbols() != ubMap.getNumSymbols() ||
+          lbMap.getNumInputs() != 1 || ubMap.getNumInputs() != 1)
+        return failure();
+      // Match the index value.
+      if (forOp.getLowerBoundOperands()[0] != forOp.getUpperBoundOperands()[0])
+        return failure();
+
+      /// Match T (d0 | s0) + T. If failed, return -1.
+      auto matchMulAdd = [&](AffineExpr expr) -> int64_t {
+        AffineBinaryOpExpr bin = expr.dyn_cast<AffineBinaryOpExpr>();
+        if (!bin)
+          return -1;
+
+        // a x + b
+        AffineExpr x;
+        AffineConstantExpr a, b;
+        // Try to parse the add operation.
+        if (bin.getKind() == AffineExprKind::Add) {
+          if (bin.getLHS().isa<AffineConstantExpr>()) {
+            // Left constant
+            b = bin.getLHS().cast<AffineConstantExpr>();
+            bin = bin.getRHS().dyn_cast<AffineBinaryOpExpr>();
+          } else {
+            // Right constant
+            b = bin.getRHS().cast<AffineConstantExpr>();
+            bin = bin.getLHS().dyn_cast<AffineBinaryOpExpr>();
+          }
+        }
+
+        // Parse the multiplier.
+        if (bin.getKind() == AffineExprKind::Mul) {
+          a = bin.getLHS().dyn_cast<AffineConstantExpr>();
+          x = bin.getRHS();
+          if (!a) {
+            a = bin.getRHS().dyn_cast<AffineConstantExpr>();
+            x = bin.getLHS();
+          }
+        }
+
+        // Post-check
+        if (!x || !a)
+          return -1;
+        if (b && (a.getValue() != b.getValue()))
+          return -1;
+
+        // Post-determine the block factor.
+        // Suppose for i = bt to bt + b { A[ai] }, then the block factor would
+        // be a * b.
+
+        return a.getValue();
+      };
+
+      auto getPositionAndValue = [&](AffineExpr x, AffineExpr a, unsigned &pos,
+                                     int64_t &value) {
+        if (auto expr = x.dyn_cast<AffineDimExpr>())
+          pos = expr.getPosition();
+        if (auto expr = x.dyn_cast<AffineSymbolExpr>())
+          pos = expr.getPosition();
+      };
+
+      int64_t T = matchMulAdd(lbMap.getResult(0));
+      if (T <= 0 || T != matchMulAdd(ubMap.getResult(0)))
+        return failure();
+
+      // Set the result.
+      updatePartition(Partition(T * it.second, Partition::DIM));
+    }
   }
-  AffineMap lbMap = filterExtraConstantResults(forOp.getLowerBoundMap());
-  AffineMap ubMap = filterExtraConstantResults(forOp.getLowerBoundMap());
-
-  // Match map structure.
-  if (lbMap.getNumResults() != 1 || ubMap.getNumResults() != 1 ||
-      lbMap.getNumDims() != ubMap.getNumDims() ||
-      lbMap.getNumSymbols() != ubMap.getNumSymbols() ||
-      lbMap.getNumInputs() != 1 || ubMap.getNumInputs() != 1)
-    return failure();
-  // Match the index value.
-  if (forOp.getLowerBoundOperands()[0] != forOp.getUpperBoundOperands()[0])
-    return failure();
-
-  /// Match T (d0 | s0) + T. If failed, return -1.
-  auto matchMulAdd = [&](AffineExpr expr) -> int64_t {
-    AffineBinaryOpExpr bin = expr.dyn_cast<AffineBinaryOpExpr>();
-    if (!bin)
-      return -1;
-
-    // a x + b
-    AffineExpr x;
-    AffineConstantExpr a, b;
-    // Try to parse the add operation.
-    if (bin.getKind() == AffineExprKind::Add) {
-      if (bin.getLHS().isa<AffineConstantExpr>()) {
-        // Left constant
-        b = bin.getLHS().cast<AffineConstantExpr>();
-        bin = bin.getRHS().dyn_cast<AffineBinaryOpExpr>();
-      } else {
-        // Right constant
-        b = bin.getRHS().cast<AffineConstantExpr>();
-        bin = bin.getLHS().dyn_cast<AffineBinaryOpExpr>();
-      }
-    }
-
-    // Parse the multiplier.
-    if (bin.getKind() == AffineExprKind::Mul) {
-      a = bin.getLHS().dyn_cast<AffineConstantExpr>();
-      x = bin.getRHS();
-      if (!a) {
-        a = bin.getRHS().dyn_cast<AffineConstantExpr>();
-        x = bin.getLHS();
-      }
-    }
-
-    // Post-check
-    if (!x || !a)
-      return -1;
-    if (b && (a.getValue() != b.getValue()))
-      return -1;
-    return a.getValue();
-  };
-
-  auto getPositionAndValue = [&](AffineExpr x, AffineExpr a, unsigned &pos,
-                                 int64_t &value) {
-    if (auto expr = x.dyn_cast<AffineDimExpr>())
-      pos = expr.getPosition();
-    if (auto expr = x.dyn_cast<AffineSymbolExpr>())
-      pos = expr.getPosition();
-  };
-
-  int64_t T = matchMulAdd(lbMap.getResult(0));
-  if (T <= 0 || T != matchMulAdd(ubMap.getResult(0)))
-    return failure();
-
-  // Set the result.
-  part = Partition(T);
   return success();
 }
 
@@ -328,8 +406,8 @@ MemRefType MemRefPartition::getPartitionedType() const {
     shape[i + rank] = parts[i].block;
   }
 
-  // TODO: could be dangerous if the AffineMaps from the original type is not
-  // empty.
+  // TODO: could be dangerous if the AffineMaps from the original type is
+  // not empty.
   return MemRefType::Builder(shape, ty.getElementType())
       .setMemorySpace(ty.getMemorySpace());
 }
@@ -357,15 +435,15 @@ struct MemRefToAccess {
   llvm::DenseMap<Value, SmallVector<Access, 4>> map_;
 
   /// Go through every operation within the top, as well as all the nested
-  /// callers. Don't consider at this stage that some memrefs might be the same
-  /// object from the top.
+  /// callers. Don't consider at this stage that some memrefs might be the
+  /// same object from the top.
   void build(FuncOp top, ModuleOp m);
 
   void dump() const;
 
   /// Every memref, if not exists in MemRefMapping as the source, it is a
-  /// top-level memref. We want to make sure that every memref in the `mta` is
-  /// top-level.
+  /// top-level memref. We want to make sure that every memref in the `mta`
+  /// is top-level.
   void aggregate(const MemRefMapping &mrm);
 
   /// Go through every access and initialize its partitions.
@@ -473,9 +551,12 @@ MemRefToAccess::reconcilePartitions(MemRefToPartition &mtp) const {
           if (part.kind == Partition::Kind::NONE)
             continue;
 
-          // Reconcile with the smaller block.
+          // Reconcile with the larger block.
+          // The partition resolved from DIM always have a higher priority than
+          // SYMBOL.
           else if (part.kind == Partition::Kind::BLOCK) {
-            if (part.block <= curr.block)
+            if (curr.source == Partition::SYMBOL ||
+                (part.block >= curr.block && part.source != Partition::SYMBOL))
               parts[ind] = part;
           } else {
             llvm_unreachable("Unrecognized kind.");
@@ -522,7 +603,8 @@ static void buildMemRefMapping(FuncOp f, MemRefMapping &mrm, ModuleOp m) {
 }
 
 /// Propagate the change of memref type all the way down.
-/// memref in the argument list is the corresponding value in the current scope.
+/// memref in the argument list is the corresponding value in the current
+/// scope.
 static void propagate(FuncOp f, Value memref, const MemRefPartition &mp,
                       llvm::SetVector<std::pair<FuncOp, unsigned>> &visited,
                       MemRefType ty, ModuleOp m) {
@@ -662,8 +744,8 @@ struct ArrayPartitionPass
       return;
     }
 
-    // Before transformation, keep all the existing functions into a set so that
-    // they won't be recycled later.
+    // Before transformation, keep all the existing functions into a set so
+    // that they won't be recycled later.
     SmallPtrSet<FuncOp, 4> keep;
     getFunctionsToKeep(m, top, keep);
 
@@ -680,8 +762,8 @@ struct ArrayPartitionPass
     // Map memref values from the callee to the caller.
     // Ultimately, we want to get a mapping that map from memref to their
     // top-level correspondent.
-    // Top-level means: block arguments in phism.top, or those allocated within
-    // each scope.
+    // Top-level means: block arguments in phism.top, or those allocated
+    // within each scope.
     MemRefMapping mrm;
     buildMemRefMapping(top, mrm, m);
 
