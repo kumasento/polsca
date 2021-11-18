@@ -472,11 +472,11 @@ MemRefToAccess::reconcilePartitions(MemRefToPartition &mtp) const {
           // Ignore NONE partitions.
           if (part.kind == Partition::Kind::NONE)
             continue;
-          // Won't reconcile if there are different block sizes.
-          // TODO: possibly choose the larger one? No harm though.
+
+          // Reconcile with the smaller block.
           else if (part.kind == Partition::Kind::BLOCK) {
-            if (part.block != curr.block)
-              return failure();
+            if (part.block <= curr.block)
+              parts[ind] = part;
           } else {
             llvm_unreachable("Unrecognized kind.");
           }
@@ -524,9 +524,12 @@ static void buildMemRefMapping(FuncOp f, MemRefMapping &mrm, ModuleOp m) {
 /// Propagate the change of memref type all the way down.
 /// memref in the argument list is the corresponding value in the current scope.
 static void propagate(FuncOp f, Value memref, const MemRefPartition &mp,
+                      llvm::SetVector<std::pair<FuncOp, unsigned>> &visited,
                       MemRefType ty, ModuleOp m) {
+
   MLIRContext *ctx = f.getContext();
   Location loc = memref.getLoc();
+  OpBuilder b(ctx);
 
   if (!mp.isPartitioned())
     return;
@@ -537,6 +540,12 @@ static void propagate(FuncOp f, Value memref, const MemRefPartition &mp,
 
     unsigned argInd = find(f.getArguments(), memref) - f.args_begin();
     LLVM_DEBUG(dbgs() << "MemRef is at: " << argInd << '\n');
+    if (visited.count({f, argInd})) {
+      LLVM_DEBUG(
+          dbgs() << " * Function has been partitioned for this memref.\n");
+      return;
+    }
+    visited.insert({f, argInd});
 
     SmallVector<Type> argTypes(f.getArgumentTypes());
 
@@ -550,7 +559,6 @@ static void propagate(FuncOp f, Value memref, const MemRefPartition &mp,
     entryBlock.getArgument(argInd).setType(ty);
     LLVM_DEBUG(dbgs() << "Replaced entry block argument type.\n");
   } else if (auto allocaOp = memref.getDefiningOp<memref::AllocaOp>()) {
-    OpBuilder b(ctx);
     b.setInsertionPointAfter(allocaOp);
     Value newMemRef = b.create<memref::AllocaOp>(loc, ty);
     allocaOp.replaceAllUsesWith(newMemRef);
@@ -581,6 +589,31 @@ static void propagate(FuncOp f, Value memref, const MemRefPartition &mp,
       else if (auto storeOp = dyn_cast<mlir::AffineStoreOp>(user))
         storeOp->setAttr(loadOp.getMapAttrName(),
                          AffineMapAttr::get(newAffMap));
+    } else if (isa<memref::LoadOp, memref::StoreOp>(user)) {
+      LLVM_DEBUG(dbgs() << "Replace memref load/store with : " << affMap
+                        << '\n');
+
+      SmallVector<Value> mapOperands;
+      for (unsigned i = (isa<memref::LoadOp>(user) ? 1 : 2);
+           i < user->getNumOperands(); ++i) {
+        mapOperands.push_back(user->getOperand(i));
+        LLVM_DEBUG(dbgs() << " * Operand #" << i << ": " << user->getOperand(i)
+                          << '\n');
+      }
+
+      b.setInsertionPoint(user);
+
+      for (unsigned i = (isa<memref::LoadOp>(user) ? 1 : 2), j = 0;
+           j < affMap.getNumResults(); ++i, ++j) {
+        AffineMap singleResMap = AffineMap::get(
+            affMap.getNumDims(), affMap.getNumSymbols(), affMap.getResult(j));
+        auto applyOp =
+            b.create<mlir::AffineApplyOp>(loc, singleResMap, mapOperands);
+        if (i < user->getNumOperands())
+          user->setOperand(i, applyOp.getResult());
+        else
+          user->insertOperands(i, applyOp.getResult());
+      }
     }
   }
 
@@ -590,7 +623,7 @@ static void propagate(FuncOp f, Value memref, const MemRefPartition &mp,
       if (caller.getOperand(i) == memref) {
         LLVM_DEBUG(dbgs() << "--> To propagate caller: " << caller
                           << " at index: " << i << '\n');
-        propagate(callee, callee.getArgument(i), mp, ty, m);
+        propagate(callee, callee.getArgument(i), mp, visited, ty, m);
       }
   });
 }
@@ -606,7 +639,8 @@ static LogicalResult partitionMemRef(FuncOp top, const MemRefPartition &mp,
   MemRefType newTy = mp.getPartitionedType();
   LLVM_DEBUG(dbgs() << "New memref type: " << newTy << '\n');
 
-  propagate(top, mp.memref, mp, newTy, m);
+  llvm::SetVector<std::pair<FuncOp, unsigned>> visited;
+  propagate(top, mp.memref, mp, visited, newTy, m);
 
   return success();
 }
@@ -667,8 +701,10 @@ struct ArrayPartitionPass
 
     // Try to reconcile the partition results.
     MemRefToPartition mtp;
-    if (failed(mta.reconcilePartitions(mtp)))
+    if (failed(mta.reconcilePartitions(mtp))) {
+      LLVM_DEBUG(dbgs() << "Failed to reconcile\n");
       return signalPassFailure();
+    }
 
     LLVM_DEBUG({
       dbgs() << "\n================== Reconciled:\n";

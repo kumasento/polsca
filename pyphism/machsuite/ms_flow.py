@@ -63,7 +63,9 @@ class MsFlowRunner(PhismRunner):
             self.options.work_dir, f"ms-flow-runner.{get_timestamp()}.log"
         )
         self.logger = get_logger(
-            f"ms-flow-runner {self.get_name()}", log_file, console=False
+            f"ms-flow-runner {self.get_name()}",
+            log_file,
+            console=(self.options.jobs == 1),
         )
 
     def run(self):
@@ -81,24 +83,25 @@ class MsFlowRunner(PhismRunner):
 
         try:
             (
-                self.polygeist_compile_c(
+                self.generate_tile_sizes()
+                .polygeist_compile_c(
                     flags=[
                         f"--function='{self.options.top_func}'",
                         "-I",
                         os.path.join(self.options.work_dir, "..", "..", "common"),
                     ]
                 )
-                # .mlir_preprocess()
-                # .phism_extract_top_func()
-                # .polymer_opt()
-                # .phism_fold_if()
-                # .phism_loop_transforms()
-                # .phism_array_partition()
-                # .lower_scf()
-                # .lower_llvm()
-                # .phism_vitis_opt()
-                # .phism_dump_tcl()
-                # .run_vitis()
+                .mlir_preprocess()
+                .phism_extract_top_func()
+                .polymer_opt()
+                .phism_fold_if()
+                .phism_loop_transforms()
+                .phism_array_partition()
+                .lower_scf()
+                .lower_llvm()
+                .phism_vitis_opt()
+                .phism_dump_tcl()
+                .run_vitis()
             )
         except Exception as e:
             self.logger.error(traceback.format_exc())

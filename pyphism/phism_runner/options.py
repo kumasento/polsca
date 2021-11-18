@@ -27,3 +27,4 @@ class PhismRunnerOptions:
     includes: Optional[List[str]] = None  # examples to include
     excludes: Optional[List[str]] = None  # examples to exclude
     jobs: int = 1  # Number of concurrent jobs
+    tile_sizes: Optional[List[str]] = None  # tile size for each loop depth

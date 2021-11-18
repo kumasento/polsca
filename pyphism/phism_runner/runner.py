@@ -297,7 +297,7 @@ class PhismRunner:
         )
         return self.sanity_check()
 
-    def phism_extract_top_func(self):
+    def phism_extract_top_func(self, top_only: bool = False):
         """Extract the top function and all the stuff it calls."""
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(
             ".mlir", ".ext.mlir"
@@ -308,7 +308,8 @@ class PhismRunner:
             self.get_program_abspath("phism-opt"),
             src_file,
             f'-extract-top-func="name={self.options.top_func} keepall=1"',
-            "-split-non-affine='max-loop-depth=5 top-only=1'",
+            f"-split-non-affine='max-loop-depth=5 top-only={top_only}'",
+            "-debug",
         ]
         self.run_command(
             cmd=" ".join(args),
@@ -363,8 +364,11 @@ class PhismRunner:
         args = [
             self.get_program_abspath("phism-opt"),
             src_file,
-            f"-loop-transforms",
+            "-affine-loop-unswitching",
+            "-anno-point-loop",
+            "-outline-proc-elem",
             "-loop-redis-and-merge",
+            "-scop-stmt-inline",
             "-debug-only=loop-transforms",
         ]
 
@@ -407,6 +411,25 @@ class PhismRunner:
         )
 
         return self.sanity_check()
+
+    def generate_tile_sizes(self):
+        """Generate the tile.sizes file that Pluto will read."""
+        if not self.options.tile_sizes:
+            return self
+
+        base_dir = os.path.dirname(self.cur_file)
+        tile_file = os.path.join(base_dir, "tile.sizes")
+
+        if not self.options.tile_sizes:
+            if os.path.isfile(tile_file):
+                os.remove(tile_file)
+            return self
+
+        with open(tile_file, "w") as f:
+            for tile in self.options.tile_sizes:
+                f.write(f"{tile}\n")
+
+        return self
 
     def phism_array_partition(self):
         """Run phism -array-partition."""
@@ -482,10 +505,12 @@ class PhismRunner:
             f"| {self.get_program_abspath('mlir-translate')} -mlir-to-llvmir",
         ]
 
+        log_file = self.cur_file.replace(".llvm", ".log")
         self.run_command(
             cmd=" ".join(args),
             shell=True,
             stdout=open(self.cur_file, "w"),
+            stderr=open(log_file, "w"),
             env=self.env,
         )
 
@@ -502,6 +527,7 @@ class PhismRunner:
         )
         log_file = self.cur_file.replace(".llvm", ".log")
 
+        self.logger.info(f"C_SOURCE is {self.c_source}")
         xln_names = helper.get_param_names(
             self.options.top_func,
             self.c_source,
