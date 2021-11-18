@@ -453,6 +453,8 @@ class PhismRunner:
             "-strip-except-top",
             "-array-partition",
             "-canonicalize",
+            "-rewrite-ploop-indvar",
+            "-canonicalize",
             "-simplify-partition-access",
             "-canonicalize",
             "-debug-only=array-partition",

@@ -109,14 +109,17 @@ simplifyFloorDivForSameMultiplier(AffineExpr result, const AffineValueMap &avm,
 }
 
 /// Match and replace x floordiv B if x is within 0 to B
-static AffineExpr simplifyFloorDivIfWithinBound(AffineExpr result,
-                                                const AffineValueMap &avm,
-                                                MLIRContext *ctx) {
+static AffineExpr
+simplifyFloorDivIfWithinBound(AffineExpr result, const AffineValueMap &avm,
+                              ArrayRef<mlir::AffineForOp> loops,
+                              MLIRContext *ctx) {
   llvm::DenseMap<AffineExpr, AffineExpr> replacement;
+  llvm::DenseMap<AffineExpr, AffineExpr> lbCstRep, ubCstRep;
   for (auto p : enumerate(avm.getOperands())) {
     Value operand = p.value();
     if (!isForInductionVar(operand))
       continue;
+
     auto forOp = getForInductionVarOwner(operand);
     if (!forOp.getLowerBoundMap().isSingleConstant() ||
         !forOp.getLowerBoundMap().isSingleConstant())
@@ -124,6 +127,10 @@ static AffineExpr simplifyFloorDivIfWithinBound(AffineExpr result,
 
     auto lb = forOp.getLowerBoundMap().getSingleConstantResult();
     auto ub = forOp.getUpperBoundMap().getSingleConstantResult();
+
+    auto dim = getAffineDimExpr(p.index(), ctx);
+    lbCstRep[dim] = getAffineConstantExpr(lb, ctx);
+    ubCstRep[dim] = getAffineConstantExpr(ub, ctx) - 1;
 
     if (p.index() >= avm.getNumDims())
       continue;
@@ -135,15 +142,38 @@ static AffineExpr simplifyFloorDivIfWithinBound(AffineExpr result,
     replacement.insert({pattern, getAffineConstantExpr(0, ctx)});
   }
 
+  // Try to replace the combination of IVs as a whole.
+  result.walk([&](AffineExpr expr) {
+    if (auto e = expr.dyn_cast<AffineBinaryOpExpr>())
+      if (e.getKind() == AffineExprKind::FloorDiv) {
+        auto lhs = e.getLHS().dyn_cast<AffineBinaryOpExpr>();
+        if (!lhs)
+          return;
+        auto lhsLb = lhs.replace(lbCstRep).dyn_cast<AffineConstantExpr>();
+        auto lhsUb = lhs.replace(ubCstRep).dyn_cast<AffineConstantExpr>();
+        if (!lhsLb || !lhsUb)
+          return;
+
+        if (lhsLb.getValue() < 0 ||
+            lhsUb.getValue() >=
+                e.getRHS().dyn_cast<AffineConstantExpr>().getValue())
+          return;
+
+        replacement.insert({expr, getAffineConstantExpr(0, ctx)});
+      }
+  });
+
   return result.replace(replacement);
 }
 
 /// Match and replace x mod B -> x if x is within [a, B) and a >= 0
 static AffineExpr simplifyModIfWithinBound(AffineExpr result,
                                            const AffineValueMap &avm,
+                                           ArrayRef<mlir::AffineForOp> loops,
                                            MLIRContext *ctx) {
 
   llvm::DenseMap<AffineExpr, AffineExpr> replacement;
+  llvm::DenseMap<AffineExpr, AffineExpr> lbCstRep, ubCstRep;
   for (auto p : enumerate(avm.getOperands())) {
     Value operand = p.value();
     if (!isForInductionVar(operand))
@@ -156,16 +186,41 @@ static AffineExpr simplifyModIfWithinBound(AffineExpr result,
     auto lb = forOp.getLowerBoundMap().getSingleConstantResult();
     auto ub = forOp.getUpperBoundMap().getSingleConstantResult();
 
+    auto dim = getAffineDimExpr(p.index(), ctx);
+    lbCstRep[dim] = getAffineConstantExpr(lb, ctx);
+    ubCstRep[dim] = getAffineConstantExpr(ub, ctx) - 1;
+
     if (p.index() >= avm.getNumDims())
       continue;
     if (lb < 0 || lb >= ub)
       continue;
 
-    AffineExpr dim = getAffineDimExpr(p.index(), ctx);
+    dim = getAffineDimExpr(p.index(), ctx);
     AffineExpr pattern = dim % getAffineConstantExpr(ub, ctx);
     LLVM_DEBUG(dbgs() << " -> Patter to replace: " << pattern << "\n");
     replacement.insert({pattern, dim});
   }
+
+  // Try to replace the combination of IVs as a whole.
+  result.walk([&](AffineExpr expr) {
+    if (auto e = expr.dyn_cast<AffineBinaryOpExpr>())
+      if (e.getKind() == AffineExprKind::Mod) {
+        auto lhs = e.getLHS().dyn_cast<AffineBinaryOpExpr>();
+        if (!lhs)
+          return;
+        auto lhsLb = lhs.replace(lbCstRep).dyn_cast<AffineConstantExpr>();
+        auto lhsUb = lhs.replace(ubCstRep).dyn_cast<AffineConstantExpr>();
+        if (!lhsLb || !lhsUb)
+          return;
+
+        if (lhsLb.getValue() < 0 ||
+            lhsUb.getValue() >=
+                e.getRHS().dyn_cast<AffineConstantExpr>().getValue())
+          return;
+
+        replacement.insert({expr, e.getLHS()});
+      }
+  });
 
   return result.replace(replacement);
 }
@@ -176,6 +231,9 @@ static LogicalResult simplifyPartitionAccess(Operation *op) {
   MemRefAccess access(op);
   AffineValueMap avm;
   access.getAccessMap(&avm);
+
+  SmallVector<mlir::AffineForOp> forOps;
+  getLoopIVs(*op, &forOps);
 
   const AffineMap &am = avm.getAffineMap();
 
@@ -199,10 +257,10 @@ static LogicalResult simplifyPartitionAccess(Operation *op) {
     // Case #2 - x floordiv B if x is within [0, B)
     // This is actually a special case of the version above. We distinguish them
     // just for simpler processing.
-    results[i] = simplifyFloorDivIfWithinBound(results[i], avm, ctx);
+    results[i] = simplifyFloorDivIfWithinBound(results[i], avm, forOps, ctx);
 
     // Case #3 - x mod B if x is within [0, B)
-    results[i] = simplifyModIfWithinBound(results[i], avm, ctx);
+    results[i] = simplifyModIfWithinBound(results[i], avm, forOps, ctx);
   }
 
   SmallVector<Value> operands{op->getOperand(0)};
