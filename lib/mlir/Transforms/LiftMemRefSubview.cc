@@ -45,14 +45,17 @@ struct MemRefLiftInfo {
   unsigned index; // the function argument index.
   MemRefType type;
   SmallVector<Value> indices;
+  MLIRContext *ctx;
 
   MemRefLiftInfo(Value memref, unsigned index)
-      : memref(memref), index(index),
-        type(memref.getType().dyn_cast<MemRefType>()) {}
+      : memref{memref}, index{index},
+        type{memref.getType().dyn_cast<MemRefType>()},
+        ctx{memref.getContext()} {}
 
   MemRefType getLiftedType() const;
 };
 
+/// This type has no layout information. It could be RISKY.
 MemRefType MemRefLiftInfo::getLiftedType() const {
   return MemRefType::Builder(type.getShape().drop_front(indices.size()),
                              type.getElementType());
@@ -252,6 +255,12 @@ static LogicalResult liftCaller(FuncOp callee, CallOp caller,
 
   // Create subview.
   b.setInsertionPoint(caller);
+
+  /// NOTE: This subview type has a layout affine map, which is essential for
+  /// getting memory access correct when lowering down to LLVM. However, it
+  /// cannot work with the use-bare-ptr-memref-conv option in
+  /// -convert-std-to-llvm. So we need to cast out the layout attribution when
+  /// passing that among PEs.
   MemRefType subviewType = memref::SubViewOp::inferRankReducedResultType(
                                info.type.getRank() - info.indices.size(),
                                info.type, offsets, sizes, strides)
@@ -259,7 +268,6 @@ static LogicalResult liftCaller(FuncOp callee, CallOp caller,
   auto subview = b.create<memref::SubViewOp>(caller.getLoc(), subviewType,
                                              caller.getOperand(info.index),
                                              offsets, sizes, strides);
-
   // Cast from its type to liftedType.
   auto cast =
       b.create<memref::CastOp>(caller.getLoc(), subview, info.getLiftedType());

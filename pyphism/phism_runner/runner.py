@@ -481,7 +481,7 @@ class PhismRunner:
 
         self.run_command(
             cmd_list=[
-                self.get_program_abspath("phism-opt"),
+                self.get_program_abspath("mlir-opt"),
                 src_file,
                 "-lower-affine",
             ],
@@ -501,10 +501,11 @@ class PhismRunner:
         args = [
             self.get_program_abspath("mlir-opt"),
             src_file,
+            "-lower-affine",
             "-convert-scf-to-std",
             "-convert-memref-to-llvm",
-            convert_std_to_llvm,
             "-convert-arith-to-llvm",
+            convert_std_to_llvm,
             "-reconcile-unrealized-casts",
             f"| {self.get_program_abspath('mlir-translate')} -mlir-to-llvmir",
         ]
@@ -548,15 +549,20 @@ class PhismRunner:
                 os.path.join(self.root_dir, "build", "lib", "VhlsLLVMRewriter.so")
             ),
             "-strip-debug",
+            "-subview",
             "-mem2arr",
+            "-dse",
             "-instcombine",
             "-xlnmath",
             "-xlnname",
             "-xlnanno",
             '-xlntop="{}"'.format(self.options.top_func),
             '-xlnnames="{}"'.format(",".join(xln_names)),
-            # "-xlnunroll" if self.options.loop_transforms else "",
+            "-xlnunroll" if self.options.loop_transforms else "",
             "-xlnram2p",
+            "-xlnarraypartition" if self.options.array_partition else "",
+            # "-xln-ap-flattened",
+            "-xln-ap-enabled" if self.options.array_partition else "",
             "-strip-attr",
             "-debug",
         ]
