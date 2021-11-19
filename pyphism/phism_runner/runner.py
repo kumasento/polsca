@@ -457,6 +457,8 @@ class PhismRunner:
             "-canonicalize",
             "-simplify-partition-access",
             "-canonicalize",
+            "-lift-memref-subview",
+            "-canonicalize",
             "-debug-only=array-partition",
             "-verify-each=1",
         ]

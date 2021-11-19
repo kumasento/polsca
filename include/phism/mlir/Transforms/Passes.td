@@ -92,4 +92,9 @@ def RewritePloopIndvar : FunctionPass<"rewrite-ploop-indvar"> {
   ];
 }
 
+def LiftMemRefSubview : Pass<"lift-memref-subview", "::mlir::ModuleOp"> {
+  let summary = "Lift the outermost dims into subview.";
+  let constructor = "phism::createLiftMemRefSubviewPass()";
+}
+
 #endif

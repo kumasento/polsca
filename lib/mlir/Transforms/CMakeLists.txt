@@ -10,6 +10,7 @@ add_mlir_library(PhismTransforms
   EliminateAffineLoadStore.cc
   SplitNonAffine.cc
   StripExceptTop.cc
+  LiftMemRefSubview.cc
   Utils.cc
 
   ADDITIONAL_HEADER_DIRS
