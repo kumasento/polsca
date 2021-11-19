@@ -97,7 +97,7 @@ class MsFlowRunner(PhismRunner):
                 .phism_fold_if()
                 .phism_loop_transforms()
                 .phism_array_partition()
-                .lower_scf()
+                # .lower_scf()
                 .lower_llvm()
                 .phism_vitis_opt()
                 .phism_dump_tcl()

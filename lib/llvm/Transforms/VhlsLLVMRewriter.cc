@@ -299,6 +299,8 @@ struct XilinxArrayPartitionPass : public ModulePass {
             auto arrayTy =
                 dyn_cast<ArrayType>(arg->getType()->getPointerElementType());
             auto partitions = getArrayDimensionInfo(arrayTy);
+            if (partitions.size() == 1)
+              continue;
             if (getXlnArrayPartitionFlattened())
               partitions.pop_back_n(partitions.size() - 1);
             else
@@ -486,6 +488,8 @@ static void generateXlnTBTcl(Function &F, StringRef fileName,
           dyn_cast<ArrayType>(arg->getType()->getPointerElementType());
       if (arrayPartitionEnabled) {
         auto partitions = getArrayDimensionInfo(arrayTy);
+        if (partitions.size() == 1) // won't handle 1-dim array
+          continue;
         if (arrayPartitionFlattened)
           partitions.pop_back_n(partitions.size() - 1);
         else {
