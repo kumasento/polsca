@@ -23,5 +23,5 @@ func @foo() {
 // CHECK: func @foo() 
 // CHECK:   affine.for %[[i:.*]] = 0 to 10 
 // CHECK:     %[[v1:.*]] = memref.subview %{{.*}}[%[[i]], 0] [1, 20] [1, 1] : memref<10x20xf32> to memref<20xf32, #{{.*}}>
-// CHECK:     %[[v2:.*]] = memref.cast %[[v1]] : memref<20xf32, #{{.*}}> to memref<20xf32>
+// CHECK:     %[[v2:.*]] = memref.cast
 // CHECK:     call @bar(%[[v2]], %[[i]]) {phism.pe} : (memref<20xf32>, index) -> ()

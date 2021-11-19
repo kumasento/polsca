@@ -147,6 +147,8 @@ public:
       dbgs() << "\n--------------------------------------\n";
       dbgs() << "Processing offset for target pointer: \n";
       ptr->dump();
+      dbgs() << " within function:\n";
+      F.dump();
     });
 
     SmallVector<Value *> offsets;
@@ -265,6 +267,7 @@ public:
 
     if (indices[0] == 1) {
       setMemberOnce(ptr, insInst->getInsertedValueOperand());
+      LLVM_DEBUG(dbgs() << " ---> Set ptr to " << (*ptr) << '\n');
       assert(ptr->getType()->isPointerTy() && "ptr should be a pointer.");
     } else if (indices[0] == 2) {
       setMemberOnce(offset, insInst->getInsertedValueOperand());
@@ -405,11 +408,26 @@ findInsertExractValueSequences(Function &F,
           }
 
           // Every condition is matched.
-          if (isValidSeq) {
-            seq.processOffset(F);
-            seq.replaceExtractValueUses();
-            seqs.push_back(seq);
-          }
+          if (!isValidSeq)
+            continue;
+
+          LLVM_DEBUG({
+            dbgs() << " - Resolved ptr: " << (*seq.ptr) << '\n';
+            dbgs() << " - Found valid insert/extract sequence:\n";
+            dbgs() << " - Inserts:\n";
+            for (auto I : seq.insertInsts)
+              I->dump();
+            dbgs() << " - Extracts:\n";
+            for (auto I : seq.extractInsts)
+              I->dump();
+            dbgs() << "\n";
+          });
+
+          seq.processOffset(F);
+          seq.replaceExtractValueUses();
+          seqs.push_back(seq);
+
+          LLVM_DEBUG(dbgs() << " Function after update:\n" << (F) << '\n');
         }
       }
     }
@@ -424,6 +442,7 @@ static Function *
 duplicateFunctionsWithRankedArrays(Function *F,
                                    SmallVectorImpl<InsExtSequence> &Seqs,
                                    ValueToValueMapTy &RankedArrVMap) {
+
   // Resolve parameter types. The first part should be the same as `F`, and the
   // second part should let every Seq create a new Array in their order.
   SmallVector<Type *, 4> ParamTypes;
@@ -438,6 +457,15 @@ duplicateFunctionsWithRankedArrays(Function *F,
 
   // Map an argument to the new ranked array type.
   SmallDenseMap<Value *, Type *> ArgToArrType;
+
+  LLVM_DEBUG({
+    dbgs() << "============\n Existing sequences\n";
+    for (InsExtSequence &Seq : Seqs)
+      dbgs() << "\n * Ptr: " << (*Seq.ptr)
+             << "\n * Type: " << (*Seq.getRankedArrayType()) << "\n\n";
+    dbgs() << "============\n";
+  });
+
   for (InsExtSequence &Seq : Seqs) // Each Seq has a new ArrayType arg.
     // Note that here we only set the array type ONCE. It is based on the
     // understanding that the first sequence will give the full info of the
@@ -1154,6 +1182,76 @@ static void convertMemRefToArray(Module &M, bool ranked = false) {
 
 namespace {
 
+/// Fix the case that a caller that should take the pointer extracted from the
+/// subview takes from the original memref instead.
+struct MemRefSubview : public ModulePass {
+  static char ID;
+  MemRefSubview() : ModulePass(ID) {}
+
+  bool runOnModule(Module &M) override {
+    for (Function &F : M) {
+      for (BasicBlock &BB : F) {
+        for (Instruction &I : BB) {
+          if (CallInst *caller = dyn_cast<CallInst>(&I)) {
+            Function *callee = caller->getCalledFunction();
+            if (!callee)
+              continue;
+
+            // There should be a PE substring in the target function name. Might
+            // be too hacky.
+            auto name = callee->getName();
+            if (name.find("PE") == StringRef::npos)
+              continue;
+
+            for (unsigned i = 0; i < caller->getNumOperands(); ++i) {
+              Value *operand = caller->getOperand(i);
+              // The target operand should be a pointer.
+              if (!operand->getType()->isPointerTy())
+                continue;
+
+              // Won't work with those not defined by extractvalue.
+              ExtractValueInst *extInst = dyn_cast<ExtractValueInst>(operand);
+              if (!extInst)
+                continue;
+
+              // Find the latest before the caller.
+              InsertValueInst *src = nullptr;
+              for (auto it = extInst->user_begin(); it != extInst->user_end();
+                   ++it) {
+                if (InsertValueInst *insInst = dyn_cast<InsertValueInst>(*it)) {
+                  if (insInst->comesBefore(caller) &&
+                      (!src || src->comesBefore(insInst)))
+                    src = insInst;
+                }
+              }
+
+              if (!src)
+                continue;
+
+              // Go to the last insertvalue.
+              // insertvalue is NORMALLY a chain of single uses.
+              InsertValueInst *inst = src;
+              while (inst->getNumUses() == 1 &&
+                     isa<InsertValueInst>(*inst->user_begin()))
+                inst = dyn_cast<InsertValueInst>(*inst->user_begin());
+              assert(isa<InsertValueInst>(inst));
+
+              // Now we can create the new extractvalue inst.
+              Value *newPtr =
+                  ExtractValueInst::Create(inst, {1}, Twine(), caller);
+              caller->setOperand(i, newPtr);
+            }
+          }
+        }
+      }
+    }
+
+    return false;
+  }
+};
+} // namespace
+
+namespace {
 struct ConvertMemRefToArray : public ModulePass {
   static char ID; // Pass identification, replacement for typeid
   ConvertMemRefToArray() : ModulePass(ID) {}
@@ -1189,3 +1287,7 @@ static RegisterPass<ConvertMemRefToArray>
 char ConvertMemRefToRankedArray::ID = 1;
 static RegisterPass<ConvertMemRefToRankedArray>
     X2("mem2arr", "Convert MemRef structure to ranked array.");
+
+char MemRefSubview::ID = 12;
+static RegisterPass<MemRefSubview> X3("subview",
+                                      "Fix various subview related issues.");
