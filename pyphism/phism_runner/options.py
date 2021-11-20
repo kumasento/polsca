@@ -10,10 +10,11 @@ class PhismRunnerOptions:
     """
 
     # --- Local
-    key: str = "" # The key to the current example.
+    key: str = ""  # The key to the current example.
     source_file: str = ""  # input source file
     top_func: str = ""  # top function name
     incl_funcs: str = ""  # include functions for SCoP extraction
+    disabled: Optional[List[str]] = None  # disabled passes
 
     # --- Global
     cfg: str = ""  # configuration file.

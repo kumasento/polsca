@@ -594,6 +594,13 @@ class PhismRunner:
             "-debug",
         ]
 
+        # Filter out disabled passes.
+        args = [
+            arg
+            for arg in args
+            if not self.options.disabled or arg not in self.options.disabled
+        ]
+
         self.run_command(
             cmd=" ".join(args),
             shell=True,

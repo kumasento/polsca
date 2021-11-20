@@ -1689,7 +1689,7 @@ static bool parseMulAdd(AffineExpr expr, AffineDimExpr &dim,
 namespace {
 struct RewritePloopIndvarPass
     : public ::phism::RewritePloopIndvarBase<RewritePloopIndvarPass> {
-  bool process(FuncOp f) {
+  bool reverseIndvar(FuncOp f) {
     bool changed = false;
 
     f.walk([&](mlir::AffineForOp forOp) {
@@ -1777,10 +1777,45 @@ struct RewritePloopIndvarPass
     return changed;
   }
 
+  /// TODO: this pass may not be very necessary if there is no i-a access.
+  /// DISABLED
+  // LogicalResult shiftConstantLowerBoundsToZero(FuncOp f) {
+  //   OpBuilder b(f.getContext());
+  //   f.walk([&](mlir::AffineForOp forOp) {
+  //     if (!forOp.getLowerBoundMap().isSingleConstant())
+  //       return;
+  //     /// TODO: support other cases.
+  //     if (!forOp.getUpperBoundMap().isSingleConstant())
+  //       return;
+
+  //     auto lb = forOp.getLowerBoundMap().getSingleConstantResult();
+  //     auto ub = forOp.getUpperBoundMap().getSingleConstantResult();
+
+  //     /// TODO: seems not very beneficial?
+  //     if (lb <= 0)
+  //       return;
+
+  //     forOp.setConstantLowerBound(0);
+  //     forOp.setConstantUpperBound(ub - lb);
+
+  //     b.setInsertionPointToStart(forOp.getBody());
+  //     auto am = AffineMap::get(
+  //         1, 0, b.getAffineDimExpr(0) + b.getAffineConstantExpr(lb));
+  //     auto indvar = b.create<AffineApplyOp>(
+  //         forOp.getLoc(), am, ValueRange({forOp.getInductionVar()}));
+  //     forOp.getInductionVar().replaceAllUsesExcept(indvar, indvar);
+  //   });
+
+  //   return success();
+  // }
+
   void runOnFunction() override {
     FuncOp f = getFunction();
-    while (process(f))
+    while (reverseIndvar(f))
       ;
+
+    // if (failed(shiftConstantLowerBoundsToZero(f)))
+    //   return signalPassFailure();
   }
 };
 } // namespace

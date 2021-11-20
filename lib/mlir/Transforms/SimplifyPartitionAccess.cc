@@ -108,6 +108,27 @@ simplifyFloorDivForSameMultiplier(AffineExpr result, const AffineValueMap &avm,
   return newExpr;
 }
 
+static std::pair<AffineExpr, AffineExpr>
+splitOutTermWithFactor(AffineExpr expr, int64_t factor) {
+  /// TODO: work with multiple terms of the same factor.
+  if (expr.isMultipleOf(factor))
+    return {nullptr, nullptr};
+  AffineExpr term = nullptr;
+  expr.walk([&](AffineExpr e) {
+    if (e.isMultipleOf(factor))
+      term = e;
+  });
+
+  if (!term)
+    return {nullptr, nullptr};
+
+  llvm::DenseMap<AffineExpr, AffineExpr> replacement;
+  replacement[term] = getAffineConstantExpr(0, expr.getContext());
+  AffineExpr rem = expr.replace(replacement);
+
+  return {term, rem};
+}
+
 /// Match and replace x floordiv B if x is within 0 to B
 static AffineExpr
 simplifyFloorDivIfWithinBound(AffineExpr result, const AffineValueMap &avm,
@@ -160,6 +181,33 @@ simplifyFloorDivIfWithinBound(AffineExpr result, const AffineValueMap &avm,
           return;
 
         replacement.insert({expr, getAffineConstantExpr(0, ctx)});
+      }
+  });
+
+  // Another case
+  result.walk([&](AffineExpr expr) {
+    if (auto e = expr.dyn_cast<AffineBinaryOpExpr>())
+      if (e.getKind() == AffineExprKind::FloorDiv) {
+        auto p = splitOutTermWithFactor(
+            e.getLHS(), e.getRHS().cast<AffineConstantExpr>().getValue());
+        AffineExpr term, rem;
+        std::tie(term, rem) = p;
+
+        if (!term || !rem)
+          return;
+
+        // Handle rem;
+        auto lhsLb = rem.replace(lbCstRep).dyn_cast<AffineConstantExpr>();
+        auto lhsUb = rem.replace(ubCstRep).dyn_cast<AffineConstantExpr>();
+        if (!lhsLb || !lhsUb)
+          return;
+
+        if (lhsLb.getValue() < 0 ||
+            lhsUb.getValue() >=
+                e.getRHS().dyn_cast<AffineConstantExpr>().getValue())
+          return;
+
+        replacement.insert({expr, term.floorDiv(e.getRHS())});
       }
   });
 
