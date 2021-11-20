@@ -1427,6 +1427,7 @@ class PbFlow:
             '-xlnnames="{}"'.format(",".join(xln_names)),
             "-xlnunroll" if self.options.loop_transforms else "",
             "-xlnram2p",
+            "-xln-has-nonaff=false",
             "-xlnarraypartition" if self.options.array_partition else "",
             "-xln-ap-flattened",
             "-xln-ap-enabled" if xln_ap_enabled else "",
