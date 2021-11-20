@@ -44,6 +44,14 @@ static cl::opt<bool> XlnArrayPartitionEnabled(
     "xln-ap-enabled", cl::desc("Whether array partition has been enabled"));
 static cl::opt<bool> XlnArrayPartitionFlattened(
     "xln-ap-flattened", cl::desc("Whether array partition has been flattened"));
+static cl::opt<int> XlnLoopUnrollMax(
+    "xln-loop-unroll-max",
+    cl::desc("The maximum number of loop iterations that can be unrolled"),
+    cl::init(32));
+static cl::opt<bool>
+    XlnHasNonAffine("xln-has-nonaff",
+                    cl::desc("Whether the design contains non-affine region"),
+                    cl::init(true));
 
 namespace phism {
 namespace llvm {
@@ -59,6 +67,8 @@ std::string getXlnTBDummyNames() { return XlnTBDummyNames; }
 std::string getXlnLLVMIn() { return XlnLLVMIn; }
 bool getXlnArrayPartitionEnabled() { return XlnArrayPartitionEnabled; }
 bool getXlnArrayPartitionFlattened() { return XlnArrayPartitionFlattened; }
+int getXlnLoopUnrollMax() { return XlnLoopUnrollMax; }
+bool getXlnHasNonAffine() { return XlnHasNonAffine; }
 
 } // namespace llvm
 } // namespace phism

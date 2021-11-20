@@ -42,7 +42,7 @@ RUN cd /dkrPkgs \
     && ./configure --enable-optimizations --prefix=/usr/local \
     && make install
 RUN pip3 install --upgrade pip
-RUN pip3 install pandas dataclasses colorlog
+RUN pip3 install pandas dataclasses colorlog pyyaml
 
 CMD ["bash"]
 
