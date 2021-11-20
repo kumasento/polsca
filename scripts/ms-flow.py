@@ -32,6 +32,7 @@ def main():
         default=[],
         help="MachSuite examples not to run.",
     )
+    parser.add_argument("--cfg", type=str, help="Configuration file.")
     parser.add_argument(
         "-c", "--cosim", action="store_true", help="Enable co-simulation"
     )
