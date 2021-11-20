@@ -169,7 +169,7 @@ def ms_flow_runner(options: MsFlowOptions):
             get_project_root(), "tmp", "phism", "ms-flow.{}".format(get_timestamp())
         )
     if not os.path.exists(options.work_dir):
-        shutil.copytree(options.ms_dir, options.work_dir)
+        shutil.copytree(options.source_dir, options.work_dir)
 
     logger = get_logger(
         "ms-flow-runner",
