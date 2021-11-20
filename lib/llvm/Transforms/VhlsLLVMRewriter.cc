@@ -8,6 +8,7 @@
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
@@ -193,7 +194,47 @@ struct XilinxRewriteMathInstPass : public ModulePass {
 
 } // namespace
 
-static void unrollLoop(Loop *loop) {
+/// getTripCountTemporary - Return an integer indicating the number of times the
+/// loop will be executed. This function assumes the affine loop always have a
+/// following pattern in its header (start from 0 && step is 1 && condition is
+/// < or <=):
+/// 17:                                               ; preds = %20, %2
+/// %18 = phi i64 [ %49, %20 ], [ 0, %2 ]
+/// %19 = icmp slt i64 %18, 8
+/// br i1 %19, label %20, label %50
+static int getTripCountTemporary(Loop *loop) {
+  auto condition = dyn_cast<BranchInst>(loop->getHeader()->getTerminator());
+  if (!condition || !condition->isConditional())
+    return -1;
+
+  PHINode *indvar = loop->getCanonicalInductionVariable();
+  auto icmp = dyn_cast<ICmpInst>(condition->getCondition());
+  if (!icmp ||
+      (icmp->getPredicate() != ICmpInst::ICMP_SLE &&
+       icmp->getPredicate() != ICmpInst::ICMP_SLT) ||
+      icmp->getOperand(0) != indvar)
+    return -1;
+
+  if (auto const1 = dyn_cast<ConstantInt>(icmp->getOperand(1)))
+    return const1->getValue().getSExtValue() +
+           (icmp->getPredicate() == ICmpInst::ICMP_SLE);
+
+  return -1;
+}
+
+static void unrollLoop(Loop *loop, int alreadyUnrolled, int maxUnrolled) {
+  // Check loop trip count. Return if the factor is not greater than 1.
+  if (maxUnrolled / alreadyUnrolled <= 1)
+    return;
+  int tripCount = getTripCountTemporary(loop);
+  assert(tripCount > 0 && "Cannot find a valid trip count. It could because of "
+                          "variable loop bound.");
+  tripCount = (tripCount > maxUnrolled / alreadyUnrolled)
+                  ? maxUnrolled / alreadyUnrolled
+                  : tripCount;
+  if (tripCount == 1)
+    return;
+
   SmallVector<Metadata *, 4> Args;
 
   // Reserve operand 0 for loop id self reference.
@@ -207,10 +248,9 @@ static void unrollLoop(Loop *loop) {
       Args.push_back(id->getOperand(i));
 
   // Loop unroll
-  // TODO: Use a opt arg instead of a constant
   Metadata *nameVals[] = {MDString::get(Context, "llvm.loop.unroll.count"),
                           ConstantAsMetadata::get(ConstantInt::get(
-                              IntegerType::get(Context, 32), 4))};
+                              IntegerType::get(Context, 32), tripCount))};
   Args.push_back(MDNode::get(Context, nameVals));
 
   // Set the first operand to itself.
@@ -220,7 +260,7 @@ static void unrollLoop(Loop *loop) {
 
   if (!loop->isInnermost())
     for (auto &subloop : loop->getSubLoops())
-      unrollLoop(subloop);
+      unrollLoop(subloop, alreadyUnrolled * tripCount, maxUnrolled);
 }
 
 namespace {
@@ -231,16 +271,21 @@ struct XilinxUnrollPass : public ModulePass {
   XilinxUnrollPass() : ModulePass(ID) {}
 
   bool runOnModule(Module &M) override {
-    assert(!getXlnTop().empty() && "Top function name should be set.");
+    assert((!getXlnTop().empty() || getXlnHasNonAffine()) &&
+           "Top function name should be set.");
 
     for (auto &F : M)
-      if (F.getName() == getXlnTop()) {
+      if ((!getXlnHasNonAffine() && F.getName() == getXlnTop()) ||
+          (getXlnHasNonAffine() &&
+           F.getName().find("__f") != std::string::npos &&
+           F.getName().find("__PE") == std::string::npos)) {
         auto DT = llvm::DominatorTree(F);
         LoopInfo LI(DT);
-
-        if (!LI.empty())
-          for (auto &loop : LI)
-            unrollLoop(loop);
+        if (!LI.empty()) {
+          for (auto &loop : LI) {
+            unrollLoop(loop, 1, getXlnLoopUnrollMax());
+          }
+        }
       }
 
     return false;
