@@ -29,7 +29,9 @@ def SplitNonAffine : FunctionPass<"split-non-affine"> {
     Option<"markOnly", "mark-only", "bool", /*default=*/"false",
            "Whether we just annotate those for loops with non affine accesses.">,
     Option<"maxLoopDepth", "max-loop-depth", "int", /*default=*/"0",
-           "Below which loop depth should we put affine loops into functions.">
+           "Below which loop depth should we put affine loops into functions.">,
+    ListOption<"inclFuncs", "incl-funcs", "std::string", "Limit to the provided functions",
+           "llvm::cl::ZeroOrMore, llvm::cl::MiscFlags::CommaSeparated">
   ];
 }
 

@@ -8,6 +8,14 @@ import subprocess
 import traceback
 from typing import List, Optional
 
+from yaml import dump, load
+
+try:
+    from yaml import CDumper as Dumper
+    from yaml import CLoader as Loader
+except ImportError:
+    from yaml import Loader, Dumper
+
 import colorlog
 
 from pyphism.phism_runner.options import PhismRunnerOptions
@@ -58,6 +66,19 @@ class PhismRunner:
 
         self.setup_work_dir()
         self.setup_logger()
+        self.setup_cfg()
+
+    def setup_cfg(self):
+        """Find the corresponding configuration."""
+        if not self.options.cfg:
+            return
+        with open(self.options.cfg, "r") as f:
+            self.logger.info(f"Key is {self.options.key}")
+            cfg = load(f, Loader)
+            if self.options.key in cfg:
+                # NOTE: make sure you specify the configuration with the right key name.
+                for k, v in cfg[self.options.key]["options"].items():
+                    self.options.__setattr__(k, v)
 
     def setup_work_dir(self):
         """Instantiate the work directory."""
@@ -304,12 +325,18 @@ class PhismRunner:
         )
 
         log_file = self.cur_file.replace(".mlir", ".log")
+
+        incl_funcs = ""
+        if self.options.incl_funcs:
+            incl_funcs = f"incl-funcs={self.options.incl_funcs}"
+
         args = [
             self.get_program_abspath("phism-opt"),
             src_file,
             f'-extract-top-func="name={self.options.top_func} keepall=1"',
-            f"-split-non-affine='max-loop-depth=5 top-only={top_only}'",
+            f"-split-non-affine='max-loop-depth=5 top-only={top_only} {incl_funcs}'",
             "-debug",
+            "-mlir-disable-threading",
         ]
         self.run_command(
             cmd=" ".join(args),

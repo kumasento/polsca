@@ -9,11 +9,14 @@ class PhismRunnerOptions:
     TODO: separate the CLI part (for all files) and the class part (for one file).
     """
 
-    # --- Single file
+    # --- Local
+    key: str = "" # The key to the current example.
     source_file: str = ""  # input source file
     top_func: str = ""  # top function name
+    incl_funcs: str = ""  # include functions for SCoP extraction
 
-    # --- CLI
+    # --- Global
+    cfg: str = ""  # configuration file.
     polymer: bool = False  # run with polymer
     loop_transforms: bool = False  # run phism loop transform
     array_partition: bool = False  # run phism array partition

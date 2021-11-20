@@ -1621,6 +1621,8 @@ struct OutlineProcessElementPass
     m.walk([&](FuncOp f) {
       if (f->hasAttr("phism.pe"))
         return;
+      if (f->hasAttr("scop.ignored"))
+        return;
       LLVM_DEBUG(dbgs() << "Before extraction: --- \n\n" << f << "\n\n");
       while (outlineProcessElement(f, m, nextId, maxTripcount, b))
         ++nextId;

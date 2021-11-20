@@ -222,8 +222,20 @@ struct SplitNonAffinePass : phism::SplitNonAffineBase<SplitNonAffinePass> {
     if (f->hasAttr("scop.affine"))
       return;
 
+    LLVM_DEBUG({
+      dbgs() << "Passed in those include functions: \n";
+      if (inclFuncs.empty())
+        dbgs() << "Empty\n";
+      else
+        interleaveComma(inclFuncs, dbgs());
+      dbgs() << '\n';
+    });
+
     // We should only apply this pass on the function with phism.top.
-    if ((!topOnly || f->hasAttr("phism.top")) &&
+    bool isIncl =
+        inclFuncs.empty() || find(inclFuncs, f.getName()) != inclFuncs.end();
+    bool topCond = !topOnly || f->hasAttr("phism.top");
+    if (isIncl && topCond &&
         failed(splitNonAffine(f, b, markOnly, maxLoopDepth)))
       return signalPassFailure();
 

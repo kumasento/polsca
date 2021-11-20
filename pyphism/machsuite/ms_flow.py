@@ -147,6 +147,7 @@ def parse_ms_tcl(path: str, options: MsFlowOptions, logger: logging.Logger):
     logger.info(f"Top function: {top_func:30s} source file: {source_file}")
 
     options = copy.deepcopy(options)
+    options.key = "/".join(path.split("/")[-2:])
     options.top_func = top_func
     options.source_file = source_file
     options.work_dir = path
