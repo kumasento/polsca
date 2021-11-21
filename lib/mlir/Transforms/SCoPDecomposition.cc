@@ -212,10 +212,26 @@ static LogicalResult decompositeSCoP(Block *block, const int64_t depth,
     return success();
 
   // Assume all the affine for loops are valid SCoPs.
+  // Make sure there is no other ops interleaving the loops.
+  /// TODO: relax the rule above.
   SmallVector<mlir::AffineForOp> loops;
+
   for (Operation &op : *block)
     if (auto loop = dyn_cast<mlir::AffineForOp>(&op))
       loops.push_back(loop);
+  if (loops.size() > 1) {
+    bool inLoopRegion = false;
+    for (Operation &op : *block) {
+      if (&op == loops.front())
+        inLoopRegion = true;
+      else if (&op == loops.back())
+        inLoopRegion = false;
+      else {
+        if (inLoopRegion && !isa<mlir::AffineForOp>(&op))
+          return success();
+      }
+    }
+  }
 
   if (loops.empty()) // cannot decomposite for sure.
     return success();
