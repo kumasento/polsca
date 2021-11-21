@@ -99,4 +99,13 @@ def LiftMemRefSubview : Pass<"lift-memref-subview", "::mlir::ModuleOp"> {
   let constructor = "phism::createLiftMemRefSubviewPass()";
 }
 
+def SCoPDecomposition : Pass<"scop-decomp", "::mlir::ModuleOp"> {
+  let summary = "Decomposite SCoP into smaller, self-dependent regions";
+  let constructor = "phism::createSCoPDecompositionPass()";
+  let options = [
+    Option<"maxLoopDepth", "max-loop-depth", "int", /*default=*/"0",
+           "Below which loop depth should we put affine loops into functions.">,
+  ];
+}
+
 #endif

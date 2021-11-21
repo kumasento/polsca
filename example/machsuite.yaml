@@ -2,7 +2,7 @@
 
 sort/radix:
   options:
-    incl_funcs: local_scan,last_step_scan
+    incl_funcs: last_step_scan
     disabled: 
       - -xlnunroll
 

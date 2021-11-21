@@ -1151,6 +1151,7 @@ class PbFlow:
             self.get_program_abspath("phism-opt"),
             src_file,
             f'-extract-top-func="name={get_top_func(src_file)} keepall={self.options.sanity_check}"',
+            "-scop-decomp",
         ]
         self.run_command(
             cmd=" ".join(args),
@@ -1289,7 +1290,7 @@ class PbFlow:
         args = [
             self.get_program_abspath("phism-opt"),
             src_file,
-            '-simple-array-partition="dump-file=1 flatten=1 gen-main=1"',
+            f'-simple-array-partition="dump-file=1 flatten=1 gen-main={self.options.sanity_check}"',
             "-canonicalize",
             "-debug-only=array-partition",
         ]
@@ -1416,6 +1417,7 @@ class PbFlow:
                 os.path.join(self.root_dir, "build", "lib", "VhlsLLVMRewriter.so")
             ),
             "-strip-debug",
+            "-subview",
             "-mem2arr",
             "-instcombine",
             "-xlnmath",
