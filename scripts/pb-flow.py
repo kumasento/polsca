@@ -13,7 +13,7 @@ from pyphism.polybench import pb_flow
 def main():
     """Main entry"""
     parser = argparse.ArgumentParser(description="Run Polybench experiments")
-    parser.add_argument("pb_dir", type=str, help="Polybench directory")
+    parser.add_argument("source_dir", type=str, help="Polybench directory")
     parser.add_argument("--work-dir", type=str, help="The temporary work directory.")
     parser.add_argument(
         "-e", "--examples", nargs="+", default=[], help="Polybench examples to run."
@@ -21,6 +21,7 @@ def main():
     parser.add_argument(
         "--excl", nargs="+", default=[], help="Polybench examples not to run."
     )
+    parser.add_argument("--cfg", type=str, help="Configuration file.")
     parser.add_argument(
         "--dry-run", action="store_true", help="Only produce the commands to run."
     )
@@ -35,7 +36,7 @@ def main():
         "-c", "--cosim", action="store_true", help="Enable co-simulation"
     )
     parser.add_argument(
-        "-j", "--job", type=int, default=1, help="Number of parallel jobs (default: 1)"
+        "-j", "--jobs", type=int, default=1, help="Number of parallel jobs (default: 1)"
     )
     parser.add_argument(
         "--dataset",
@@ -66,6 +67,12 @@ def main():
     )
     parser.add_argument(
         "--array-partition", "--ap", action="store_true", help="Use array partition."
+    )
+    parser.add_argument(
+        "--array-partition-v2",
+        "--ap-v2",
+        action="store_true",
+        help="Use array partition (v2).",
     )
     parser.add_argument("--skip-vitis", action="store_true", help="Don't run Vitis.")
     parser.add_argument(

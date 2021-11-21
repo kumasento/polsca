@@ -1105,6 +1105,33 @@ static void replaceSymbolWithDim(Operation *op) {
   }
 }
 
+static LogicalResult
+inlineFunction(FuncOp callee, SmallVectorImpl<CallOp> &callers, OpBuilder &b) {
+  assert(callee.getBlocks().size() == 1);
+  Block *entry = &callee.getBlocks().front();
+
+  // Replace each caller with the statement body.
+  for (mlir::CallOp caller : callers) {
+    b.setInsertionPointAfter(caller);
+
+    BlockAndValueMapping vmap;
+    vmap.map(callee.getArguments(), caller.getArgOperands());
+
+    // We know that the body of the stmt is simply a list of operations without
+    // region.
+    for (Operation &op : entry->getOperations())
+      if (!isa<mlir::ReturnOp>(op)) {
+        auto cloned = b.clone(op, vmap);
+        replaceSymbolWithDim(cloned);
+      }
+  }
+
+  // Erase the callers.
+  for (mlir::CallOp caller : callers)
+    caller.erase();
+  return success();
+}
+
 static LogicalResult inlineScopStmtWithinFunction(FuncOp f, FuncOp stmt,
                                                   OpBuilder &b) {
   if (f->hasAttr("scop.stmt")) // skipped.
@@ -1116,27 +1143,10 @@ static LogicalResult inlineScopStmtWithinFunction(FuncOp f, FuncOp stmt,
       callers.push_back(caller);
   });
 
-  // Replace each caller with the statement body.
-  for (mlir::CallOp caller : callers) {
-    b.setInsertionPointAfter(caller);
+  if (failed(inlineFunction(stmt, callers, b)))
+    return failure();
 
-    BlockAndValueMapping vmap;
-    vmap.map(stmt.getArguments(), caller.getArgOperands());
-
-    // We know that the body of the stmt is simply a list of operations without
-    // region.
-    for (Operation &op : stmt.getBlocks().begin()->getOperations())
-      if (!isa<mlir::ReturnOp>(op)) {
-        auto cloned = b.clone(op, vmap);
-        replaceSymbolWithDim(cloned);
-      }
-  }
-
-  // Erase the callers.
-  for (mlir::CallOp caller : callers)
-    caller.erase();
-
-  f.dump();
+  LLVM_DEBUG(f.dump());
 
   return success();
 }
@@ -1402,6 +1412,8 @@ static bool affineLoopUnswitching(FuncOp f) {
     /// TODO: support intervals
     if (iset.getNumConstraints() != 1)
       return;
+    if (iset.isEq(0))
+      return;
 
     // only having a single constraint is supported.
     auto expr = iset.getConstraint(0);
@@ -1494,16 +1506,27 @@ struct AnnotatePointLoopPass
       auto callee = cast<FuncOp>(m.lookupSymbol(caller.getCallee()));
       if (callee->hasAttr("scop.stmt")) {
         for (auto operand : caller.getOperands()) {
-          if (isForInductionVar(operand)) {
-            auto forOp = getForInductionVarOwner(operand);
+          SmallVector<Value> indvars;
+          if (auto applyOp = operand.getDefiningOp<mlir::AffineApplyOp>()) {
+            indvars.append(SmallVector<Value>(
+                {applyOp.getOperands().begin(), applyOp.getOperands().end()}));
+          } else {
+            indvars.push_back(operand);
+          }
 
-            // Besides being used by a scop.stmt caller, an affine.for can be a
-            // point loop if it is not purely constantly bounded.
-            if (forOp.getLowerBoundMap().isSingleConstant() &&
-                forOp.getUpperBoundMap().isSingleConstant())
-              continue;
+          for (Value indvar : indvars) {
+            if (isForInductionVar(indvar)) {
+              auto forOp = getForInductionVarOwner(indvar);
 
-            forOp->setAttr("phism.point_loop", b.getUnitAttr());
+              // Besides being used by a scop.stmt caller, an affine.for can be
+              // a point loop if it is not purely constantly bounded.
+              if (constantIndvar &&
+                  forOp.getLowerBoundMap().isSingleConstant() &&
+                  forOp.getUpperBoundMap().isSingleConstant())
+                continue;
+
+              forOp->setAttr("phism.point_loop", b.getUnitAttr());
+            }
           }
         }
       }
@@ -1519,8 +1542,10 @@ phism::createAnnotatePointLoopPass() {
 
 /// ----------------------- OutlineProcessElementPass --------------------------
 
+/// NOTE: we assume the PE to be outlined should be enclosed within a forOp.
 static bool outlineProcessElement(FuncOp f, ModuleOp m, int nextId,
                                   const int maxTripcount, OpBuilder &b) {
+  /// Only for op can be outlined.
   auto shouldOutline = [&](mlir::AffineForOp forOp) {
     if (forOp->hasAttr("scop.non_affine_access"))
       return false;
@@ -1544,29 +1569,41 @@ static bool outlineProcessElement(FuncOp f, ModuleOp m, int nextId,
     for (Operation &op : *forOp.getBody()) {
       if (isa<mlir::AffineYieldOp>(op))
         continue;
+      if (!isa<mlir::AffineForOp, mlir::AffineIfOp>(op))
+        return true;
 
       auto loop = dyn_cast<mlir::AffineForOp>(op);
-      // Check if there is any operation that is not a loop
-      if (!loop)
-        return true;
       // Check if there exists a point_loop sub-loop.
-      if (loop->hasAttr("phism.point_loop"))
+      if (loop && loop->hasAttr("phism.point_loop"))
         return true;
     }
     return false;
   };
 
-  std::function<mlir::AffineForOp(mlir::AffineForOp)> findTarget =
-      [&](mlir::AffineForOp forOp) -> mlir::AffineForOp {
-    if (shouldOutline(forOp))
-      return forOp;
+  std::function<mlir::AffineForOp(Operation *)> findTarget =
+      [&](Operation *op) -> mlir::AffineForOp {
+    LLVM_DEBUG(dbgs() << "Finding target for " << (*op) << "\n");
+    if (auto forOp = dyn_cast<mlir::AffineForOp>(op)) {
+      if (shouldOutline(forOp))
+        return forOp;
 
-    for (Operation &op : *forOp.getBody()) {
-      if (auto loop = dyn_cast<mlir::AffineForOp>(op)) {
-        auto target = findTarget(loop);
+      for (Operation &op : *forOp.getBody()) {
+        auto target = findTarget(&op);
         if (target)
           return target;
       }
+    } else if (auto ifOp = dyn_cast<mlir::AffineIfOp>(op)) {
+      for (Operation &op : *ifOp.getThenBlock()) {
+        auto target = findTarget(&op);
+        if (target)
+          return target;
+      }
+      if (ifOp.hasElse())
+        for (Operation &op : *ifOp.getElseBlock()) {
+          auto target = findTarget(&op);
+          if (target)
+            return target;
+        }
     }
     return nullptr;
   };
@@ -1621,7 +1658,7 @@ struct OutlineProcessElementPass
     m.walk([&](FuncOp f) {
       if (f->hasAttr("phism.pe"))
         return;
-      if (f->hasAttr("scop.ignored"))
+      if (!noIgnored && f->hasAttr("scop.ignored"))
         return;
       LLVM_DEBUG(dbgs() << "Before extraction: --- \n\n" << f << "\n\n");
       while (outlineProcessElement(f, m, nextId, maxTripcount, b))
@@ -1823,6 +1860,43 @@ struct RewritePloopIndvarPass
 std::unique_ptr<mlir::OperationPass<mlir::FuncOp>>
 phism::createRewritePloopIndvarPass() {
   return std::make_unique<RewritePloopIndvarPass>();
+}
+
+/// -------------------------- InlineSCoPAffine ------------------------------
+/// TODO: a more generic inline by attribute pass?
+
+namespace {
+struct InlineSCoPAffinePass
+    : public ::phism::InlineSCoPAffineBase<InlineSCoPAffinePass> {
+  void runOnOperation() override {
+    ModuleOp m = getOperation();
+
+    SmallVector<FuncOp> toInline;
+    m.walk([&](FuncOp f) {
+      if (f->hasAttr("scop.affine"))
+        toInline.push_back(f);
+    });
+
+    OpBuilder b(m.getContext());
+    for (FuncOp f : toInline) {
+      SmallVector<CallOp> callers;
+      m.walk([&](CallOp caller) {
+        if (caller.getCallee() == f.getName())
+          callers.push_back(caller);
+      });
+
+      if (failed(inlineFunction(f, callers, b)))
+        return signalPassFailure();
+
+      f.erase();
+    }
+  }
+};
+} // namespace
+
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+phism::createInlineSCoPAffinePass() {
+  return std::make_unique<InlineSCoPAffinePass>();
 }
 
 void phism::registerLoopTransformPasses() {

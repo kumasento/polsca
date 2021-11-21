@@ -229,11 +229,16 @@ LogicalResult Access::createBlockPartition(unsigned index,
   auto updatePartition = [&](Partition newPart) {
     if (part.kind == Partition::NONE)
       part = newPart;
-    else if (part.kind == Partition::BLOCK &&
-             newPart.source != Partition::SYMBOL)
-      part = newPart.block > part.block ? newPart : part;
-    else
+    else if (part.kind == Partition::BLOCK) {
+      if (newPart.source != Partition::SYMBOL)
+        part = newPart.block > part.block ? newPart : part;
+      else if (newPart.source == part.source)
+        part = newPart.block > part.block ? newPart : part;
+    } else {
+      LLVM_DEBUG(part.dump());
+      LLVM_DEBUG(newPart.dump());
       llvm_unreachable("Cannot handle");
+    }
   };
 
   for (auto &it : addrs) {
@@ -245,7 +250,6 @@ LogicalResult Access::createBlockPartition(unsigned index,
       updatePartition(
           Partition(ty.getShape()[index], Partition::Source::SYMBOL));
     } else {
-
       AffineMap lbMap = filterExtraConstantResults(forOp.getLowerBoundMap());
       AffineMap ubMap = filterExtraConstantResults(forOp.getLowerBoundMap());
 

@@ -5,6 +5,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "PassDetail.h"
+#include "phism/mlir/Transforms/Utils.h"
 
 #include "mlir/Analysis/AffineAnalysis.h"
 #include "mlir/Analysis/AffineStructures.h"
@@ -145,12 +146,49 @@ static CallOp createCaller(MutableArrayRef<Operation *> forOps, FuncOp callee,
 /// stop searching and extract that loop nest into a function.
 /// We assume all affine accesses are represented with affine.load/store.
 static LogicalResult splitNonAffine(FuncOp f, OpBuilder &b, bool markOnly,
-                                    int maxLoopDepth) {
+                                    int maxLoopDepth, bool greedy) {
+  // If there is already marked scop.non_affine_access, won't do a thing.
+  bool hasMarks = false;
+  f.walk([&](mlir::AffineForOp forOp) {
+    if (forOp->hasAttr("scop.non_affine_access"))
+      hasMarks = true;
+  });
+
   // First, mark all the loops that have non-affine accesses as
   // scop.non_affine_access
-  markNonAffine(f, b);
+  if (!hasMarks)
+    markNonAffine(f, b);
   if (markOnly)
     return success();
+
+  if (greedy) {
+    unsigned id = 0;
+    for (Block &block : f) {
+      for (Operation &op : block) {
+        if (auto loop = dyn_cast<mlir::AffineForOp>(&op)) {
+          if (!loop->hasAttr("scop.non_affine_access"))
+            continue;
+          SmallVector<Operation *> ops;
+          for (Operation &innerOp : loop)
+            if (!isa<mlir::AffineYieldOp>(&innerOp))
+              ops.push_back(&innerOp);
+
+          std::string name =
+              std::string(f.getName()) + "__f" + std::to_string(id);
+          ++id;
+          auto p = outlineFunction(ops, name, f->getParentOfType<ModuleOp>());
+          p.first->setAttr("scop.affine", b.getUnitAttr());
+          p.second->setAttr("scop.affine", b.getUnitAttr());
+
+          reverse(ops);
+          for (Operation *toErase : ops)
+            toErase->erase();
+        }
+      }
+    }
+
+    return success();
+  }
 
   // Affine loops without non-affine accesses.
   SmallVector<SmallVector<Operation *>> loops;
@@ -236,7 +274,7 @@ struct SplitNonAffinePass : phism::SplitNonAffineBase<SplitNonAffinePass> {
         inclFuncs.empty() || find(inclFuncs, f.getName()) != inclFuncs.end();
     bool topCond = !topOnly || f->hasAttr("phism.top");
     if (isIncl && topCond &&
-        failed(splitNonAffine(f, b, markOnly, maxLoopDepth)))
+        failed(splitNonAffine(f, b, markOnly, maxLoopDepth, greedy)))
       return signalPassFailure();
 
     f->setAttr("scop.ignored", b.getUnitAttr());

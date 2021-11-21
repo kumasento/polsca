@@ -20,6 +20,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 import pyphism.utils.helper as helper
+from pyphism.phism_runner.options import PhismRunnerOptions
+from pyphism.phism_runner.runner import PhismRunner
 from pyphism.polybench.utils import vhdl
 
 POLYBENCH_DATASETS = ("MINI", "SMALL", "MEDIUM", "LARGE", "EXTRALARGE")
@@ -73,17 +75,13 @@ RunStatus = namedtuple("RunStatus", RUN_STATUS_FIELDS)
 
 
 @dataclass
-class PbFlowOptions:
+class PbFlowOptions(PhismRunnerOptions):
     """An interface for the CLI options."""
 
-    pb_dir: str
-    job: int = 1
-    polymer: bool = False
     # CLooG options
     cloogf: int = -1
     cloogl: int = -1
     diamond_tiling: bool = False
-
     dataset: str = "MINI"
     cleanup: bool = False
     debug: bool = False
@@ -104,7 +102,11 @@ class PbFlowOptions:
     skip_csim: bool = False  # Given cosim = True, you can still turn down csim.
     sanity_check: bool = False  # Run pb-flow in sanity check mode
 
+    array_partition_v2: bool = False  # Use the newer array partition (TODO: migrate)
+
     def __post_init__(self):
+        if self.array_partition_v2:
+            self.array_partition = True
         if self.sanity_check:
             # Disable the Vitis steps.
             self.cosim = False
@@ -113,7 +115,7 @@ class PbFlowOptions:
 
 
 def filter_init_args(args: Dict[str, Any]) -> Dict[str, Any]:
-    opt = PbFlowOptions(pb_dir="")
+    opt = PbFlowOptions(source_dir="")
     return {k: v for k, v in args.items() if hasattr(opt, k)}
 
 
@@ -737,7 +739,7 @@ def get_top_func(src_file):
     )
 
 
-def get_top_func_param_names(src_file, pb_dir, llvm_dir=None):
+def get_top_func_param_names(src_file, source_dir, llvm_dir=None):
     """From the given C file, we try to extract the top function's parameter list.
     This will be useful for Vitis LLVM rewrite."""
 
@@ -757,7 +759,7 @@ def get_top_func_param_names(src_file, pb_dir, llvm_dir=None):
             "-Xclang",
             "-ast-dump=json",
             "-fsyntax-only",
-            "-I{}".format(os.path.join(pb_dir, "utilities")),
+            "-I{}".format(os.path.join(source_dir, "utilities")),
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -825,7 +827,7 @@ exit
 """
 
 
-class PbFlow:
+class PbFlow(PhismRunner):
     """Holds all the pb-flow functions.
     TODO: inherits this from PhismFlow.
     """
@@ -848,6 +850,9 @@ class PbFlow:
 
     def run(self, src_file):
         """Run the whole pb-flow on the src_file (*.c)."""
+        self.options.key = os.path.basename(src_file).split(".")[0]
+        self.setup_cfg()
+        self.logger.info(self.options)
         self.cur_file = src_file
         self.c_source = src_file  # Will be useful in some later stages
 
@@ -1151,7 +1156,8 @@ class PbFlow:
             self.get_program_abspath("phism-opt"),
             src_file,
             f'-extract-top-func="name={get_top_func(src_file)} keepall={self.options.sanity_check}"',
-            "-scop-decomp",
+            "-scop-decomp" if self.options.loop_transforms else "",
+            "-debug",
         ]
         self.run_command(
             cmd=" ".join(args),
@@ -1173,7 +1179,7 @@ class PbFlow:
         log_file = self.cur_file.replace(".mlir", ".log")
 
         passes = [
-            f"-annotate-scop='functions={get_top_func(src_file)}'",
+            # f"-annotate-scop='functions={get_top_func(src_file)}'",
             "-fold-scf-if",
         ]
         if self.options.split == "NO_SPLIT":  # The split stmt has applied -reg2mem
@@ -1250,9 +1256,10 @@ class PbFlow:
             self.get_program_abspath("phism-opt"),
             src_file,
             # f'-loop-transforms="max-span={self.options.max_span}"',
+            "-inline-scop-affine",
             "-affine-loop-unswitching",
             "-anno-point-loop",
-            "-outline-proc-elem",
+            "-outline-proc-elem='no-ignored'",
             "-loop-redis-and-merge",
             "-scop-stmt-inline",
             # "-fold-if" if self.options.coalescing else "",
@@ -1260,6 +1267,8 @@ class PbFlow:
             # "-fold-if",
             "-debug-only=loop-transforms",
         ]
+
+        args = self.filter_disabled(args)
 
         self.run_command(
             cmd=" ".join(args),
@@ -1275,6 +1284,11 @@ class PbFlow:
         """Run Phism array partition transforms."""
         if not self.options.array_partition:
             return self
+        if self.options.array_partition_v2:
+            return self.phism_array_partition(
+                split_non_affine=self.options.split_non_affine_v2,
+                flatten=self.options.flatten_v2,
+            )
 
         src_file, self.cur_file = self.cur_file, self.cur_file.replace(
             ".mlir", ".ap.mlir"
@@ -1405,6 +1419,8 @@ class PbFlow:
         xln_ap_enabled = os.path.isfile(
             os.path.join(os.path.dirname(self.cur_file), "array_partition.txt")
         )
+        if self.options.array_partition_v2:
+            xln_ap_enabled = True
 
         args = [
             os.path.join(
@@ -1417,6 +1433,7 @@ class PbFlow:
                 os.path.join(self.root_dir, "build", "lib", "VhlsLLVMRewriter.so")
             ),
             "-strip-debug",
+            "-select-pointer",
             "-subview",
             "-mem2arr",
             "-instcombine",
@@ -1427,7 +1444,7 @@ class PbFlow:
             '-xlnnames="{}"'.format(",".join(xln_names)),
             "-xlnunroll" if self.options.loop_transforms else "",
             "-xlnram2p",
-            "-xln-has-nonaff=false",
+            f"-xln-has-nonaff={self.options.has_non_affine}",
             "-xlnarraypartition" if self.options.array_partition else "",
             "-xln-ap-flattened",
             "-xln-ap-enabled" if xln_ap_enabled else "",
@@ -1453,6 +1470,8 @@ class PbFlow:
 
         # Whether array partition has been successful.
         xln_ap_enabled = os.path.isfile(os.path.join(base_dir, "array_partition.txt"))
+        if self.options.array_partition_v2:
+            xln_ap_enabled = True
 
         tbgen_vitis_tcl = os.path.join(base_dir, "tbgen.tcl")
 
@@ -1735,25 +1754,25 @@ def pb_flow_dump_report(options: PbFlowOptions):
 
 def pb_flow_runner(options: PbFlowOptions, dump_report: bool = True):
     """Run pb-flow with the provided arguments."""
-    assert os.path.isdir(options.pb_dir)
+    assert os.path.isdir(options.source_dir)
 
     if not options.examples:
         options.examples = POLYBENCH_EXAMPLES
 
-    # Copy all the files from the source pb_dir to a target temporary directory.
+    # Copy all the files from the source source_dir to a target temporary directory.
     if not options.work_dir:
         options.work_dir = os.path.join(
             get_project_root(), "tmp", "phism", "pb-flow.{}".format(get_timestamp())
         )
     if not os.path.exists(options.work_dir):
-        shutil.copytree(options.pb_dir, options.work_dir)
+        shutil.copytree(options.source_dir, options.work_dir)
 
     print(
-        ">>> Starting {} jobs (work_dir={}) ...".format(options.job, options.work_dir)
+        ">>> Starting {} jobs (work_dir={}) ...".format(options.jobs, options.work_dir)
     )
 
     start = timer()
-    with Pool(options.job) as p:
+    with Pool(options.jobs) as p:
         # TODO: don't pass work_dir as an argument. Reuse it.
         p.map(
             functools.partial(
