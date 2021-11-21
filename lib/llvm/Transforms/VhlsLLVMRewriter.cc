@@ -202,22 +202,27 @@ struct XilinxRewriteMathInstPass : public ModulePass {
 /// %19 = icmp slt i64 %18, 8
 /// br i1 %19, label %20, label %50
 static int getTripCountTemporary(Loop *loop) {
-  auto condition = dyn_cast<BranchInst>(loop->getHeader()->getTerminator());
-  if (!condition || !condition->isConditional())
-    return -1;
+  auto header = loop->getHeader();
+  auto condition = dyn_cast<BranchInst>(header->getTerminator());
+  assert(
+      condition && condition->isConditional() &&
+      "Cannot find the loop exit - please check if the loop is canonicalized");
 
-  PHINode *indvar = loop->getCanonicalInductionVariable();
+  PHINode *indvar = dyn_cast<PHINode>(header->begin());
+  assert(indvar && "Cannot find the loop indvar - please check if the loop is "
+                   "canonicalized");
   auto icmp = dyn_cast<ICmpInst>(condition->getCondition());
-  if (!icmp ||
-      (icmp->getPredicate() != ICmpInst::ICMP_SLE &&
-       icmp->getPredicate() != ICmpInst::ICMP_SLT) ||
-      icmp->getOperand(0) != indvar)
-    return -1;
+  assert(icmp && "Cannot find the exit loop condition - expected to be icmp");
+  assert(icmp->getOperand(0) == indvar && "Cannot find the exit loop condition "
+                                          "- expected to have the loop indvar "
+                                          "as operand 0");
+  assert((icmp->getPredicate() == ICmpInst::ICMP_SLE ||
+          icmp->getPredicate() == ICmpInst::ICMP_SLT) &&
+         "Unsupported exit loop condition. So far only support < or <=");
 
   if (auto const1 = dyn_cast<ConstantInt>(icmp->getOperand(1)))
     return const1->getValue().getSExtValue() +
            (icmp->getPredicate() == ICmpInst::ICMP_SLE);
-
   return -1;
 }
 
@@ -227,7 +232,7 @@ static void unrollLoop(Loop *loop, int alreadyUnrolled, int maxUnrolled) {
     return;
   int tripCount = getTripCountTemporary(loop);
   assert(tripCount > 0 && "Cannot find a valid trip count. It could because of "
-                          "variable loop bound.");
+                          "variable loop bounds.");
   tripCount = (tripCount > maxUnrolled / alreadyUnrolled)
                   ? maxUnrolled / alreadyUnrolled
                   : tripCount;
