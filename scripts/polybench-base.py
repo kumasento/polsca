@@ -99,7 +99,7 @@ cosim = cosim
 def TCLGenJob(jobID, jobs, workDir, size, cosim, polybenchCount):
     jobs = int(multiprocessing.cpu_count()/jobs)
     for benchID in range(0, polybenchCount):
-        if benchID % (jobID + 1) != jobID:
+        if benchID % jobs != jobID:
             continue
         TCLGenOnce(benchID, workDir, size, cosim)
         
@@ -127,24 +127,24 @@ def TCLGen(jobs, workDir, size, cosim):
 #    Run Vitis
 #############################################################
 
-def RunVitisOnce(index, workDir, printLog, vitis):
+def RunVitisOnce(index, workDir, printLog, vitis, size):
     benchmark = os.path.basename(PolybenchList[index])
     benchmarkDir = os.path.join(workDir, PolybenchList[index])
     if printLog:
         os.system('(cd {}; {} {})'.format(
             benchmarkDir, vitis, os.path.join(workDir, PolybenchList[index], "base.tcl")))
     else:
-        os.system('(cd {}; {} {} > /dev/null; echo "Finished benchmark: {}")'.format(
-            benchmarkDir, vitis, os.path.join(workDir, PolybenchList[index], "base.tcl"), benchmark))
+        os.system('(cd {}; {} {} > /dev/null; echo "Finished benchmark ({}): {}")'.format(
+            benchmarkDir, vitis, os.path.join(workDir, PolybenchList[index], "base.tcl"), size, benchmark))
 
-def RunVitisJob(jobID, jobs, workDir, polybenchCount, vitis):
+def RunVitisJob(jobID, jobs, workDir, polybenchCount, vitis, size):
     jobs = int(multiprocessing.cpu_count()/jobs)
     for benchID in range(0, polybenchCount):
-        if benchID % (jobID + 1) != jobID:
+        if benchID % jobs != jobID:
             continue
-        RunVitisOnce(benchID, workDir, False, vitis)
+        RunVitisOnce(benchID, workDir, False, vitis, size)
         
-def RunVitis(jobs, workDir, vitis):
+def RunVitis(jobs, workDir, vitis, size):
     if jobs > multiprocessing.cpu_count():
         jobs = multiprocessing.cpu_count()
 
@@ -159,7 +159,7 @@ def RunVitis(jobs, workDir, vitis):
     threads = [None] * jobs
     queue = Queue()
     for i in range(0, jobs):
-        threads[i] = Process(target=RunVitisJob, args=(i, jobs, workDir, polybenchCount, vitis))
+        threads[i] = Process(target=RunVitisJob, args=(i, jobs, workDir, polybenchCount, vitis, size))
         threads[i].start()
     for i in range(0, jobs):
         threads[i].join()
@@ -167,7 +167,7 @@ def RunVitis(jobs, workDir, vitis):
     errCount = 0
     for polybench in PolybenchList:
         benchmarkLog = os.path.join(workDir, polybench, "vitis_hls.log")
-        if 'ERROR' in open(benchmarkLog).read():
+        if not os.path.exists(benchmarkLog) or 'ERROR' in open(benchmarkLog).read():
             print("Benchmark {} FAILED".format(os.path.basename(polybench)))
             errCount = errCount + 1
     print("Error: {}/{}".format(errCount, polybenchCount))
@@ -190,7 +190,6 @@ def confirm():
         return False
 
 def main():
-    
     optparser = OptionParser()
     optparser.add_option("-p", "--problem-size", dest="size",
                          default="SMALL", help="Problem size, default SMALL")
@@ -216,9 +215,6 @@ def main():
 
     workDir = os.path.join(os.getcwd(), options.workDir)
     phismDir = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")
-    print("Benchmark directory is: {}".format(workDir))
-    print("Phism directory is: {}".format(phismDir))
-    print("Running in {} jobs".format(options.jobs))
     jobs = max(int(options.jobs), 1)
     cosim = "cosim_design" if options.cosim else "# cosim_design"
     size = options.size
@@ -226,6 +222,11 @@ def main():
         raise IOError("Invalid size: {}".format(size))
     example = options.example
     vitis = options.vitis
+    print("Benchmark directory is: {}".format(workDir))
+    print("Phism directory is: {}".format(phismDir))
+    print("Benchmark dataset size is: {}".format(size))
+    print("Running in {} jobs".format(options.jobs))
+
 
     start = time.time()
     if os.path.exists(workDir) and options.reset:
@@ -249,9 +250,9 @@ def main():
 
     if options.run_vitis:
         if example:
-            RunVitisOnce(index, workDir, True, vitis)
+            RunVitisOnce(index, workDir, True, vitis, size)
         else:
-            RunVitis(jobs, workDir, vitis)
+            RunVitis(jobs, workDir, vitis, size)
 
     end = time.time()
     print("Total Time: "+"{:.2f}".format(end-start)+"s\n")
