@@ -77,7 +77,13 @@ class PhismRunner:
             cfg = load(f, Loader)
             if self.options.key in cfg:
                 # NOTE: make sure you specify the configuration with the right key name.
+                if "options" not in cfg[self.options.key]:
+                    return
+                if not cfg[self.options.key]["options"]:
+                    return
+
                 for k, v in cfg[self.options.key]["options"].items():
+                    self.logger.info(f"Setting {k}={v}")
                     self.options.__setattr__(k, v)
 
     def setup_work_dir(self):
@@ -114,6 +120,7 @@ class PhismRunner:
         try:
             (
                 self.dump_test_data()
+                .generate_tile_sizes()
                 .polygeist_compile_c()
                 .mlir_preprocess()
                 .phism_extract_top_func()
@@ -334,10 +341,13 @@ class PhismRunner:
             self.get_program_abspath("phism-opt"),
             src_file,
             f'-extract-top-func="name={self.options.top_func} keepall=1"',
+            "-scop-decomp" if self.options.loop_transforms else "",
             f"-split-non-affine='max-loop-depth=5 top-only={top_only} {incl_funcs}'",
             "-debug",
             "-mlir-disable-threading",
         ]
+        args = self.filter_disabled(args)
+
         self.run_command(
             cmd=" ".join(args),
             shell=True,
@@ -378,6 +388,22 @@ class PhismRunner:
 
         return self.sanity_check()
 
+    def generate_tile_sizes(self):
+        """Generate the tile.sizes file that Pluto will read."""
+        base_dir = os.path.dirname(self.cur_file)
+        tile_file = os.path.join(base_dir, "tile.sizes")
+
+        if not self.options.tile_sizes:
+            if os.path.isfile(tile_file):
+                os.remove(tile_file)
+            return self
+
+        with open(tile_file, "w") as f:
+            for tile in self.options.tile_sizes:
+                f.write(f"{tile}\n")
+
+        return self
+
     def phism_loop_transforms(self):
         """Run Phism loop transforms."""
         if not self.options.loop_transforms:
@@ -398,6 +424,7 @@ class PhismRunner:
             "-scop-stmt-inline",
             "-debug-only=loop-transforms",
         ]
+        args = self.filter_disabled(args)
 
         self.run_command(
             cmd=" ".join(args),
@@ -458,7 +485,9 @@ class PhismRunner:
 
         return self
 
-    def phism_array_partition(self):
+    def phism_array_partition(
+        self, split_non_affine: bool = False, flatten: bool = False
+    ):
         """Run phism -array-partition."""
         if not self.options.array_partition:
             return self
@@ -480,15 +509,20 @@ class PhismRunner:
             "-strip-except-top",
             "-array-partition",
             "-canonicalize",
+            "-load-switch",
+            "-canonicalize",
             "-rewrite-ploop-indvar",
             "-canonicalize",
             "-simplify-partition-access",
             "-canonicalize",
-            "-lift-memref-subview",
+            f"-lift-memref-subview='flatten={int(flatten)}'",
             "-canonicalize",
+            "-split-non-affine='greedy'" if split_non_affine else "",
             "-debug-only=array-partition",
             "-verify-each=1",
         ]
+
+        args = self.filter_disabled(args)
 
         self.run_command(
             cmd=" ".join(args),
@@ -548,6 +582,14 @@ class PhismRunner:
 
         return self
 
+    def filter_disabled(self, args):
+        # Filter out disabled passes.
+        return [
+            arg
+            for arg in args
+            if not self.options.disabled or arg not in self.options.disabled
+        ]
+
     def phism_vitis_opt(self):
         """Optimize LLVM IR for Vitis."""
         if self.options.skip_vitis:
@@ -576,9 +618,9 @@ class PhismRunner:
                 os.path.join(self.root_dir, "build", "lib", "VhlsLLVMRewriter.so")
             ),
             "-strip-debug",
+            "-select-pointer",
             "-subview",
             "-mem2arr",
-            "-dse",
             "-instcombine",
             "-xlnmath",
             "-xlnname",
@@ -587,19 +629,15 @@ class PhismRunner:
             '-xlnnames="{}"'.format(",".join(xln_names)),
             "-xlnunroll" if self.options.loop_transforms else "",
             "-xlnram2p",
+            f"-xln-has-nonaff={self.options.has_non_affine}",
             "-xlnarraypartition" if self.options.array_partition else "",
-            # "-xln-ap-flattened",
+            "-xln-ap-flattened" if self.options.array_partition else "",
             "-xln-ap-enabled" if self.options.array_partition else "",
             "-strip-attr",
             "-debug",
         ]
 
-        # Filter out disabled passes.
-        args = [
-            arg
-            for arg in args
-            if not self.options.disabled or arg not in self.options.disabled
-        ]
+        args = self.filter_disabled(args)
 
         self.run_command(
             cmd=" ".join(args),
@@ -638,6 +676,8 @@ class PhismRunner:
             ),
             f'-xlntop="{top_func}"',
             "-xlntbgen",
+            "-xln-ap-flattened" if self.options.array_partition else "",
+            "-xln-ap-enabled" if self.options.array_partition else "",
             f"-xlntbdummynames={base_dir}/dummy.cpp",
             f'-xlntbtclnames="{tbgen_vitis_tcl}"',
             f'-xlnllvm="{src_file}"',

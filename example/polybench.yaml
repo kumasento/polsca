@@ -1,0 +1,37 @@
+jacobi-1d:
+  options:
+    array_partition_v2: True
+jacobi-2d:
+  options:
+    array_partition_v2: True
+    tile_sizes:
+      - 64
+      - 32
+gemm:
+  options:
+    array_partition_v2: False
+    has_non_affine: "false"
+gesummv:
+  options:
+    array_partition_v2: False
+    has_non_affine: "false"
+floyd-warshall:
+  options:
+    array_partition_v2: True
+    tile_sizes:
+      - 64
+      - 128
+      - 64
+mvt:
+  options:
+    array_partition_v2: False
+    has_non_affine: "false"
+bicg:
+  options:
+    array_partition_v2: False
+    has_non_affine: "false"
+ludcmp:
+  options:
+    array_partition_v2: False
+    has_non_affine: "false"
+

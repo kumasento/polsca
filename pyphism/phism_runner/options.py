@@ -32,3 +32,6 @@ class PhismRunnerOptions:
     excludes: Optional[List[str]] = None  # examples to exclude
     jobs: int = 1  # Number of concurrent jobs
     tile_sizes: Optional[List[str]] = None  # tile size for each loop depth
+    split_non_affine_v2: bool = True  # for array partition v2
+    flatten_v2: bool = True  # for array partition v2
+    has_non_affine: str = "true"

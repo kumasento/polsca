@@ -33,7 +33,7 @@
 #include <queue>
 #include <set>
 
-#define DEBUG_TYPE "array-partition"
+#define DEBUG_TYPE "simp-part"
 
 using namespace mlir;
 using namespace llvm;
@@ -54,58 +54,70 @@ static AffineExpr
 simplifyFloorDivForSameMultiplier(AffineExpr result, const AffineValueMap &avm,
                                   SmallVectorImpl<Value> &dims,
                                   MLIRContext *ctx) {
-  auto expr = result.dyn_cast<AffineBinaryOpExpr>();
-  if (!expr)
+  llvm::DenseMap<AffineExpr, AffineExpr> replacement;
+
+  Value dim = nullptr;
+  result.walk([&](AffineExpr e) {
+    if (dim) // Found one is fine.
+      return;
+
+    auto expr = e.dyn_cast<AffineBinaryOpExpr>();
+    if (!expr)
+      return;
+    if (expr.getKind() != AffineExprKind::FloorDiv)
+      return;
+
+    LLVM_DEBUG(dbgs() << "Expr to simplify: " << expr << '\n');
+    AffineExpr offset, factor, dimOrSymbol;
+    if (!matchOffset(expr, offset, factor, dimOrSymbol))
+      return;
+
+    Value dstIndex = getOperandByAffineExpr(avm, dimOrSymbol);
+    if (!dstIndex)
+      return;
+    if (!isForInductionVar(dstIndex))
+      return;
+
+    auto forOp = getForInductionVarOwner(dstIndex);
+    auto lbMap = filterExtraConstantResults(forOp.getLowerBoundMap());
+    auto ubMap = filterExtraConstantResults(forOp.getUpperBoundMap());
+
+    if (lbMap.getNumResults() != ubMap.getNumResults() ||
+        lbMap.getNumResults() != 1)
+      return;
+    if (lbMap.getNumDims() != ubMap.getNumDims() ||
+        lbMap.getNumSymbols() != ubMap.getNumSymbols() ||
+        lbMap.getNumSymbols() + lbMap.getNumDims() != 1)
+      return;
+
+    LLVM_DEBUG(dbgs() << "To replace: " << dstIndex << "\n");
+
+    AffineExpr newLbExpr =
+        simplifyAffineExpr(lbMap.getResult(0).floorDiv(factor),
+                           lbMap.getNumDims(), lbMap.getNumSymbols());
+    AffineExpr newUbExpr =
+        simplifyAffineExpr((ubMap.getResult(0) - 1).floorDiv(factor),
+                           ubMap.getNumDims(), ubMap.getNumSymbols());
+    LLVM_DEBUG(dbgs() << "New LB: " << newLbExpr << '\n');
+    LLVM_DEBUG(dbgs() << "New UB: " << newUbExpr << '\n');
+
+    Value lbSrcIndex =
+        getValue(lbMap, forOp.getLowerBoundOperands(), newLbExpr);
+    Value ubSrcIndex =
+        getValue(ubMap, forOp.getUpperBoundOperands(), newUbExpr);
+    if (!lbSrcIndex || lbSrcIndex != ubSrcIndex)
+      return;
+
+    AffineExpr newExpr = getAffineDimExpr(dims.size(), ctx);
+    replacement[e] = newExpr;
+    dim = lbSrcIndex;
+  });
+
+  if (!dim)
     return nullptr;
-  if (expr.getKind() != AffineExprKind::FloorDiv)
-    return nullptr;
 
-  AffineConstantExpr denom = expr.getRHS().dyn_cast<AffineConstantExpr>();
-  if (!denom)
-    return nullptr;
-
-  Value dstIndex;
-  if (auto dim = expr.getLHS().dyn_cast<AffineDimExpr>())
-    dstIndex = avm.getOperand(dim.getPosition());
-  else if (auto symbol = expr.getLHS().dyn_cast<AffineSymbolExpr>())
-    dstIndex = avm.getOperand(symbol.getPosition() + avm.getNumDims());
-
-  if (!dstIndex)
-    return nullptr;
-  if (!isForInductionVar(dstIndex))
-    return nullptr;
-
-  auto forOp = getForInductionVarOwner(dstIndex);
-  auto lbMap = filterExtraConstantResults(forOp.getLowerBoundMap());
-  auto ubMap = filterExtraConstantResults(forOp.getUpperBoundMap());
-
-  if (lbMap.getNumResults() != ubMap.getNumResults() ||
-      lbMap.getNumResults() != 1)
-    return nullptr;
-  if (lbMap.getNumDims() != ubMap.getNumDims() ||
-      lbMap.getNumSymbols() != ubMap.getNumSymbols() ||
-      lbMap.getNumSymbols() + lbMap.getNumDims() != 1)
-    return nullptr;
-
-  LLVM_DEBUG(dbgs() << "To replace: " << dstIndex << "\n");
-
-  AffineExpr newLbExpr =
-      simplifyAffineExpr(lbMap.getResult(0).floorDiv(denom), lbMap.getNumDims(),
-                         lbMap.getNumSymbols());
-  AffineExpr newUbExpr =
-      simplifyAffineExpr((ubMap.getResult(0) - 1).floorDiv(denom),
-                         ubMap.getNumDims(), ubMap.getNumSymbols());
-  LLVM_DEBUG(dbgs() << "New LB: " << newLbExpr << '\n');
-  LLVM_DEBUG(dbgs() << "New UB: " << newUbExpr << '\n');
-
-  Value lbSrcIndex = getValue(lbMap, forOp.getLowerBoundOperands(), newLbExpr);
-  Value ubSrcIndex = getValue(ubMap, forOp.getUpperBoundOperands(), newUbExpr);
-  if (!lbSrcIndex || lbSrcIndex != ubSrcIndex)
-    return nullptr;
-
-  AffineExpr newExpr = getAffineDimExpr(dims.size(), ctx);
-  dims.push_back(lbSrcIndex);
-  return newExpr;
+  dims.push_back(dim);
+  return result.replace(replacement);
 }
 
 static std::pair<AffineExpr, AffineExpr>

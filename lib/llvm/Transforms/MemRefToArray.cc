@@ -1279,6 +1279,102 @@ struct ConvertMemRefToRankedArray : public ModulePass {
 
 } // namespace
 
+static void replaceOperandBy(Instruction *inst, Value *from, Value *to) {
+  for (unsigned i = 0; i < inst->getNumOperands(); ++i) {
+    if (inst->getOperand(i) == from) {
+      LLVM_DEBUG(dbgs() << "Replacing " << (*from) << "\n with \n"
+                        << (*to) << '\n');
+      inst->setOperand(i, to);
+      return;
+    }
+  }
+}
+
+/// Replace the use of source in inst by the true value and the false value, and
+/// the propagate down to  all the uses of inst.
+static void replaceUses(Instruction *inst, Value *source, Value *trueValue,
+                        Value *falseValue, Value *cond) {
+  LLVM_DEBUG({
+    dbgs() << "\n-------------------------\n";
+    dbgs() << " Replacing ... \n";
+    inst->dump();
+    dbgs() << "\nSource: " << (*source);
+    dbgs() << "\nTrue:   " << (*trueValue);
+    dbgs() << "\nFalse:  " << (*falseValue);
+    dbgs() << "\n-------------------------- \n";
+  });
+
+  // Base case.
+  if (isa<LoadInst>(source)) {
+    SelectInst *selectInst =
+        SelectInst::Create(cond, trueValue, falseValue, Twine(), inst);
+    replaceOperandBy(inst, source, selectInst);
+
+    return;
+  }
+
+  Instruction *falseInst = inst->clone();
+  falseInst->insertBefore(inst);
+  LLVM_DEBUG(dbgs() << "False inst: " << (*falseInst) << "\n");
+
+  replaceOperandBy(inst, source, trueValue);
+  replaceOperandBy(falseInst, source, falseValue);
+
+  for (Value *user : inst->users())
+    replaceUses(cast<Instruction>(user), inst, inst, falseInst, cond);
+}
+
+namespace {
+struct SelectPointer : public ModulePass {
+  static char ID;
+  SelectPointer() : ModulePass(ID) {}
+
+  bool runOnModule(Module &M) override {
+    // Find select instructions on insertvalue.
+    SmallVector<SelectInst *> selectInsts;
+    for (Function &F : M) {
+      for (BasicBlock &BB : F) {
+        for (Instruction &I : BB) {
+          if (auto selectInst = dyn_cast<SelectInst>(&I)) {
+            if (isa<InsertValueInst>(selectInst->getTrueValue()))
+              selectInsts.push_back(selectInst);
+          }
+        }
+      }
+    }
+
+    for (SelectInst *selectInst : selectInsts) {
+      LLVM_DEBUG(dbgs() << "Handling " << (*selectInst) << '\n');
+      Value *trueValue = selectInst->getTrueValue();
+      Value *falseValue = selectInst->getFalseValue();
+
+      for (Value *user : selectInst->users())
+        replaceUses(cast<Instruction>(user), selectInst, trueValue, falseValue,
+                    selectInst->getCondition());
+
+      selectInst->eraseFromParent();
+    }
+
+    selectInsts.clear();
+    for (Function &F : M) {
+      for (BasicBlock &BB : F) {
+        for (Instruction &I : BB) {
+          if (auto selectInst = dyn_cast<SelectInst>(&I)) {
+            if (isa<InsertValueInst>(selectInst->getTrueValue()))
+              selectInsts.push_back(selectInst);
+          }
+        }
+      }
+    }
+
+    for (SelectInst *selectInst : selectInsts)
+      selectInst->eraseFromParent();
+
+    return false;
+  }
+};
+} // namespace
+
 char ConvertMemRefToArray::ID = 0;
 static RegisterPass<ConvertMemRefToArray>
     X1("mem2ptr",
@@ -1291,3 +1387,7 @@ static RegisterPass<ConvertMemRefToRankedArray>
 char MemRefSubview::ID = 12;
 static RegisterPass<MemRefSubview> X3("subview",
                                       "Fix various subview related issues.");
+
+char SelectPointer::ID = 13;
+static RegisterPass<SelectPointer> X4("select-pointer",
+                                      "Select pointer instead of struct.");

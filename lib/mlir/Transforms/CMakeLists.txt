@@ -12,6 +12,7 @@ add_mlir_library(PhismTransforms
   StripExceptTop.cc
   LiftMemRefSubview.cc
   SCoPDecomposition.cc
+  LoadSwitch.cc
   Utils.cc
 
   ADDITIONAL_HEADER_DIRS

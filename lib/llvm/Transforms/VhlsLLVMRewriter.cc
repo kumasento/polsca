@@ -216,9 +216,10 @@ static int getTripCountTemporary(Loop *loop) {
   assert(icmp->getOperand(0) == indvar && "Cannot find the exit loop condition "
                                           "- expected to have the loop indvar "
                                           "as operand 0");
-  assert((icmp->getPredicate() == ICmpInst::ICMP_SLE ||
-          icmp->getPredicate() == ICmpInst::ICMP_SLT) &&
-         "Unsupported exit loop condition. So far only support < or <=");
+  // Disable unroll if the loop is not canonicalized
+  if ((icmp->getPredicate() != ICmpInst::ICMP_SLE &&
+       icmp->getPredicate() != ICmpInst::ICMP_SLT))
+    return -2;
 
   if (auto const1 = dyn_cast<ConstantInt>(icmp->getOperand(1)))
     return const1->getValue().getSExtValue() +
@@ -234,48 +235,52 @@ static void unrollLoop(Loop *loop, int alreadyUnrolled, int maxUnrolled,
   if (maxUnrolled / alreadyUnrolled <= 1)
     return;
   int tripCount = getTripCountTemporary(loop);
-  bool isVariableLoopBound = tripCount <= 0;
-  LLVM_DEBUG(if (isVariableLoopBound) {
-    assert(parentLoopTripCount > 0);
-    dbgs() << "Found a variable loop bound. Assume it has the same trip count "
-              "as its parent loop:\n"
-           << *(loop->getHeader()) << "\n";
-  });
-  tripCount = isVariableLoopBound ? parentLoopTripCount : tripCount;
-  currentVariableBoundedDepth += isVariableLoopBound;
-  bool isFullyUnroll = (tripCount <= maxUnrolled / alreadyUnrolled);
-  tripCount = isFullyUnroll ? tripCount : maxUnrolled / alreadyUnrolled;
-  if (tripCount == 1)
-    return;
+  bool isVariableLoopBound = (tripCount == -1);
+  bool skipToNextLevel = (tripCount == -2);
+  if (!skipToNextLevel) {
+    LLVM_DEBUG(if (isVariableLoopBound) {
+      assert(parentLoopTripCount > 0);
+      dbgs()
+          << "Found a variable loop bound. Assume it has the same trip count "
+             "as its parent loop:\n"
+          << *(loop->getHeader()) << "\n";
+    });
+    tripCount = isVariableLoopBound ? parentLoopTripCount : tripCount;
+    currentVariableBoundedDepth += isVariableLoopBound;
+    bool isFullyUnroll = (tripCount <= maxUnrolled / alreadyUnrolled);
+    tripCount = isFullyUnroll ? tripCount : maxUnrolled / alreadyUnrolled;
+    if (tripCount == 1)
+      return;
 
-  SmallVector<Metadata *, 4> Args;
+    SmallVector<Metadata *, 4> Args;
 
-  // Reserve operand 0 for loop id self reference.
-  LLVMContext &Context = loop->getHeader()->getContext();
-  auto TempNode = MDNode::getTemporary(Context, None);
-  Args.push_back(TempNode.get());
+    // Reserve operand 0 for loop id self reference.
+    LLVMContext &Context = loop->getHeader()->getContext();
+    auto TempNode = MDNode::getTemporary(Context, None);
+    Args.push_back(TempNode.get());
 
-  // Keep the original loop metadata
-  if (auto id = loop->getLoopID())
-    for (unsigned int i = 1; i < id->getNumOperands(); i++)
-      Args.push_back(id->getOperand(i));
+    // Keep the original loop metadata
+    if (auto id = loop->getLoopID())
+      for (unsigned int i = 1; i < id->getNumOperands(); i++)
+        Args.push_back(id->getOperand(i));
 
-  // Loop unroll
-  if (isFullyUnroll) {
-    Metadata *nameVals[] = {MDString::get(Context, "llvm.loop.unroll.full")};
-    Args.push_back(MDNode::get(Context, nameVals));
-  } else {
-    Metadata *nameVals[] = {MDString::get(Context, "llvm.loop.unroll.count"),
-                            ConstantAsMetadata::get(ConstantInt::get(
-                                IntegerType::get(Context, 32), tripCount))};
-    Args.push_back(MDNode::get(Context, nameVals));
-  }
+    // Loop unroll
+    if (isFullyUnroll) {
+      Metadata *nameVals[] = {MDString::get(Context, "llvm.loop.unroll.full")};
+      Args.push_back(MDNode::get(Context, nameVals));
+    } else {
+      Metadata *nameVals[] = {MDString::get(Context, "llvm.loop.unroll.count"),
+                              ConstantAsMetadata::get(ConstantInt::get(
+                                  IntegerType::get(Context, 32), tripCount))};
+      Args.push_back(MDNode::get(Context, nameVals));
+    }
 
-  // Set the first operand to itself.
-  MDNode *LoopID = MDNode::get(Context, Args);
-  LoopID->replaceOperandWith(0, LoopID);
-  loop->setLoopID(LoopID);
-
+    // Set the first operand to itself.
+    MDNode *LoopID = MDNode::get(Context, Args);
+    LoopID->replaceOperandWith(0, LoopID);
+    loop->setLoopID(LoopID);
+  } else
+    tripCount = 1;
   if (!loop->isInnermost() &&
       currentVariableBoundedDepth < getXlnLoopUnrollMaxDepth())
     for (auto &subloop : loop->getSubLoops())
@@ -545,7 +550,8 @@ static void generateXlnTBTcl(Function &F, StringRef fileName,
            << "open_solution -reset solution1\n"
            << "set_part \"xqzu29dr-ffrf1760-1-i\"\n"
            << "create_clock -period \"100MHz\"\n"
-           << "config_compile -pipeline_loops 16\n";
+           //  << "config_compile -pipeline_loops 16\n"
+           << '\n';
 
   for (unsigned i = 0; i < F.arg_size(); i++) {
     auto arg = F.getArg(i);
@@ -554,21 +560,23 @@ static void generateXlnTBTcl(Function &F, StringRef fileName,
           dyn_cast<ArrayType>(arg->getType()->getPointerElementType());
       if (arrayPartitionEnabled) {
         auto partitions = getArrayDimensionInfo(arrayTy);
-        if (partitions.size() == 1) // won't handle 1-dim array
-          continue;
-        if (arrayPartitionFlattened)
-          partitions.pop_back_n(partitions.size() - 1);
-        else {
-          assert(partitions.size() % 2 == 0 &&
-                 "The number of dims should be divisble by 2 if the partition "
-                 "dims are not flattened");
-          partitions.pop_back_n(partitions.size() / 2);
-        }
+        // dbgs() << "Partition size: " << partitions.size() << '\n';
+        if (partitions.size() != 1) { // won't handle 1-dim array
+          if (arrayPartitionFlattened)
+            partitions.pop_back_n(partitions.size() - 1);
+          else {
+            assert(
+                partitions.size() % 2 == 0 &&
+                "The number of dims should be divisble by 2 if the partition "
+                "dims are not flattened");
+            partitions.pop_back_n(partitions.size() / 2);
+          }
 
-        for (auto partition : partitions)
-          XlnTBTcl << "set_directive_array_partition -dim " << partition.first
-                   << " -factor " << partition.second << " -type block \""
-                   << getXlnTop() << "\" " << arg->getName() << "\n";
+          for (auto partition : partitions)
+            XlnTBTcl << "set_directive_array_partition -dim " << partition.first
+                     << " -factor " << partition.second << " -type block \""
+                     << getXlnTop() << "\" " << arg->getName() << "\n";
+        }
       }
       XlnTBTcl << "set_directive_interface " << F.getName() << " "
                << arg->getName() << " -mode ap_memory -storage_type ram_2p\n";

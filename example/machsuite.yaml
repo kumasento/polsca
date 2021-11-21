@@ -2,7 +2,28 @@
 
 sort/radix:
   options:
-    incl_funcs: last_step_scan
+    incl_funcs: last_step_scan,local_scan
     disabled: 
-      - -xlnunroll
-
+      - -load-switch
+      - -select-pointer
+    tile_sizes:
+      - 16
+nw/nw:
+  options:
+    disabled:
+      - -affine-loop-unswitching
+    tile_sizes:
+      - 2048
+      - 2048
+stencil/stencil2d:
+  options:
+    tile_sizes:
+      - 16
+      - 16
+      - 16 
+stencil/stencil3d:
+  options:
+    tile_sizes:
+      - 16
+      - 16
+      - 8

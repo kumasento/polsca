@@ -2,7 +2,10 @@
 
 #include "phism/mlir/Transforms/Utils.h"
 
+#include "mlir/Analysis/AffineAnalysis.h"
+#include "mlir/Analysis/AffineStructures.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/SCF.h"
@@ -275,8 +278,10 @@ void getFunctionsToKeep(ModuleOp m, FuncOp top, SmallPtrSetImpl<FuncOp> &keep) {
   });
 }
 
-static void getArgs(ArrayRef<Operation *> ops, llvm::SetVector<Value> &args) {
+static void getArgs(ArrayRef<Operation *> ops, llvm::SetVector<Value> &args,
+                    llvm::SetVector<Operation *> &prologueOps) {
   args.clear();
+  prologueOps.clear();
 
   llvm::SetVector<Operation *> internalOps;
   for (Operation *parentOp : ops) {
@@ -285,8 +290,13 @@ static void getArgs(ArrayRef<Operation *> ops, llvm::SetVector<Value> &args) {
     parentOp->walk([&](Operation *op) {
       for (Value operand : op->getOperands()) {
         if (Operation *defOp = operand.getDefiningOp()) {
-          if (!internalOps.contains(defOp))
-            args.insert(operand);
+          if (!internalOps.contains(defOp) && !prologueOps.contains(defOp)) {
+            if (auto constOp = dyn_cast<arith::ConstantOp>(defOp)) {
+              prologueOps.insert(constOp);
+            } else {
+              args.insert(operand);
+            }
+          }
         } else if (BlockArgument bArg = operand.dyn_cast<BlockArgument>()) {
           if (!internalOps.contains(bArg.getOwner()->getParentOp()))
             args.insert(operand);
@@ -318,7 +328,8 @@ createCallee(MutableArrayRef<Operation *> ops, StringRef calleeName, ModuleOp m,
 
   // Grab arguments from the top forOp.
   llvm::SetVector<Value> args;
-  getArgs(ops, args);
+  llvm::SetVector<Operation *> prologueOps;
+  getArgs(ops, args, prologueOps);
 
   // Argument mapping for cloning. Also intialize arguments to the entry block.
   BlockAndValueMapping mapping;
@@ -327,6 +338,8 @@ createCallee(MutableArrayRef<Operation *> ops, StringRef calleeName, ModuleOp m,
 
   callee.setType(b.getFunctionType(entry->getArgumentTypes(), llvm::None));
 
+  for (Operation *op : prologueOps)
+    b.clone(*op, mapping);
   for (Operation *op : ops)
     b.clone(*op, mapping);
 
@@ -367,6 +380,62 @@ outlineFunction(MutableArrayRef<Operation *> ops, StringRef funcName,
       createCaller(MutableArrayRef<Operation *>(ops), callee, vmap, b);
 
   return {callee, caller};
+}
+
+/// Match (x +- 1) floordiv T
+bool matchOffset(AffineExpr result, AffineExpr &offset, AffineExpr &factor,
+                 AffineExpr &dimOrSymbol) {
+  offset = factor = dimOrSymbol = nullptr;
+  auto bin = result.dyn_cast<AffineBinaryOpExpr>();
+  if (!bin)
+    return false;
+  if (bin.getKind() != AffineExprKind::FloorDiv)
+    return false;
+
+  factor = bin.getRHS();
+  auto lhs = bin.getLHS().dyn_cast<AffineBinaryOpExpr>();
+  if (!lhs) {
+    if (bin.getLHS().isa<AffineDimExpr>() ||
+        bin.getLHS().isa<AffineSymbolExpr>()) {
+      dimOrSymbol = bin.getLHS();
+      return true;
+    }
+    return false;
+  }
+
+  dimOrSymbol = lhs.getLHS();
+  if (!dimOrSymbol.isa<AffineDimExpr>() && !dimOrSymbol.isa<AffineSymbolExpr>())
+    return false;
+
+  offset = lhs.getRHS();
+  if (!offset.isa<AffineConstantExpr>())
+    return false;
+  int64_t value = offset.cast<AffineConstantExpr>().getValue();
+  if (value != 1 && value != -1)
+    return false;
+
+  return true;
+}
+
+Value getOperandByAffineExpr(const AffineValueMap &avm,
+                             AffineExpr dimOrSymbol) {
+  if (!dimOrSymbol.isa<AffineDimExpr>() && !dimOrSymbol.isa<AffineSymbolExpr>())
+    return nullptr;
+  unsigned pos = dimOrSymbol.isa<AffineDimExpr>()
+                     ? dimOrSymbol.cast<AffineDimExpr>().getPosition()
+                     : (dimOrSymbol.cast<AffineSymbolExpr>().getPosition() +
+                        avm.getNumDims());
+  return avm.getOperand(pos); // mapOperands.
+}
+
+Value getOperandByAffineExpr(Operation *op, AffineExpr dimOrSymbol) {
+  if (!isa<mlir::AffineLoadOp, mlir::AffineStoreOp>(op))
+    return nullptr;
+
+  MemRefAccess access(op);
+  AffineValueMap avm;
+  access.getAccessMap(&avm);
+  return getOperandByAffineExpr(avm, dimOrSymbol);
 }
 
 } // namespace phism

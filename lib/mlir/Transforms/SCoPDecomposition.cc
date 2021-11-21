@@ -290,8 +290,18 @@ static LogicalResult decompositeSCoP(Block *block, const int64_t depth,
     auto caller = dyn_cast_or_null<CallOp>(p.second);
     assert(callee && caller);
 
+    LLVM_DEBUG(dbgs() << "Caller: " << caller << '\n');
+    LLVM_DEBUG(dbgs() << "Callee: " << caller << '\n');
+
     callee->setAttr("scop.affine", b.getUnitAttr());
     caller->setAttr("scop.affine", b.getUnitAttr());
+
+    Operation *parentOp = caller->getParentOp();
+    LLVM_DEBUG(dbgs() << "Parent : " << (*parentOp) << '\n');
+    while (parentOp && !isa<FuncOp>(parentOp)) {
+      parentOp->setAttr("scop.non_affine_access", b.getUnitAttr());
+      parentOp = parentOp->getParentOp();
+    }
 
     ++id;
     prev = curr;
@@ -300,7 +310,7 @@ static LogicalResult decompositeSCoP(Block *block, const int64_t depth,
       op->erase();
   }
 
-  f->setAttr("scop.ignore", b.getUnitAttr());
+  f->setAttr("scop.ignored", b.getUnitAttr());
 
   return success();
 }
