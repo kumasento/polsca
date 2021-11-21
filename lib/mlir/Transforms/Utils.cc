@@ -275,8 +275,10 @@ void getFunctionsToKeep(ModuleOp m, FuncOp top, SmallPtrSetImpl<FuncOp> &keep) {
   });
 }
 
-static void getArgs(ArrayRef<Operation *> ops, llvm::SetVector<Value> &args) {
+static void getArgs(ArrayRef<Operation *> ops, llvm::SetVector<Value> &args,
+                    llvm::SetVector<Operation *> &prologueOps) {
   args.clear();
+  prologueOps.clear();
 
   llvm::SetVector<Operation *> internalOps;
   for (Operation *parentOp : ops) {
@@ -285,8 +287,13 @@ static void getArgs(ArrayRef<Operation *> ops, llvm::SetVector<Value> &args) {
     parentOp->walk([&](Operation *op) {
       for (Value operand : op->getOperands()) {
         if (Operation *defOp = operand.getDefiningOp()) {
-          if (!internalOps.contains(defOp))
-            args.insert(operand);
+          if (!internalOps.contains(defOp) && !prologueOps.contains(defOp)) {
+            if (auto constOp = dyn_cast<arith::ConstantOp>(defOp)) {
+              prologueOps.insert(constOp);
+            } else {
+              args.insert(operand);
+            }
+          }
         } else if (BlockArgument bArg = operand.dyn_cast<BlockArgument>()) {
           if (!internalOps.contains(bArg.getOwner()->getParentOp()))
             args.insert(operand);
@@ -318,7 +325,8 @@ createCallee(MutableArrayRef<Operation *> ops, StringRef calleeName, ModuleOp m,
 
   // Grab arguments from the top forOp.
   llvm::SetVector<Value> args;
-  getArgs(ops, args);
+  llvm::SetVector<Operation *> prologueOps;
+  getArgs(ops, args, prologueOps);
 
   // Argument mapping for cloning. Also intialize arguments to the entry block.
   BlockAndValueMapping mapping;
@@ -327,6 +335,8 @@ createCallee(MutableArrayRef<Operation *> ops, StringRef calleeName, ModuleOp m,
 
   callee.setType(b.getFunctionType(entry->getArgumentTypes(), llvm::None));
 
+  for (Operation *op : prologueOps)
+    b.clone(*op, mapping);
   for (Operation *op : ops)
     b.clone(*op, mapping);
 

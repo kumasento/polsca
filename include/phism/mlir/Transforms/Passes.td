@@ -83,7 +83,8 @@ def OutlineProcessElement : Pass<"outline-proc-elem", "::mlir::ModuleOp"> {
   let summary = "Outline process elements";
   let constructor = "phism::createOutlineProcessElementPass()";
   let options = [
-    Option<"maxTripcount", "max-tripcount", "int", /*default=*/"0", "Max trip count for a tile loop.">
+    Option<"maxTripcount", "max-tripcount", "int", /*default=*/"0", "Max trip count for a tile loop.">,
+    Option<"noIgnored", "no-ignored", "bool", /*default=*/"false", "Ignore scop.ignored.">
   ];
 }
 
@@ -105,6 +106,14 @@ def SCoPDecomposition : Pass<"scop-decomp", "::mlir::ModuleOp"> {
   let options = [
     Option<"maxLoopDepth", "max-loop-depth", "int", /*default=*/"0",
            "Below which loop depth should we put affine loops into functions.">,
+  ];
+}
+
+def InlineSCoPAffine : Pass<"inline-scop-affine", "::mlir::ModuleOp"> {
+  let summary = "Inline those scop.affine functions back.";
+  let constructor = "phism::createInlineSCoPAffinePass()";
+  let options = [
+
   ];
 }
 

@@ -67,6 +67,12 @@ def main():
     parser.add_argument(
         "--array-partition", "--ap", action="store_true", help="Use array partition."
     )
+    parser.add_argument(
+        "--array-partition-v2",
+        "--ap-v2",
+        action="store_true",
+        help="Use array partition (v2).",
+    )
     parser.add_argument("--skip-vitis", action="store_true", help="Don't run Vitis.")
     parser.add_argument(
         "--skip-csim", action="store_true", help="Don't run tbgen (csim)."

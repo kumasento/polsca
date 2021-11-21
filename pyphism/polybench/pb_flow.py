@@ -20,6 +20,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 import pyphism.utils.helper as helper
+from pyphism.phism_runner.options import PhismRunnerOptions
+from pyphism.phism_runner.runner import PhismRunner
 from pyphism.polybench.utils import vhdl
 
 POLYBENCH_DATASETS = ("MINI", "SMALL", "MEDIUM", "LARGE", "EXTRALARGE")
@@ -104,7 +106,11 @@ class PbFlowOptions:
     skip_csim: bool = False  # Given cosim = True, you can still turn down csim.
     sanity_check: bool = False  # Run pb-flow in sanity check mode
 
+    array_partition_v2: bool = False  # Use the newer array partition (TODO: migrate)
+
     def __post_init__(self):
+        if self.array_partition_v2:
+            self.array_partition = True
         if self.sanity_check:
             # Disable the Vitis steps.
             self.cosim = False
@@ -825,7 +831,7 @@ exit
 """
 
 
-class PbFlow:
+class PbFlow(PhismRunner):
     """Holds all the pb-flow functions.
     TODO: inherits this from PhismFlow.
     """
@@ -1152,6 +1158,7 @@ class PbFlow:
             src_file,
             f'-extract-top-func="name={get_top_func(src_file)} keepall={self.options.sanity_check}"',
             "-scop-decomp",
+            "-debug",
         ]
         self.run_command(
             cmd=" ".join(args),
@@ -1173,7 +1180,7 @@ class PbFlow:
         log_file = self.cur_file.replace(".mlir", ".log")
 
         passes = [
-            f"-annotate-scop='functions={get_top_func(src_file)}'",
+            # f"-annotate-scop='functions={get_top_func(src_file)}'",
             "-fold-scf-if",
         ]
         if self.options.split == "NO_SPLIT":  # The split stmt has applied -reg2mem
@@ -1250,9 +1257,10 @@ class PbFlow:
             self.get_program_abspath("phism-opt"),
             src_file,
             # f'-loop-transforms="max-span={self.options.max_span}"',
+            "-inline-scop-affine",
             "-affine-loop-unswitching",
             "-anno-point-loop",
-            "-outline-proc-elem",
+            "-outline-proc-elem='no-ignored'",
             "-loop-redis-and-merge",
             "-scop-stmt-inline",
             # "-fold-if" if self.options.coalescing else "",
@@ -1273,6 +1281,8 @@ class PbFlow:
 
     def array_partition(self):
         """Run Phism array partition transforms."""
+        if self.options.array_partition_v2:
+            return self.phism_array_partition()
         if not self.options.array_partition:
             return self
 

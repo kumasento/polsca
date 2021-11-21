@@ -118,13 +118,20 @@ static void resolveOffset(llvm::MapVector<Value, MemRefLiftInfo> &memrefs) {
         continue;
       }
 
+      if (info.indices.empty())
+        continue;
+
       // figure out the new offset and pop the back.
-      for (unsigned i = 0, e = std::min(info.indices.size(), indices.size());
-           i < e; ++i) {
-        if (info.indices[i] != indices[i]) {
-          // New offset determined.
-          info.indices.pop_back_n(info.indices.size() - i);
-          break;
+      if (indices.empty())
+        info.indices = {};
+      else {
+        for (unsigned i = 0, e = std::min(info.indices.size(), indices.size());
+             i < e; ++i) {
+          if (info.indices[i] != indices[i]) {
+            // New offset determined.
+            info.indices.pop_back_n(info.indices.size() - i);
+            break;
+          }
         }
       }
     }
@@ -308,6 +315,8 @@ static LogicalResult liftMemRefSubview(FuncOp callee,
 
     if (info.indices.empty())
       continue;
+
+    LLVM_DEBUG(dbgs() << "Indices size: " << info.indices.size() << '\n');
 
     if (failed(process(callee, callers, info)))
       return failure();

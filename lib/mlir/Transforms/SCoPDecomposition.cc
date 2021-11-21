@@ -300,7 +300,7 @@ static LogicalResult decompositeSCoP(Block *block, const int64_t depth,
       op->erase();
   }
 
-  f->setAttr("scop.ignore", b.getUnitAttr());
+  f->setAttr("scop.ignored", b.getUnitAttr());
 
   return success();
 }
