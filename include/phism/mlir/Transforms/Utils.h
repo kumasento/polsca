@@ -23,7 +23,12 @@ void getFunctionsToKeep(::mlir::ModuleOp m, ::mlir::FuncOp top,
 std::pair<::mlir::Operation *, ::mlir::Operation *>
     outlineFunction(::llvm::MutableArrayRef<::mlir::Operation *>,
                     ::llvm::StringRef, ::mlir::ModuleOp);
+bool matchOffset(::mlir::AffineExpr result, ::mlir::AffineExpr &offset,
+                 ::mlir::AffineExpr &factor, ::mlir::AffineExpr &dimOrSymbol);
 
+::mlir::Value getOperandByAffineExpr(::mlir::Operation *, ::mlir::AffineExpr);
+::mlir::Value getOperandByAffineExpr(const ::mlir::AffineValueMap &,
+                                     ::mlir::AffineExpr);
 // void getArgs(::llvm::ArrayRef<::mlir::Operation *>,
 //              ::llvm::SetVector<::mlir::Value> &);
 // std::pair<::mlir::FuncOp, ::mlir::BlockAndValueMapping>

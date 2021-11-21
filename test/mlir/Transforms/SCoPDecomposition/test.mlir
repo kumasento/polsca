@@ -29,7 +29,7 @@ func @foo(%A: memref<?xf32>, %B: memref<?xf32>, %C: memref<?xf32>, %D: memref<?x
 // CHECK:    affine.for %{{.*}} = 0 to 30 
 // CHECK:  func @foo__f2(%{{.*}}) attributes {scop.affine} 
 // CHECK:    affine.for %{{.*}} = 0 to 50 
-// CHECK:  func @foo(%{{.*}}) attributes {phism.top, scop.ignore} 
+// CHECK:  func @foo(%{{.*}}) attributes {phism.top, scop.ignored} 
 // CHECK:    affine.for %{{.*}} = 0 to 20 
 // CHECK:      call @foo__f0(%{{.*}}) {scop.affine}
 // CHECK:      call @foo__f1(%{{.*}}) {scop.affine}

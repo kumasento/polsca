@@ -30,6 +30,8 @@ def SplitNonAffine : FunctionPass<"split-non-affine"> {
            "Whether we just annotate those for loops with non affine accesses.">,
     Option<"maxLoopDepth", "max-loop-depth", "int", /*default=*/"0",
            "Below which loop depth should we put affine loops into functions.">,
+    Option<"greedy", "greedy", "bool", /*default=*/"false",
+           "Take the contents out once see a non affine loop">,
     ListOption<"inclFuncs", "incl-funcs", "std::string", "Limit to the provided functions",
            "llvm::cl::ZeroOrMore, llvm::cl::MiscFlags::CommaSeparated">
   ];
@@ -49,7 +51,6 @@ def ArrayPartition : Pass<"array-partition", "::mlir::ModuleOp"> {
   let summary = "Array partition.";
   let constructor = "phism::createArrayPartitionPass()";
   let options = [
-
   ];
 }
 
@@ -57,7 +58,6 @@ def SimplifyPartitionAccess : FunctionPass<"simplify-partition-access"> {
   let summary = "Simplify array partition accesses.";
   let constructor = "phism::createSimplifyPartitionAccessPass()";
   let options = [
-
   ];
 }
 
@@ -77,13 +77,17 @@ def AffineLoopUnswitching : FunctionPass<"affine-loop-unswitching"> {
 def AnnotatePointLoop : FunctionPass<"anno-point-loop"> {
   let summary = "Annotate point loops from nested affine.for";
   let constructor = "phism::createAnnotatePointLoopPass()";
+  let options = [
+    Option<"constantIndvar", "constant-indvar", "bool", /*default=*/"false", "Accept constant loop bounds.">
+  ];
 }
 
 def OutlineProcessElement : Pass<"outline-proc-elem", "::mlir::ModuleOp"> {
   let summary = "Outline process elements";
   let constructor = "phism::createOutlineProcessElementPass()";
   let options = [
-    Option<"maxTripcount", "max-tripcount", "int", /*default=*/"0", "Max trip count for a tile loop.">
+    Option<"maxTripcount", "max-tripcount", "int", /*default=*/"0", "Max trip count for a tile loop.">,
+    Option<"noIgnored", "no-ignored", "bool", /*default=*/"false", "Ignore scop.ignored.">
   ];
 }
 
@@ -94,9 +98,19 @@ def RewritePloopIndvar : FunctionPass<"rewrite-ploop-indvar"> {
   ];
 }
 
+def LoadSwitch : FunctionPass<"load-switch"> {
+  let summary = "Simplify floordiv related accesses.";
+  let constructor = "phism::createLoadSwitchPass()";
+  let options = [
+  ];
+}
+
 def LiftMemRefSubview : Pass<"lift-memref-subview", "::mlir::ModuleOp"> {
   let summary = "Lift the outermost dims into subview.";
   let constructor = "phism::createLiftMemRefSubviewPass()";
+  let options= [
+    Option<"flatten", "flatten", "bool", /*default=*/"false", "Whether to flatten partitioned dims.">
+  ];
 }
 
 def SCoPDecomposition : Pass<"scop-decomp", "::mlir::ModuleOp"> {
@@ -105,6 +119,14 @@ def SCoPDecomposition : Pass<"scop-decomp", "::mlir::ModuleOp"> {
   let options = [
     Option<"maxLoopDepth", "max-loop-depth", "int", /*default=*/"0",
            "Below which loop depth should we put affine loops into functions.">,
+  ];
+}
+
+def InlineSCoPAffine : Pass<"inline-scop-affine", "::mlir::ModuleOp"> {
+  let summary = "Inline those scop.affine functions back.";
+  let constructor = "phism::createInlineSCoPAffinePass()";
+  let options = [
+
   ];
 }
 

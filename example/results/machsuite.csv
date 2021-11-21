@@ -1,0 +1,6 @@
+name,cbase,pbase,poly,phism
+sort/radix,166129,,,
+needwun,34047,,,61256
+stencil2d,39068,,,
+stencil3d,53294,,,
+gemm/ncube,131370,,,397360
