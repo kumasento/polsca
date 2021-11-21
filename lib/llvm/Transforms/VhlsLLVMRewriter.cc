@@ -223,19 +223,25 @@ static int getTripCountTemporary(Loop *loop) {
   if (auto const1 = dyn_cast<ConstantInt>(icmp->getOperand(1)))
     return const1->getValue().getSExtValue() +
            (icmp->getPredicate() == ICmpInst::ICMP_SLE);
+
   return -1;
 }
 
-static void unrollLoop(Loop *loop, int alreadyUnrolled, int maxUnrolled) {
+static void unrollLoop(Loop *loop, int alreadyUnrolled, int maxUnrolled,
+                       int parentLoopTripCount) {
   // Check loop trip count. Return if the factor is not greater than 1.
   if (maxUnrolled / alreadyUnrolled <= 1)
     return;
   int tripCount = getTripCountTemporary(loop);
-  assert(tripCount > 0 && "Cannot find a valid trip count. It could because of "
-                          "variable loop bounds.");
-  tripCount = (tripCount > maxUnrolled / alreadyUnrolled)
-                  ? maxUnrolled / alreadyUnrolled
-                  : tripCount;
+  LLVM_DEBUG(if (tripCount <= 0) {
+    assert(parentLoopTripCount > 0);
+    dbgs() << "Found a variable loop bound. Assume it has the same trip count "
+              "as its parent loop:\n"
+           << *(loop->getHeader()) << "\n";
+  });
+  tripCount = (tripCount <= 0) ? parentLoopTripCount : tripCount;
+  bool isFullyUnroll = (tripCount <= maxUnrolled / alreadyUnrolled);
+  tripCount = isFullyUnroll ? tripCount : maxUnrolled / alreadyUnrolled;
   if (tripCount == 1)
     return;
 
@@ -252,10 +258,15 @@ static void unrollLoop(Loop *loop, int alreadyUnrolled, int maxUnrolled) {
       Args.push_back(id->getOperand(i));
 
   // Loop unroll
-  Metadata *nameVals[] = {MDString::get(Context, "llvm.loop.unroll.count"),
-                          ConstantAsMetadata::get(ConstantInt::get(
-                              IntegerType::get(Context, 32), tripCount))};
-  Args.push_back(MDNode::get(Context, nameVals));
+  if (isFullyUnroll) {
+    Metadata *nameVals[] = {MDString::get(Context, "llvm.loop.unroll.full")};
+    Args.push_back(MDNode::get(Context, nameVals));
+  } else {
+    Metadata *nameVals[] = {MDString::get(Context, "llvm.loop.unroll.count"),
+                            ConstantAsMetadata::get(ConstantInt::get(
+                                IntegerType::get(Context, 32), tripCount))};
+    Args.push_back(MDNode::get(Context, nameVals));
+  }
 
   // Set the first operand to itself.
   MDNode *LoopID = MDNode::get(Context, Args);
@@ -264,7 +275,7 @@ static void unrollLoop(Loop *loop, int alreadyUnrolled, int maxUnrolled) {
 
   if (!loop->isInnermost())
     for (auto &subloop : loop->getSubLoops())
-      unrollLoop(subloop, alreadyUnrolled * tripCount, maxUnrolled);
+      unrollLoop(subloop, alreadyUnrolled * tripCount, maxUnrolled, tripCount);
 }
 
 namespace {
@@ -287,7 +298,7 @@ struct XilinxUnrollPass : public ModulePass {
         LoopInfo LI(DT);
         if (!LI.empty()) {
           for (auto &loop : LI) {
-            unrollLoop(loop, 1, getXlnLoopUnrollMax());
+            unrollLoop(loop, 1, getXlnLoopUnrollMax(), -1);
           }
         }
       }
