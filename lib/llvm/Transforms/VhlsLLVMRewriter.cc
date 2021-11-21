@@ -228,18 +228,21 @@ static int getTripCountTemporary(Loop *loop) {
 }
 
 static void unrollLoop(Loop *loop, int alreadyUnrolled, int maxUnrolled,
-                       int parentLoopTripCount) {
+                       int parentLoopTripCount,
+                       int currentVariableBoundedDepth) {
   // Check loop trip count. Return if the factor is not greater than 1.
   if (maxUnrolled / alreadyUnrolled <= 1)
     return;
   int tripCount = getTripCountTemporary(loop);
-  LLVM_DEBUG(if (tripCount <= 0) {
+  bool isVariableLoopBound = tripCount <= 0;
+  LLVM_DEBUG(if (isVariableLoopBound) {
     assert(parentLoopTripCount > 0);
     dbgs() << "Found a variable loop bound. Assume it has the same trip count "
               "as its parent loop:\n"
            << *(loop->getHeader()) << "\n";
   });
-  tripCount = (tripCount <= 0) ? parentLoopTripCount : tripCount;
+  tripCount = isVariableLoopBound ? parentLoopTripCount : tripCount;
+  currentVariableBoundedDepth += isVariableLoopBound;
   bool isFullyUnroll = (tripCount <= maxUnrolled / alreadyUnrolled);
   tripCount = isFullyUnroll ? tripCount : maxUnrolled / alreadyUnrolled;
   if (tripCount == 1)
@@ -273,9 +276,11 @@ static void unrollLoop(Loop *loop, int alreadyUnrolled, int maxUnrolled,
   LoopID->replaceOperandWith(0, LoopID);
   loop->setLoopID(LoopID);
 
-  if (!loop->isInnermost())
+  if (!loop->isInnermost() &&
+      currentVariableBoundedDepth < getXlnLoopUnrollMaxDepth())
     for (auto &subloop : loop->getSubLoops())
-      unrollLoop(subloop, alreadyUnrolled * tripCount, maxUnrolled, tripCount);
+      unrollLoop(subloop, alreadyUnrolled * tripCount, maxUnrolled, tripCount,
+                 currentVariableBoundedDepth);
 }
 
 namespace {
@@ -298,7 +303,7 @@ struct XilinxUnrollPass : public ModulePass {
         LoopInfo LI(DT);
         if (!LI.empty()) {
           for (auto &loop : LI) {
-            unrollLoop(loop, 1, getXlnLoopUnrollMax(), -1);
+            unrollLoop(loop, 1, getXlnLoopUnrollMaxCount(), -1, 0);
           }
         }
       }
