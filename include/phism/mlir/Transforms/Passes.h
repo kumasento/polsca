@@ -28,6 +28,8 @@ std::unique_ptr<mlir::OperationPass<mlir::FuncOp>>
 createRewritePloopIndvarPass();
 std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
 createLiftMemRefSubviewPass();
+std::unique_ptr<mlir::OperationPass<mlir::ModuleOp>>
+createSCoPDecompositionPass();
 
 /// Generate the code for registering passes.
 #define GEN_PASS_REGISTRATION

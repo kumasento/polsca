@@ -26,6 +26,7 @@ void registerAllPhismPasses() {
   registerOutlineProcessElementPass();
   registerRewritePloopIndvarPass();
   registerLiftMemRefSubviewPass();
+  registerSCoPDecompositionPass();
 }
 
 } // namespace phism

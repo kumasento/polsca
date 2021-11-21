@@ -11,6 +11,7 @@ add_mlir_library(PhismTransforms
   SplitNonAffine.cc
   StripExceptTop.cc
   LiftMemRefSubview.cc
+  SCoPDecomposition.cc
   Utils.cc
 
   ADDITIONAL_HEADER_DIRS

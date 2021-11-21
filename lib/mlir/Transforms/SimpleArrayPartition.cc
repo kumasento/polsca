@@ -1181,7 +1181,7 @@ struct SimpleArrayPartitionPass
     }
 
     if (genMain) {
-      FuncOp orig = dyn_cast<FuncOp>(m.lookupSymbol("main"));
+      FuncOp orig = dyn_cast_or_null<FuncOp>(m.lookupSymbol("main"));
       if (orig)
         orig.erase();
 
