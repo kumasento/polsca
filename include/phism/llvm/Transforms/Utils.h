@@ -20,7 +20,8 @@ std::string getXlnTBDummyNames();
 std::string getXlnLLVMIn();
 bool getXlnArrayPartitionEnabled();
 bool getXlnArrayPartitionFlattened();
-int getXlnLoopUnrollMax();
+int getXlnLoopUnrollMaxCount();
+int getXlnLoopUnrollMaxDepth();
 bool getXlnHasNonAffine();
 
 } // namespace llvm
