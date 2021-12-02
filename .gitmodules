@@ -10,3 +10,6 @@
 [submodule "example/machsuite"]
 	path = example/machsuite
 	url = git@github.com:JianyiCheng/MachSuite.git
+[submodule "example/rosetta"]
+	path = example/rosetta
+	url = https://github.com/cornell-zhang/rosetta
