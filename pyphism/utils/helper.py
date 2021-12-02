@@ -152,20 +152,21 @@ def get_project_root():
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
-def get_logger(name: str, log_file: str, console: bool = True) -> logging.Logger:
+def get_logger(name: str, log_file: str = "", console: bool = True) -> logging.Logger:
     logger = logging.getLogger(name)
     logger.setLevel(logging.DEBUG)
 
-    if os.path.isfile(log_file):
-        os.remove(log_file)
+    if log_file:
+        if os.path.isfile(log_file):
+            os.remove(log_file)
 
-    # File handler
-    fh = logging.FileHandler(log_file)
-    fh.setFormatter(
-        logging.Formatter("[%(asctime)s][%(name)s][%(levelname)s] %(message)s")
-    )
-    fh.setLevel(logging.DEBUG)
-    logger.addHandler(fh)
+        # File handler
+        fh = logging.FileHandler(log_file)
+        fh.setFormatter(
+            logging.Formatter("[%(asctime)s][%(name)s][%(levelname)s] %(message)s")
+        )
+        fh.setLevel(logging.DEBUG)
+        logger.addHandler(fh)
 
     # Console handler
     if console:
