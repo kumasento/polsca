@@ -99,19 +99,25 @@ class PhismRunner:
 
     def setup_logger(self):
         """Setup self.logger."""
+        key = self.options.key
+        if not key:
+            key = "phism-runner"
         log_file = os.path.join(
-            self.options.work_dir, f"phism-runner.{helper.get_timestamp()}.log"
+            self.options.work_dir, f"{key}.{helper.get_timestamp()}.log"
         )
-        self.logger = helper.get_logger("phism-runner", log_file)
+        self.logger = helper.get_logger(key, log_file)
+
+    def set_cur_file(self):
+        self.cur_file = os.path.join(
+            os.path.abspath(self.options.work_dir),
+            os.path.basename(self.options.source_file),
+        )
 
     def run(self):
         self.logger.info("Started phism-runner ...")
 
         # self.cur_file will be the entry for the following passes.
-        self.cur_file = os.path.join(
-            os.path.abspath(self.options.work_dir),
-            os.path.basename(self.options.source_file),
-        )
+        self.set_cur_file()
         self.logger.info(f"The input source file: {self.cur_file}")
         assert os.path.isfile(self.cur_file)
 
@@ -267,9 +273,11 @@ class PhismRunner:
 
         return self
 
-    def polygeist_compile_c(self, flags: Optional[List[str]] = None):
-        """Compile C code to MLIR using mlir-clang."""
-        src_file, self.cur_file = self.cur_file, self.cur_file.replace(".c", ".mlir")
+    def polygeist_compile_c(
+        self, flags: Optional[List[str]] = None, suffix: str = ".c"
+    ):
+        """Compile C/C++ code to MLIR using mlir-clang."""
+        src_file, self.cur_file = self.cur_file, self.cur_file.replace(suffix, ".mlir")
 
         self.run_command(cmd=f'sed -i "s/static//g" {src_file}', shell=True)
         self.run_command(
