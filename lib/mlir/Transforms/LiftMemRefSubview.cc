@@ -630,6 +630,31 @@ static LogicalResult aliasMemRef(FuncOp callee,
   return success();
 }
 
+static LogicalResult matchCallerToCallee(CallOp caller, FuncOp callee) {
+  if (caller.getCallee() != callee.getName())
+    return failure();
+
+  OpBuilder b(callee.getContext());
+  for (auto it : enumerate(caller.getOperands())) {
+    auto operand = it.value();
+    auto targetType = callee.getArgument(it.index()).getType();
+    if (operand.getType() != targetType) {
+      assert(operand.isa<BlockArgument>());
+
+      auto f = dyn_cast<FuncOp>(
+          operand.cast<BlockArgument>().getOwner()->getParentOp());
+      assert(f && "Parent of the type-mismatched value should be a function.");
+
+      operand.setType(targetType);
+      auto entry = &f.getBlocks().front();
+      f.setType(b.getFunctionType(entry->getArgumentTypes(),
+                                  f.getType().getResults()));
+    }
+  }
+
+  return success();
+}
+
 static LogicalResult flattenPartitionDims(ModuleOp m) {
   LLVM_DEBUG(dbgs() << "Flattening ..." << m << '\n');
   using OpPair = std::pair<Operation *, Operation *>;
@@ -804,6 +829,7 @@ static LogicalResult flattenPartitionDims(ModuleOp m) {
       subviewOp.erase();
     }
 
+    /// Rewrite the function interface with the flattened memref type.
     BlockArgument arg = memref.dyn_cast<BlockArgument>();
     assert(arg);
 
@@ -824,6 +850,12 @@ static LogicalResult flattenPartitionDims(ModuleOp m) {
     arg.setType(newSrcTy);
     f.setType(b.getFunctionType(arg.getOwner()->getArgumentTypes(),
                                 f.getType().getResults()));
+
+    // Fix the callers to this function.
+    m.walk([&](CallOp caller) {
+      if (caller.getCallee() == f.getName())
+        assert(succeeded(matchCallerToCallee(caller, f)));
+    });
   }
 
   return success();
