@@ -1,4 +1,4 @@
-# Phism: Polyhedral High-Level Synthesis in MLIR
+# POLSCA: Polyhedral High-Level Synthesis in MLIR
 
 [![Build and Test](https://github.com/kumasento/phism/actions/workflows/buildAndTest.yml/badge.svg)](https://github.com/kumasento/phism/actions/workflows/buildAndTest.yml)
 ![GitHub release (latest by date)](https://img.shields.io/github/v/release/kumasento/phism)
@@ -6,6 +6,7 @@
 ![GitHub issues](https://img.shields.io/github/issues/kumasento/phism)
 ![GitHub pull requests](https://img.shields.io/github/issues-pr/kumasento/phism)
 
+> POLSCA used to be called Phism. There are still references to Phism in this repository. We will potentially fix them in the future.
 
 ## What is Phism?
 
