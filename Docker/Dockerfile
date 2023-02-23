@@ -1,4 +1,4 @@
-FROM centos:centos8  
+FROM tgagor/centos:stream8
 ARG VHLS_PATH
 ARG UID
 ARG GID
