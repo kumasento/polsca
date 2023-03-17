@@ -1,22 +1,16 @@
 user=$(if $(shell id -u),$(shell id -u),9001)
 group=$(if $(shell id -g),$(shell id -g),1000)
 phism=/workspace
-vhls=/tools/Xilinx/2020.2
+vhls=/scratch/jc9016/tools/Xilinx/2020.2
 th=1
 example=2mm
 
-# Build Phism
-build-docker: test-docker
-	docker run -it -v $(shell pwd):/workspace -v $(vhls):$(vhls) phism8:latest /bin/bash \
-	-c "make build-phism"
-	echo "Phism has been installed successfully!"
-
 # Build docker container
-test-docker:
+build-docker: 
 	(cd Docker; docker build --build-arg UID=$(user) --build-arg GID=$(group) --build-arg VHLS_PATH=$(vhls) . --tag phism8)
 
 # Enter docker container
-shell:
+shell: build-docker
 	docker run -it -v $(shell pwd):/workspace -v $(vhls):$(vhls) phism8:latest /bin/bash
 
 test-example:
